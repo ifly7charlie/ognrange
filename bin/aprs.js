@@ -51,7 +51,7 @@ let Record = Struct()
 	.word16Ule('minAlt')
 	.word8Ule('minAltMaxSig')
 	.word32Ule('sumSig')
-	.word16Ule('count')
+	.word32Ule('count')
 	.word8Ule('maxSig')
 	.word32Ule('sumCrc')
 
@@ -208,7 +208,7 @@ function processPacket( packet ) {
     const distanceFromLast = glider.lastPoint ? distance( jPoint, glider.lastPoint ) : 1;
 	const elapsedTime = packet.timestamp - glider.lastTime;
 	
-    if( distanceFromLast < 0.01 && elapsedTime < 10 ) {
+    if( distanceFromLast < 0.04 && elapsedTime < 30 ) {
 		glider.stationary++;
         return;
     }
@@ -226,9 +226,8 @@ function processPacket( packet ) {
 	const values = packet.comment.match( /([0-9.]+)dB ([0-9])e/ );
 
 	if( values ) {
-		const strength = values[1];
-		const crc = values[2];
-
+		const strength = Math.round(values[1]);
+		const crc = parseInt(values[2]);
 		packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, altitude, glider, crc, strength );
 	}
 	
@@ -243,13 +242,12 @@ function processPacket( packet ) {
 //
 // Actually serialise the packet into the database after processing the data
 function packetCallback( sender, h3id, altitude, agl, glider, crc, signal ) {
-
 	if( ! stationDbs[sender] ) {
 		stationDbs[sender] = LevelUP(LevelDOWN('./db/stations/'+sender))
 	}
 	
-	mergeDataIntoDatabase( sender, stationDbs[sender], h3id, altitude, agl, glider, crc, signal );
-	mergeDataIntoDatabase( 'global', globalDb, h3.h3ToParent(h3id,7), altitude, agl, glider, crc, signal );
+	mergeDataIntoDatabase( sender, stationDbs[sender], h3id, altitude, agl, crc, signal );
+	mergeDataIntoDatabase( 'global', globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal );
 }
 
 function mergeDataIntoDatabase( station, db, h3, altitude, agl, crc, signal ) {
@@ -320,13 +318,13 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 
 	let data = { 
 		h3out: new Uint32Array( length*2 ),
-		minAgl: new Uint8Array( length ),
-		minAlt: new Uint8Array( length ),
+		minAgl: new Uint16Array( length ),
+		minAlt: new Uint16Array( length ),
 		minAltSig: new Uint8Array( length ),
 		avgSig: new Uint8Array( length ),
 		maxSig: new Uint8Array( length ),
 		avgCrc: new Uint8Array( length ),
-		count: new Uint16Array( length )
+		count: new Uint32Array( length )
 	};
 
 
@@ -349,8 +347,8 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 		data.count[position] = c.count;
 		
 		// Calculated ones
-		data.avgSig[position] = c.sumSig / c.count;
-		data.avgCrc[position] = c.sumCrc / c.count;
+		data.avgSig[position] = Math.round(c.sumSig / c.count);
+		data.avgCrc[position] = Math.round(c.sumCrc / c.count);
 
 		// And make sure we don't run out of space
 		position++;
@@ -365,11 +363,18 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 	let bytes = 0;
 	// Now we have all the data we need we put each one into protobuf and serialise it to disk
 	function output( name, data ) {
-		bytes += data.length;
-
 		const outputTable = makeTable({
-			h3: new Uint32Array(data.h3s.buffer,0,position*2),
-			value: data.values});
+			h3: new Uint32Array(data.h3out.buffer,0,position*2),
+			minAgl: data.minAgl,
+			minAlt: data.minAlt,
+			minAltSig: data.minAltSig,
+			maxSig: data.maxSig,
+			c: data.count,
+			avgSig: data.avgSig,
+			avgCrc: data.avgCrc
+		});
+
+		console.log( name, 'bl:', outputTable.byteLength )
 
 		const pt = new PassThrough( { objectMode: true } )
 		const result = pt
@@ -404,16 +409,16 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 	}
 
 	const date = new Date().toISOString();
-	for await ( const outputType of types ) {
-		output( station + '/' + outputType,
-				{ ...stationmeta,
-				  station: station, type: outputType,
-				  end: date,
-				  count: position,
-				  h3s: new Uint8Array(data.h3out.buffer,0,position*8),
-				  values: new Uint8Array(data[outputType].buffer,0,position*(byteMultiplier[outputType]||1))});
-	}
-	
+	output( station, data );
+
+//					{ ...stationmeta,
+//				  station: station, type: outputType,
+//				  end: date,
+//				  count: position,
+//				  h3s: new Uint8Array(data.h3out.buffer,0,position*8),
+//				  values: new Uint8Array(data[outputType].buffer,0,position*(byteMultiplier[outputType]||1))});
+//	}
+
 	console.log( station, position, 'cells', bytes, 'bytes' );
 }
 

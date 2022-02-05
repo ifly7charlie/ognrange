@@ -70,14 +70,20 @@ export default function CombinePage( props ) {
     // query because that stops page reload when switching between the
     // classes. If no class is set then assume the first one
     const router = useRouter()
-    let { station, mapType } = router.query;
+    let { station, visualisation, mapType } = router.query;
 	if( mapType ) {
 		props.options.mapType = parseInt(mapType);
 	}
+	if( ! visualisation ) {
+		visualisation = 'avgSig';
+	}
 
 	// Update the station by updating the query url preserving all parameters but station
-	function setStation( station ) {
-		router.push( { pathname: '/', query: { ...router.query, 'station': station }}, undefined, { shallow: true });
+	function setStation( newStation ) {
+		if( station === newStation ) {
+			newStation = '';
+		}
+		router.push( { pathname: '/', query: { ...router.query, 'station': newStation }}, undefined, { shallow: true });
 	}
 	
 	// What the map is looking at
@@ -101,20 +107,13 @@ export default function CombinePage( props ) {
 				<meta name='viewport' content='width=device-width, minimal-ui'/>
 				<IncludeJavascript/>
             </Head>
-            <Menu station={station} setStation={setStation} override={mapType}/>
- 			<CoverageMap station={station} setStation={setStation}
+            <Menu station={station} setStation={setStation} override={mapType} visualisation={visualisation}/>
+ 			<CoverageMap station={station} setStation={setStation} visualisation={visualisation}
 						 viewport={viewport} setViewport={setViewport}
 						 options={props.options} setOptions={props.setOptions}>
 			</CoverageMap>
 		</>
     );
-}
-
-function t() {
-	<>
-	<div className="resizingContainer" >
-	</div>
-		</>
 }
 
 export async function getServerSideProps(context) {
