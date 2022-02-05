@@ -8,7 +8,7 @@ import { aprsParser } from  'js-aprs-fap';
 
 // Height above ground calculations, uses mapbox to get height for point
 //import geo from './lib/getelevationoffset.js';
-import { getElevationOffset } from '../lib/getelevationoffset.js'
+import { getElevationOffset } from '../lib/bin/getelevationoffset.js'
 
 // Helper function for geometry
 import distance from '@turf/distance';
@@ -19,7 +19,7 @@ import LevelDOWN from 'rocksdb';
 
 import dotenv from 'dotenv';
 
-import { ignoreStation } from '../lib/ignorestation.js'
+import { ignoreStation } from '../lib/bin/ignorestation.js'
 
 import h3 from 'h3-js';
 
@@ -36,11 +36,12 @@ let gliders = {};
 let metrics = undefined;
 
 // We serialise to disk using protobuf
-import protobuf from 'protobufjs/light.js';
-import { OnglideRangeMessage } from '../lib/range-protobuf.mjs';
-import { writeFile, mkdirSync } from 'fs';
+//import protobuf from 'protobufjs/light.js';
+//import { OnglideRangeMessage } from '../lib/range-protobuf.mjs';
+import { writeFile, mkdirSync, createWriteStream } from 'fs';
+import { PassThrough } from 'stream';
 
-import arrow from 'apache-arrow';
+import { makeTable, tableFromArrays, RecordBatchWriter } from 'apache-arrow';
 
 // For the database we use a 'C structure', it's already compressed so
 // not so useful using protobuf
@@ -103,7 +104,7 @@ function startAprsListener( m = undefined ) {
 			else {
 				if( (packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && ! ignoreStation(packet.sourceCallsign)) {
 					if( packet.type == 'location' ) {
-						stations[ packet.sourceCallsign ] = { ...stations[packet.sourceCallsign], lat: packet.latitude, lng: packet.longitude };
+						stations[ packet.sourceCallsign ] = { ...stations[packet.sourceCallsign], lat: packet.latitude, lng: packet.longitude};
 					}
 					else if( packet.type == 'status' ) {
 						statusDb.put( packet.sourceCallsign, JSON.stringify({ ...stations[packet.sourceCallsign], status: packet.body }) );
@@ -147,11 +148,14 @@ function startAprsListener( m = undefined ) {
         connection.valid = false;
 	}, 2*60*1000);
 
+	produceOutputFiles( 'global', globalDb );
+	produceStationFile( statusDb );
 	setInterval( function() {
 		for( const station of Object.keys(stationDbs) ) {
 			produceOutputFiles( station, stationDbs[station] );
 		}
 		produceOutputFiles( 'global', globalDb );
+		produceStationFile( statusDb );
 	}, 15*60*1000);
 	
 }
@@ -225,7 +229,7 @@ function processPacket( packet ) {
 		const strength = values[1];
 		const crc = values[2];
 
-		packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 7), altitude, altitude, glider, crc, strength );
+		packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, altitude, glider, crc, strength );
 	}
 	
     // Enrich with elevation and send to everybody, this is async
@@ -245,7 +249,7 @@ function packetCallback( sender, h3id, altitude, agl, glider, crc, signal ) {
 	}
 	
 	mergeDataIntoDatabase( sender, stationDbs[sender], h3id, altitude, agl, glider, crc, signal );
-	mergeDataIntoDatabase( 'global', globalDb, h3.h3ToParent(h3id,6), altitude, agl, glider, crc, signal );
+	mergeDataIntoDatabase( 'global', globalDb, h3.h3ToParent(h3id,7), altitude, agl, glider, crc, signal );
 }
 
 function mergeDataIntoDatabase( station, db, h3, altitude, agl, crc, signal ) {
@@ -362,19 +366,32 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 	// Now we have all the data we need we put each one into protobuf and serialise it to disk
 	function output( name, data ) {
 		bytes += data.length;
-		writeFile( './webdata/'+name+'.pbuf', data, (err) => { if( err ) { console.log( name, 'file failed:', err ); }} );
+
+		const outputTable = makeTable({
+			h3: new Uint32Array(data.h3s.buffer,0,position*2),
+			value: data.values});
+
+		const pt = new PassThrough( { objectMode: true } )
+		const result = pt
+			  .pipe( RecordBatchWriter.throughNode())
+			  .pipe( createWriteStream( './public/data/'+name+'.arrow' ));
+						
+		pt.write(outputTable);
+		pt.end();
+		
+//		writeFile( './webdata/'+name+'.pbuf', data, (err) => { if( err ) { console.log( name, 'file failed:', err ); }} );
 	}
 
-	let pbRoot = protobuf.Root.fromJSON(OnglideRangeMessage);
-	let pbOnglideRangeMessage = pbRoot.lookupType( "OnglideRangeMessage" );
-	function encodePb( msg ) {
-		let message = pbOnglideRangeMessage.create( msg );
-		return pbOnglideRangeMessage.encode(message).finish();
-	}
+//	let pbRoot = protobuf.Root.fromJSON(OnglideRangeMessage);
+//	let pbOnglideRangeMessage = pbRoot.lookupType( "OnglideRangeMessage" );
+//	function encodePb( msg ) {
+//		let message = pbOnglideRangeMessage.create( msg );
+//		return pbOnglideRangeMessage.encode(message).finish();
+//	}
 
 	// Make sure we have a directory for it
 	try { 
-		mkdirSync('./webdata/'+station, {recursive:true});
+		mkdirSync('./public/data/'+station, {recursive:true});
 	} catch(e) {};
 
 	let stationmeta = {};
@@ -389,12 +406,12 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 	const date = new Date().toISOString();
 	for await ( const outputType of types ) {
 		output( station + '/' + outputType,
-				encodePb( { ...stationmeta,
-							station: station, type: outputType,
-							end: date,
-							count: position,
-							h3s: new Uint8Array(data.h3out.buffer,0,position*8),
-							values: new Uint8Array(data[outputType].buffer,0,position*(byteMultiplier[outputType]||1))}));
+				{ ...stationmeta,
+				  station: station, type: outputType,
+				  end: date,
+				  count: position,
+				  h3s: new Uint8Array(data.h3out.buffer,0,position*8),
+				  values: new Uint8Array(data[outputType].buffer,0,position*(byteMultiplier[outputType]||1))});
 	}
 	
 	console.log( station, position, 'cells', bytes, 'bytes' );
@@ -402,4 +419,18 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 
 		
 	
+async function produceStationFile( statusdb ) {
+
+	let statusOutput = [];
 	
+	// Go through all the keys
+	for await ( const [key,value] of statusdb.iterator()) {
+		if( ! ignoreStation(key) ) {
+			statusOutput.push( {station:''+key, ...JSON.parse(''+value)})
+		}
+	}
+
+	writeFile( './public/data/stations.json', JSON.stringify(statusOutput,null,2), (err) => err ? console.log("station write error",err) : null);
+}
+	
+
