@@ -8,9 +8,28 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@mapbox/tilebelt": "^1.0.2",
+    "@turf/turf": "^6.5.0",
+    "apache-arrow": "^7.0.0",
+    "deck.gl": "^8.6.8",
+    "dotenv": "^16.0.0",
+    "h3-js": "^3.7.2",
+    "js-aprs-fap": "^1.1.5",
+    "js-aprs-is": "^1.0.6",
+    "levelup": "^5.1.1",
+    "lru-cache": "^6.0.0",
+    "mapbox-gl": "^2.7.0",
+    "ndarray": "^1.0.19",
     "next": "12.0.10",
+    "node-fetch": "^3.2.0",
+    "pngjs": "^6.0.0",
+    "protobufjs": "^6.11.2",
     "react": "17.0.2",
-    "react-dom": "17.0.2"
+    "react-bootstrap": "^2.1.2",
+    "react-dom": "17.0.2",
+    "react-map-gl": "^7.0.1",
+    "rocksdb": "^5.2.0",
+    "struct": "^0.0.12"
   },
   "devDependencies": {
     "eslint": "8.8.0",

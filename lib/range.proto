@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+message OnglideRangeMessage {
+
+		// what station/stations does this apply to
+		string station = 1;
+
+		// date range covered
+		string start = 2;
+		string end = 3;
+
+		// what type of value do we have
+		string type = 4;
+
+		// how many items are there
+		uint32 count = 5;
+
+		// list of all the values (sequence of bytes)
+		bytes h3s = 10; // uint64
+		bytes values = 11; // uint8 (normalized to 8 bits)
+
+		StationMeta stationmeta = 20;
+}	   
+
+message StationMeta {
+
+		float lat = 1;
+		float lng = 2;
+		string status = 3;
+
+};
+		
