@@ -110,7 +110,7 @@ async function startAprsListener( m = undefined ) {
     });
 
     // Handle a data packet
-    connection.on('packet', (data) => {
+    connection.on('packet', async function (data) {
         connection.valid = true;
         if(data.charAt(0) != '#' && !data.startsWith('user')) {
             const packet = parser.parseaprs(data);
@@ -121,10 +121,13 @@ async function startAprsListener( m = undefined ) {
             }
 			else {
 				if( (packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && ! ignoreStation(packet.sourceCallsign)) {
-					if( packet.type == 'location' ) {
+
+					if( packet.type == 'location' ) {	
+						const stationid = getStationId( packet.sourceCallsign, true );
 						stations[ packet.sourceCallsign ] = { ...stations[packet.sourceCallsign], lat: packet.latitude, lng: packet.longitude};
 					}
 					else if( packet.type == 'status' ) {
+						const stationid = getStationId( packet.sourceCallsign, false ); // don't write as we do it in next line
 						statusDb.put( packet.sourceCallsign, JSON.stringify({ ...stations[packet.sourceCallsign], status: packet.body }) );
 					}
 					else {
@@ -193,6 +196,31 @@ async function startAprsListener( m = undefined ) {
 		produceStationFile( statusDb );
 	}, 15*60*1000);
 	
+}
+
+
+function getStationId( station, serialise = true ) {
+	// Figure out which station we are - this is synchronous though don't really
+	// understand why the put can't happen in the background
+	let stationid = undefined;
+	if( station ) {
+		if( ! stations[ station ] ) {
+			stations[station]={}
+		}
+		
+		if( 'id' in stations[station] ) {
+			stationid = stations[station].id;
+		}
+		else {
+			stationid = stations[station].id = Atomics.add(nextStation, 0, 1);
+			console.log( `allocated id ${stationid} to ${station}, ${Object.keys(stations).length} in hash` )
+
+			if( serialise ) {
+				statusDb.put( station, JSON.stringify(stations[station]) );
+			}
+		}
+	}
+	return stationid;
 }
 
 //
@@ -280,23 +308,9 @@ async function packetCallback( station, h3id, altitude, agl, glider, crc, signal
 	if( ! stationDbs[station] ) {
 		stationDbs[station] = LevelUP(LevelDOWN(dbPath+'/stations/'+station))
 	}
+
+	const stationid = await getStationId( station );
 	
-	// Figure out which station we are - this is synchronous though don't really
-	// understand why the put can't happen in the background
-	let stationid = undefined;
-	if( station ) {
-		if( ! stations[ station ] ) {
-			stations[station]={}
-		}
-		
-		if( 'id' in stations ) {
-			stationid = stations[station].id;
-		}
-		else {
-			stationid = stations[station].id = Atomics.add(nextStation, 0, 1);
-			await statusDb.put( station, JSON.stringify(stations[station]) );
-		}
-	}
 	await mergeDataIntoDatabase( 0, 0, stationDbs[station], h3id, altitude, agl, crc, signal );
 	await mergeDataIntoDatabase( station, stationid, globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
 }
