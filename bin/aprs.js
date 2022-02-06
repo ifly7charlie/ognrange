@@ -8,7 +8,7 @@ import { aprsParser } from  'js-aprs-fap';
 
 // Height above ground calculations, uses mapbox to get height for point
 //import geo from './lib/getelevationoffset.js';
-import { getElevationOffset } from '../lib/bin/getelevationoffset.js'
+import { getCacheSize, getElevationOffset } from '../lib/bin/getelevationoffset.js'
 
 // Helper function for geometry
 import distance from '@turf/distance';
@@ -57,7 +57,7 @@ import { writeFile, mkdirSync, createWriteStream } from 'fs';
 import { PassThrough } from 'stream';
 
 import { makeTable, tableFromArrays, RecordBatchWriter, makeVector, FixedSizeBinary,
-		 Utf8, makeBuilder } from 'apache-arrow';
+		 Utf8, Uint8, makeBuilder } from 'apache-arrow';
 
 const numberOfStationsToTrack = 20;
 
@@ -226,6 +226,7 @@ async function startAprsListener( m = undefined ) {
             console.log( "failed APRS connection, retrying" );
             connection.disconnect( () => { connection.connect() } );
         }
+		console.log( `elevation cache: ${getCacheSize()}, stations seen: ${nextStation-1}, openDbs: ${Object.keys(stationDbs).length+2}, packets: ${packetCount}` );
         connection.valid = false;
 	}, 2*60*1000));
 
@@ -332,24 +333,25 @@ async function processPacket( packet ) {
 	if( values ) {
 		const strength = Math.round(values[1]);
 		const crc = parseInt(values[2]);
-		packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, altitude, glider, crc, strength );
+
+		// If we have no signal strength then we'll ignore the packet... don't know where these
+		// come from or why they exist...
+		if( strength > 0 ) {
+//		packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, altitude, glider, crc, strength );
+
+			// Enrich with elevation and send to everybody, this is async
+			getElevationOffset( packet.latitude, packet.longitude,
+								async (gl) => {
+									const agl = Math.round(Math.max(altitude-gl,0));
+									packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, agl, glider, crc, strength );
+			});
+		}
 	}
-	
-    // Enrich with elevation and send to everybody, this is async
-//    getElevationOffset( packet.latitude, packet.longitude,
-  //                 async (gl) => {
-	//				   const agl = Math.round(Math.max(altitude-gl,0));
-	//				   packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 7), altitude, agl, glider, 0, 10 );
-//	});
 }
 
 //
 // Actually serialise the packet into the database after processing the data
 async function packetCallback( station, h3id, altitude, agl, glider, crc, signal ) {
-
-	if( ! signal ) {
-		return;
-	}
 
 	// Open the database, do this first as takes a bit of time
 	if( ! stationDbs[station] ) {
@@ -512,6 +514,8 @@ async function produceOutputFile( station, inputdb ) {
 	// for global we need a list of stations
 	let stationsBuilder = station == 'global' ?
 						  makeBuilder({type: new Utf8()}):undefined;
+	let stationsCount = station == 'global' ?
+						makeBuilder({type: new Uint8()}):undefined;
 
 	// we have two of these for each record
 	const lengthMultiplier = { h3out: 2 };
@@ -552,6 +556,7 @@ async function produceOutputFile( station, inputdb ) {
 							   (s) => s[1] );
 			const o =  _map(zip, (f) => f[0].toString(16)).join(',');
 			stationsBuilder.append(o)
+			stationsCount.append(zip.length)
 		}
 
 		// And make sure we don't run out of space
@@ -566,7 +571,7 @@ async function produceOutputFile( station, inputdb ) {
 
 	// Now we have all the data we need we put each one into protobuf and serialise it to disk
 	function output( name, data ) {
-		const stationsInject = station == 'global' ? { stations: stationsBuilder.finish().toVector() } : {};
+		const stationsInject = station == 'global' ? { stations: stationsBuilder.finish().toVector(), scount: stationsCount.finish().toVector() } : {};
 		const outputTable = makeTable({
 			h3: new Uint32Array(data.h3out.buffer,0,position*2),
 			minAgl: new Uint16Array(data.minAgl,0,position),
