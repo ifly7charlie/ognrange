@@ -39,6 +39,10 @@ let stationDbs = {};
 let globalDb = undefined;
 let statusDb = undefined;
 
+
+//
+let intervals = [];
+
 // APRS connection
 let connection = {};
 let gliders = {};
@@ -88,8 +92,36 @@ async function main() {
 	await startAprsListener();
 }
 
+async function handleExit(signal) {
+	console.log(`${signal}: flushing data`)
+	connection.exiting = true;
+	connection.disconnect();
+	for( const i of intervals ) {
+		clearInterval(i);
+	}
+	await produceOutputFiles();
+	console.log(`${signal}: done`)
+}
+process.on('SIGINT', handleExit);
+process.on('SIGQUIT', handleExit);
+process.on('SIGTERM', handleExit);
+
 main()
     .then("exiting");
+
+//
+// Dump all of the output files that need to be dumped
+async function produceOutputFiles() {
+	console.log( `producing output files for ${Object.keys(statusDb).length} stations + global ` )
+	
+	// each of the stations
+	for( const station of Object.keys(stationDbs) ) {
+		await produceOutputFile( station, stationDbs[station] );
+	}
+	// And the global output
+	await produceStationFile( statusDb );
+	await produceOutputFile( 'global', globalDb );
+}
 
 //
 // Connect to the APRS Server
@@ -179,7 +211,7 @@ async function startAprsListener( m = undefined ) {
 
 	// And every 2 minutes we need to confirm the APRS
 	// connection has had some traffic
-	setInterval( function() {
+	intervals.push(setInterval( function() {
 
 		try {
 			// Send APRS keep alive or we will get dumped
@@ -195,24 +227,15 @@ async function startAprsListener( m = undefined ) {
             connection.disconnect( () => { connection.connect() } );
         }
         connection.valid = false;
-	}, 2*60*1000);
+	}, 2*60*1000));
 
 	// Make sure we have these from existing DB as soon as possible
-	produceStationFile( statusDb );	
-	produceOutputFiles( 'global', globalDb );
+	produceOutputFiles();
 
 	// On an interval we will dump out the coverage tables
-	setInterval( function() {
-		console.log( `producing output files for ${Object.keys(statusDb).length} stations + global ` )
-
-		// each of the stations
-		for( const station of Object.keys(stationDbs) ) {
-			produceOutputFiles( station, stationDbs[station] );
-		}
-		// And the global output
-		produceStationFile( statusDb );
-		produceOutputFiles( 'global', globalDb );
-	}, (process.env.OUTPUT_INTERVAL_MIN||15)*60*1000);
+	intervals.push(setInterval( function() {
+		produceOutputFiles();
+	}, (process.env.OUTPUT_INTERVAL_MIN||15)*60*1000));
 	
 }
 
@@ -327,13 +350,19 @@ async function packetCallback( station, h3id, altitude, agl, glider, crc, signal
 	if( ! signal ) {
 		return;
 	}
-	
+
+	// Open the database, do this first as takes a bit of time
 	if( ! stationDbs[station] ) {
 		stationDbs[station] = LevelUP(LevelDOWN(dbPath+'/stations/'+station))
 	}
 
+	// Find the id for the station or allocate
 	const stationid = await getStationId( station );
-	
+
+	// Packet for station marks it for dumping next time round
+	stations[station].clean = false;
+
+	// Merge into both the station db (0,0) and the global db with the stationid we allocated
 	mergeDataIntoDatabase( 0, 0, stationDbs[station], h3id, altitude, agl, crc, signal );
 	mergeDataIntoDatabase( station, stationid, globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
 }
@@ -427,10 +456,14 @@ async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl,
 		}
 
 		// Save back to db, either original or updated buffer
-		db.put( h3, new Buffer(outputBuffer), {}, release );
+		db.put( h3, Buffer.from(outputBuffer), {}, release );
 	}
 
-	lock( h3, function (release) {
+	// Because the DB is asynchronous we need to ensure that only
+	// one transaction is active for a given h3 at a time, this will
+	// block all the other ones until the first completes, it's per db
+	// no issues updating h3s in different dbs at the same time
+	lock( stationid.toString()+h3, function (release) {
 
 			  db.get( h3 )
 				.then( (value) => {
@@ -447,23 +480,41 @@ async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl,
 	
 }
 
-// Helper fro resizing TypedArrays so we don't end up with them being huge
-function resize( a, b ) {
-	let c = new a.constructor( b );
-	c.set( a );
-	return c;
-}
 
-async function produceOutputFiles( station, inputdb, metadata ) {
+//
+// Produce the output 
+async function produceOutputFile( station, inputdb ) {
 	let length = 500;
 	let position = 0;
 
-	const types = [ 'minAgl', 'minAlt', 'minAltSig', 'avgSig', 'maxSig', 'avgCrc', 'count', 'stations' ];
-	const byteMultiplier = { count: 2 };
-	const lengthMultiplier = { h3out: 2 };
+	// Form up meta data useful for the display, this needs to be written regardless
+	// 
+	let stationmeta = {	outputDate: new Date().toISOString() };
+	if( station && station != 'global') {
+		try {
+			stationmeta = { ...stationmeta, meta: JSON.parse(await statusDb.get( station )) };
+		} catch(e) {
+			console.log( 'missing metadata for ', station );
+		}
+	}
+	writeFile( outputPath+(station?station:'global')+'.json', JSON.stringify(stationmeta,null,2), (err) => err ? console.log("stationmeta write error",err) : null);
+	
+	// Check to see if we need to produce an output file, set to 1 when clean
+	if( station != 'global' && stations[station].clean ) {
+		return 0;
+	}
+	
+	// Helper for resizing TypedArrays so we don't end up with them being huge
+	function resize( a, b ) {
+		let c = new a.constructor( b );	c.set( a );	return c;
+	}
 
+	// for global we need a list of stations
 	let stationsBuilder = station == 'global' ?
 						  makeBuilder({type: new Utf8()}):undefined;
+
+	// we have two of these for each record
+	const lengthMultiplier = { h3out: 2 };
 
 	let data = { 
 		h3out: new Uint32Array( length*2 ),
@@ -496,7 +547,7 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 		data.avgCrc[position] = Math.round(c.sumCrc[0] / c.count[0]);
 
 		if( c.extra ) {
-			let zip = _sortby( _reject( _zip( c.extra.stations, c.extra.count ),
+			const zip = _sortby( _reject( _zip( c.extra.stations, c.extra.count ),
 										(r)=>!r[1] ),
 							   (s) => s[1] );
 			const o =  _map(zip, (f) => f[0].toString(16)).join(',');
@@ -513,9 +564,6 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 		}
 	}
 
-				
-
-	let bytes = 0;
 	// Now we have all the data we need we put each one into protobuf and serialise it to disk
 	function output( name, data ) {
 		const stationsInject = station == 'global' ? { stations: stationsBuilder.finish().toVector() } : {};
@@ -540,40 +588,31 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 						
 		pt.write(outputTable);
 		pt.end();
-		
-	}
-
-	// Form up meta data useful for the display
-	let stationmeta = {	date: new Date().toISOString() };
-	if( station ) {
-		try {
-			stationmeta = { ...stationmeta, meta: JSON.parse(await statusDb.get( station )) };
-		} catch(e) {
-			console.log( 'missing metadata for ', station );
-		}
 	}
 
 	// Output the station information
 	output( station, data );
 
-	//
+	// We are clean so we won't dump till new packets
+	if( station != 'global' ) {
+		stations[station].clean = 1;
+	}
 	return position;
 }
 
-		
-	
+// Dump the meta data for all the stations, we take from DB 
 async function produceStationFile( statusdb ) {
 
-	let statusOutput = [];
+	let statusOutput = _map( stations, (v,k) => {return { station: k, ...v };});
 	
 	// Go through all the keys
-	for await ( const [key,value] of statusdb.iterator()) {
-		if( ! ignoreStation(key) ) {
-			statusOutput.push( {station:''+key, ...JSON.parse(''+value)})
-		}
-	}
+//	for  const [key,value] of statusdb.iterator()) {
+//		if( ! ignoreStation(key) ) {
+//			statusOutput.push( {station:''+key, ...JSON.parse(''+value)})
+//		}
+//	}
 
-	writeFile( './public/data/stations.json', JSON.stringify(statusOutput,null,2), (err) => err ? console.log("station write error",err) : null);
+	writeFile( outputPath + 'stations.json', JSON.stringify(statusOutput,null,2), (err) => err ? console.log("station write error",err) : null);
 }
 	
 
