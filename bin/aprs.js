@@ -23,11 +23,16 @@ import { ignoreStation } from '../lib/bin/ignorestation.js'
 
 import h3 from 'h3-js';
 
-import _find from 'lodash.find';
+import _findindex from 'lodash.findindex';
 import _zip from 'lodash.zip';
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
 import _sortby from 'lodash.sortby';
+import _reject from 'lodash.reject';
+
+// DB locking
+import { Lock } from 'lock'
+let lock = Lock();
 
 let stations = {};
 let stationDbs = {};
@@ -47,7 +52,8 @@ let metrics = undefined;
 import { writeFile, mkdirSync, createWriteStream } from 'fs';
 import { PassThrough } from 'stream';
 
-import { makeTable, tableFromArrays, RecordBatchWriter } from 'apache-arrow';
+import { makeTable, tableFromArrays, RecordBatchWriter, makeVector, FixedSizeBinary,
+		 Utf8, makeBuilder } from 'apache-arrow';
 
 const numberOfStationsToTrack = 20;
 
@@ -174,10 +180,15 @@ async function startAprsListener( m = undefined ) {
 	// And every 2 minutes we need to confirm the APRS
 	// connection has had some traffic
 	setInterval( function() {
-		
-		// Send APRS keep alive or we will get dumped
-        connection.sendLine(`# ${CALLSIGN} ${process.env.NEXT_PUBLIC_WEBSOCKET_HOST}`);
 
+		try {
+			// Send APRS keep alive or we will get dumped
+			connection.sendLine(`# ${CALLSIGN} ${process.env.NEXT_PUBLIC_WEBSOCKET_HOST}`);
+		} catch(e) {
+			console.log( `exception ${e} in sendLine status` );
+			connection.valud = false;
+		}
+		
         // Re-establish the APRS connection if we haven't had anything in
         if( ! connection.valid ) {
             console.log( "failed APRS connection, retrying" );
@@ -291,7 +302,7 @@ async function processPacket( packet ) {
 	if( values ) {
 		const strength = Math.round(values[1]);
 		const crc = parseInt(values[2]);
-		await packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, altitude, glider, crc, strength );
+		packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, altitude, glider, crc, strength );
 	}
 	
     // Enrich with elevation and send to everybody, this is async
@@ -311,8 +322,8 @@ async function packetCallback( station, h3id, altitude, agl, glider, crc, signal
 
 	const stationid = await getStationId( station );
 	
-	await mergeDataIntoDatabase( 0, 0, stationDbs[station], h3id, altitude, agl, crc, signal );
-	await mergeDataIntoDatabase( station, stationid, globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
+	mergeDataIntoDatabase( 0, 0, stationDbs[station], h3id, altitude, agl, crc, signal );
+	mergeDataIntoDatabase( station, stationid, globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
 }
 
 const normalLength = 3*4+3*2+2;
@@ -337,7 +348,7 @@ function mapping(buffer) {
 
 async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl, crc, signal ) {
 
-	function update(buffer) {
+	function update(buffer, release) {
 		// We may change the output if we extend it
 		let outputBuffer = buffer;
 
@@ -372,14 +383,15 @@ async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl,
 		// It should probably sort the list as well
 		// but...
 		if( stationid && existing.extra ) {
-			let updateIdx = _find(existing.extra.stations,(f)=>(f == stationid));
-			if( updateIdx !== undefined ) {
+			
+			let updateIdx = _findindex(existing.extra.stations,(f)=>(f == stationid));
+			if( updateIdx >= 0 ) {
 				existing.extra.count[updateIdx]++;
 			}
 			else {
 				// Look for empty slot, if we find it then we update,
-				let updateIdx = _find(existing.extra.stations,(f)=>(f == 0));
-				if( updateIdx !== undefined ) {
+				updateIdx = _findindex(existing.extra.stations,(f)=>(f == 0));
+				if( updateIdx >= 0 ) {
 					existing.extra.stations[updateIdx] = stationid;
 					existing.extra.count[updateIdx] = 1;
 				}
@@ -392,11 +404,10 @@ async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl,
 					// We know where it goes so just put the data directly there rather
 					// than remapping the whole data structure
 					let s = new Uint16Array( nb, buffer.byteLength, 1 );
-					let c = new Uint32Array( nb, buffer.byteLength+2, 1 );
+					let c = new Uint32Array( nb, buffer.byteLength+4, 1 );
 					s[0] = stationid;
 					c[0] = 1;
 
-					console.log(h3,station,stationid,'expand',nb.byteLength)
 					//
 					outputBuffer = nb.buffer;
 				}
@@ -404,24 +415,23 @@ async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl,
 		}
 
 		// Save back to db, either original or updated buffer
-//		console.log( h3, db.db.location, station, stationid,  'put', outputBuffer.constructor.name, outputBuffer.byteLength);
-		db.put( h3, new Buffer(outputBuffer) );
+		db.put( h3, new Buffer(outputBuffer), {}, release );
 	}
 
+	lock( h3, function (release) {
 
-	db.get( h3 )
-	  .then( (value) => {
-//		  console.log( h3, db.db.location, station, stationid, 'update', value.constructor.name, value.byteLength);
-		  update( value.buffer );
-	  })
-	  .catch( (err) => {
-
-		  // Allocate a new buffer to update and then set it in the database -
-		  // if we have a station id then twe will make sure we reserve some space for it
-		  let buffer = new Uint8Array( normalLength + (stationid ? 12 : 0) );
-		  update( buffer.buffer );
-//		  console.log( h3, db.db.location, station, stationid, 'insert',buffer.buffer.constructor.name, buffer.buffer.byteLength );
-		})
+			  db.get( h3 )
+				.then( (value) => {
+					update( value.buffer, release() );
+				})
+				.catch( (err) => {
+					
+					// Allocate a new buffer to update and then set it in the database -
+					// if we have a station id then twe will make sure we reserve some space for it
+					let buffer = new Uint8Array( normalLength + (stationid ? 12 : 0) );
+					update( buffer.buffer, release() );
+				})
+		  })
 	
 }
 
@@ -438,7 +448,10 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 
 	const types = [ 'minAgl', 'minAlt', 'minAltSig', 'avgSig', 'maxSig', 'avgCrc', 'count', 'stations' ];
 	const byteMultiplier = { count: 2 };
-	const lengthMultiplier = { h3out: 2, stations:numberOfStationsToTrack };
+	const lengthMultiplier = { h3out: 2 };
+
+	let stationsBuilder = station == 'global' ?
+						  makeBuilder({type: new Utf8()}):undefined;
 
 	let data = { 
 		h3out: new Uint32Array( length*2 ),
@@ -449,7 +462,6 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 		maxSig: new Uint8Array( length ),
 		avgCrc: new Uint8Array( length ),
 		count: new Uint32Array( length ),
-		stations: station == 'global' ? new Uint16Array( length*numberOfStationsToTrack ) : undefined
 	};
 
 
@@ -473,12 +485,14 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 		data.avgCrc[position] = Math.round(c.sumCrc[0] / c.count[0]);
 
 		if( c.extra ) {
-			let zip = _sortby( _zip( c.extra.stations, c.extra.count ), (s) => s[1] == 0 ? undefined : s[1] );
-//			console.log( zip, c.extra.stations, c.extra.count );
-			let o = new Uint16Array(data.stations.buffer,position*20,numberOfStationsToTrack);
-			o.set( _map(zip, (f) => f[0]));
-//			console.log(o)
+			let zip = _sortby( _reject( _zip( c.extra.stations, c.extra.count ),
+										(r)=>!r[1] ),
+							   (s) => s[1] );
+			const o =  _map(zip, (f) => f[0].toString(16)).join(',');
+			stationsBuilder.append(o)
+			console.log(o)
 		}
+
 
 		// And make sure we don't run out of space
 		position++;
@@ -489,13 +503,13 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 			}
 		}
 	}
+
 				
 
 	let bytes = 0;
 	// Now we have all the data we need we put each one into protobuf and serialise it to disk
 	function output( name, data ) {
-		const stationsInject = data.stations ? { stations: data.stations } : {};
-		
+		const stationsInject = station == 'global' ? { stations: stationsBuilder.finish().toVector() } : {};
 		const outputTable = makeTable({
 			h3: new Uint32Array(data.h3out.buffer,0,position*2),
 			minAgl: data.minAgl,
@@ -508,7 +522,7 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 			...stationsInject
 		});
 
-//		console.log( name, 'bl:', outputTable.byteLength )
+//		console.table( [...outputTable].slice(0,100))
 
 		const pt = new PassThrough( { objectMode: true } )
 		const result = pt
@@ -529,9 +543,9 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 //	}
 
 	// Make sure we have a directory for it
-	try { 
-		mkdirSync('./public/data/'+station, {recursive:true});
-	} catch(e) {};
+//	try { 
+//		mkdirSync('./public/data/'+station, {recursive:true});
+//	} catch(e) {};
 
 	let stationmeta = {};
 	if( station ) {
