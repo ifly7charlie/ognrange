@@ -197,15 +197,22 @@ async function startAprsListener( m = undefined ) {
         connection.valid = false;
 	}, 2*60*1000);
 
+	// Make sure we have these from existing DB as soon as possible
+	produceStationFile( statusDb );	
 	produceOutputFiles( 'global', globalDb );
-	produceStationFile( statusDb );
+
+	// On an interval we will dump out the coverage tables
 	setInterval( function() {
+		console.log( `producing output files for ${Object.keys(statusDb).length} stations + global ` )
+
+		// each of the stations
 		for( const station of Object.keys(stationDbs) ) {
 			produceOutputFiles( station, stationDbs[station] );
 		}
-		produceOutputFiles( 'global', globalDb );
+		// And the global output
 		produceStationFile( statusDb );
-	}, 15*60*1000);
+		produceOutputFiles( 'global', globalDb );
+	}, (process.env.OUTPUT_INTERVAL_MIN||15)*60*1000);
 	
 }
 
@@ -473,7 +480,6 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 	// Go through all the keys
 	for await ( const [key,value] of inputdb.iterator()) {
 		let c = mapping(value.buffer);
-//		console.log( station, 'iterate', value.buffer.constructor.name, value.buffer.byteLength );
 
 		// Save them in the output arrays
 		const lh = h3.h3IndexToSplitLong(''+key);
@@ -495,9 +501,7 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 							   (s) => s[1] );
 			const o =  _map(zip, (f) => f[0].toString(16)).join(',');
 			stationsBuilder.append(o)
-			console.log(o)
 		}
-
 
 		// And make sure we don't run out of space
 		position++;
@@ -517,13 +521,13 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 		const stationsInject = station == 'global' ? { stations: stationsBuilder.finish().toVector() } : {};
 		const outputTable = makeTable({
 			h3: new Uint32Array(data.h3out.buffer,0,position*2),
-			minAgl: data.minAgl,
-			minAlt: data.minAlt,
-			minAltSig: data.minAltSig,
-			maxSig: data.maxSig,
-			count: data.count,
-			avgSig: data.avgSig,
-			avgCrc: data.avgCrc,
+			minAgl: new Uint16Array(data.minAgl,0,position),
+			minAlt: new Uint16Array(data.minAlt,0,position),
+			minAltSig: new Uint8Array(data.minAltSig,0,position),
+			maxSig: new Uint8Array(data.maxSig,0,position),
+			count: new Uint32Array(data.count,0,position),
+			avgSig: new Uint8Array(data.avgSig,0,position),
+			avgCrc: new Uint8Array(data.avgCrc,0,position),
 			...stationsInject
 		});
 
@@ -537,42 +541,23 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 		pt.write(outputTable);
 		pt.end();
 		
-//		writeFile( './webdata/'+name+'.pbuf', data, (err) => { if( err ) { console.log( name, 'file failed:', err ); }} );
 	}
 
-//	let pbRoot = protobuf.Root.fromJSON(OnglideRangeMessage);
-//	let pbOnglideRangeMessage = pbRoot.lookupType( "OnglideRangeMessage" );
-//	function encodePb( msg ) {
-//		let message = pbOnglideRangeMessage.create( msg );
-//		return pbOnglideRangeMessage.encode(message).finish();
-//	}
-
-	// Make sure we have a directory for it
-//	try { 
-//		mkdirSync('./public/data/'+station, {recursive:true});
-//	} catch(e) {};
-
-	let stationmeta = {};
+	// Form up meta data useful for the display
+	let stationmeta = {	date: new Date().toISOString() };
 	if( station ) {
 		try {
-			stationmeta = { stationmeta: JSON.parse(await statusDb.get( station )) };
+			stationmeta = { ...stationmeta, meta: JSON.parse(await statusDb.get( station )) };
 		} catch(e) {
 			console.log( 'missing metadata for ', station );
 		}
 	}
 
-	const date = new Date().toISOString();
+	// Output the station information
 	output( station, data );
 
-//					{ ...stationmeta,
-//				  station: station, type: outputType,
-//				  end: date,
-//				  count: position,
-//				  h3s: new Uint8Array(data.h3out.buffer,0,position*8),
-//				  values: new Uint8Array(data[outputType].buffer,0,position*(byteMultiplier[outputType]||1))});
-//	}
-
-	console.log( station, position, 'cells', bytes, 'bytes' );
+	//
+	return position;
 }
 
 		
