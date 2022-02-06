@@ -316,6 +316,11 @@ async function processPacket( packet ) {
 //
 // Actually serialise the packet into the database after processing the data
 async function packetCallback( station, h3id, altitude, agl, glider, crc, signal ) {
+
+	if( ! signal ) {
+		return;
+	}
+	
 	if( ! stationDbs[station] ) {
 		stationDbs[station] = LevelUP(LevelDOWN(dbPath+'/stations/'+station))
 	}
@@ -356,14 +361,14 @@ async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl,
 		// will just expose a window into existing buffer so we don't have to do any fancy math.
 		// ...[0] is only option available as we only map one entry to each item
 		let existing = mapping(buffer);
-		if( existing.minAlt[0] > altitude ) {
+		if( ! existing.minAlt[0] || existing.minAlt[0] > altitude ) {
 			existing.minAlt[0] = altitude;
 			
 			if( existing.minAltMaxSig[0] < signal ) {
 				existing.minAltMaxSig[0] = signal;
 			}
 		}
-		if( existing.minAltAgl[0] > agl ) {
+		if( ! existing.minAltAgl[0] || existing.minAltAgl[0] > agl ) {
 			existing.minAltAgl[0] = agl;
 		}
 		
