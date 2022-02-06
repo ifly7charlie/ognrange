@@ -20,8 +20,9 @@ import { Nbsp, Icon } from '../lib/react/htmlhelper.js';
 import CoverageMap from '../lib/react/deckgl.js';
 import cookies from 'next-cookies';
 
-import Router from 'next/router'
+import Router from 'next/router';
 
+import _debounce from 'lodash/debounce';
 
 export function IncludeJavascript() {
     return (
@@ -70,7 +71,7 @@ export default function CombinePage( props ) {
     // query because that stops page reload when switching between the
     // classes. If no class is set then assume the first one
     const router = useRouter()
-    let { station, visualisation, mapType } = router.query;
+    let { station, visualisation, mapType, lat, lng, zoom } = router.query;
 	if( mapType ) {
 		props.options.mapType = parseInt(mapType);
 	}
@@ -85,12 +86,13 @@ export default function CombinePage( props ) {
 		}
 		router.push( { pathname: '/', query: { ...router.query, 'station': newStation }}, undefined, { shallow: true });
 	}
+
 	
 	// What the map is looking at
     const [viewport, setViewport] = useState({
-        latitude: 51.87173333,
-        longitude: 	-0.551233333,
-        zoom: 6,
+        latitude: parseFloat(lat)||51.87173333,
+        longitude: parseFloat(lng)||-0.551233333,
+        zoom: parseFloat(zoom)||6,
 		minZoom: 3.5,
 		maxZoom: 10,
         bearing: 0,
@@ -99,6 +101,14 @@ export default function CombinePage( props ) {
 		altitude: 1.5,
         pitch: (! (props.options.mapType % 2)) ? 70 : 0
     });
+
+	// Synchronise it back to the url
+	function setViewportUrl(vs) {
+//		_debounce( (vs) => {
+			router.replace( { pathname: '/', query: { ...router.query, 'lat': (vs.latitude).toFixed(5), 'lng': (vs.longitude).toFixed(5), 'zoom': (vs.zoom).toFixed(1) }}, undefined, { shallow: true,  });
+//		}, 1000 );
+		setViewport(vs)
+	}
 
 	return (
 			<>
@@ -111,7 +121,7 @@ export default function CombinePage( props ) {
 				<div>
 					
  					<CoverageMap station={station} setStation={setStation} visualisation={visualisation}
-								 viewport={viewport} setViewport={setViewport}
+								 viewport={viewport} setViewport={setViewportUrl}
 								 options={props.options} setOptions={props.setOptions}>
 					</CoverageMap>
 				</div>
