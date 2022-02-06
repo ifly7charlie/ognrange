@@ -101,18 +101,21 @@ export default function CombinePage( props ) {
     });
 
 	return (
-        <>
-            <Head>
-                <title>OGN Range (Beta)</title>
-				<meta name='viewport' content='width=device-width, minimal-ui'/>
-				<IncludeJavascript/>
-            </Head>
-            <Menu station={station} setStation={setStation} override={mapType} visualisation={visualisation}/>
- 			<CoverageMap station={station} setStation={setStation} visualisation={visualisation}
-						 viewport={viewport} setViewport={setViewport}
-						 options={props.options} setOptions={props.setOptions}>
-			</CoverageMap>
-		</>
+			<>
+				<Head>
+					<title>OGN Range (Beta)</title>
+					<meta name='viewport' content='width=device-width, minimal-ui'/>
+					<IncludeJavascript/>
+				</Head>
+				<Menu station={station} setStation={setStation} override={mapType} visualisation={visualisation}/>
+				<div>
+					
+ 					<CoverageMap station={station} setStation={setStation} visualisation={visualisation}
+								 viewport={viewport} setViewport={setViewport}
+								 options={props.options} setOptions={props.setOptions}>
+					</CoverageMap>
+				</div>
+			</>
     );
 }
 

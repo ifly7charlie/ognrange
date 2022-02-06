@@ -23,10 +23,16 @@ import { ignoreStation } from '../lib/bin/ignorestation.js'
 
 import h3 from 'h3-js';
 
+import _find from 'lodash.find';
+import _zip from 'lodash.zip';
+import _map from 'lodash.map';
+import _reduce from 'lodash.reduce';
+import _sortby from 'lodash.sortby';
+
 let stations = {};
 let stationDbs = {};
-let globalDb = LevelUP(LevelDOWN('./db/global'))
-let statusDb = LevelUP(LevelDOWN('./db/status'))
+let globalDb = undefined;
+let statusDb = undefined;
 
 // APRS connection
 let connection = {};
@@ -43,25 +49,37 @@ import { PassThrough } from 'stream';
 
 import { makeTable, tableFromArrays, RecordBatchWriter } from 'apache-arrow';
 
-// For the database we use a 'C structure', it's already compressed so
-// not so useful using protobuf
-import Struct from 'struct';
-let Record = Struct()
-	.word16Ule('minAltAgl')
-	.word16Ule('minAlt')
-	.word8Ule('minAltMaxSig')
-	.word32Ule('sumSig')
-	.word32Ule('count')
-	.word8Ule('maxSig')
-	.word32Ule('sumCrc')
+const numberOfStationsToTrack = 20;
+
+let dbPath = './db/';
+let outputPath = './public/data/';
+
+//
+const sabbuffer = new SharedArrayBuffer(2);
+const nextStation = new Uint16Array(sabbuffer);
 
 // Set up background fetching of the competition
 async function main() {
+
+	// Load the configuration from a file
 	dotenv.config({ path: '.env.local' })
+
+	dbPath = process.env.DB_PATH||dbPath;
+	outputPath = process.env.OUTPUT_PATH||outputPath;
+
+	console.log( `Configuration loaded DB@${dbPath} Output@${outputPath}` );
+
+	// Make sure our paths exist
 	try { 
-		mkdirSync('./db/stations', {recursive:true});
+		mkdirSync(dbPath+'stations', {recursive:true});
+		mkdirSync(outputPath, {recursive:true});
 	} catch(e) {};
-	startAprsListener();
+
+	// Open our databases
+	globalDb = LevelUP(LevelDOWN(dbPath+'global'))
+	statusDb = LevelUP(LevelDOWN(dbPath+'status'))
+	
+	await startAprsListener();
 }
 
 main()
@@ -69,7 +87,7 @@ main()
 
 //
 // Connect to the APRS Server
-function startAprsListener( m = undefined ) {
+async function startAprsListener( m = undefined ) {
 
 	// In case we are using pm2 metrics
 	metrics = m;
@@ -130,6 +148,23 @@ function startAprsListener( m = undefined ) {
         connection.connect();
     });
 
+	// Load the status
+	async function loadStationStatus(statusdb) {
+		try { 
+			for await ( const [key,value] of statusdb.iterator()) {
+				stations[key] = JSON.parse(''+value)
+			}
+		} catch(e) {
+			console.log('oops',e)
+		}
+		
+		const nextid = (_reduce( stations, (highest,i) => { return highest < (i.id||0) ? i.id : highest }, 0 )||0)+1;
+		console.log( 'next id', nextid );
+		return nextid;
+	}
+	console.log( 'loading station status' );
+	Atomics.store(nextStation, 0, (await loadStationStatus(statusDb))||1)
+	
     // Start the APRS connection
     connection.connect();
 
@@ -162,7 +197,7 @@ function startAprsListener( m = undefined ) {
 
 //
 // collect points, emit to competition db every 30 seconds
-function processPacket( packet ) {
+async function processPacket( packet ) {
 
     // Count this packet into pm2
     metrics?.ognPerSecond?.mark();
@@ -228,7 +263,7 @@ function processPacket( packet ) {
 	if( values ) {
 		const strength = Math.round(values[1]);
 		const crc = parseInt(values[2]);
-		packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, altitude, glider, crc, strength );
+		await packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, altitude, glider, crc, strength );
 	}
 	
     // Enrich with elevation and send to everybody, this is async
@@ -241,62 +276,137 @@ function processPacket( packet ) {
 
 //
 // Actually serialise the packet into the database after processing the data
-function packetCallback( sender, h3id, altitude, agl, glider, crc, signal ) {
-	if( ! stationDbs[sender] ) {
-		stationDbs[sender] = LevelUP(LevelDOWN('./db/stations/'+sender))
+async function packetCallback( station, h3id, altitude, agl, glider, crc, signal ) {
+	if( ! stationDbs[station] ) {
+		stationDbs[station] = LevelUP(LevelDOWN(dbPath+'/stations/'+station))
 	}
 	
-	mergeDataIntoDatabase( sender, stationDbs[sender], h3id, altitude, agl, crc, signal );
-	mergeDataIntoDatabase( 'global', globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal );
+	// Figure out which station we are - this is synchronous though don't really
+	// understand why the put can't happen in the background
+	let stationid = undefined;
+	if( station ) {
+		if( ! stations[ station ] ) {
+			stations[station]={}
+		}
+		
+		if( 'id' in stations ) {
+			stationid = stations[station].id;
+		}
+		else {
+			stationid = stations[station].id = Atomics.add(nextStation, 0, 1);
+			await statusDb.put( station, JSON.stringify(stations[station]) );
+		}
+	}
+	await mergeDataIntoDatabase( 0, 0, stationDbs[station], h3id, altitude, agl, crc, signal );
+	await mergeDataIntoDatabase( station, stationid, globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
 }
 
-function mergeDataIntoDatabase( station, db, h3, altitude, agl, crc, signal ) {
-
-	let record = Record.clone();
-
-	db.get( h3 )
-		.then( (value) => {
-			record._setBuff( value );
-			let existing = record.fields;
-			if( existing.minAlt > altitude ) {
-				existing.minAlt = altitude;
-				
-				if( existing.minAltMaxSig < signal ) {
-					existing.minAltMaxSig = signal;
-				}
+const normalLength = 3*4+3*2+2;
+function mapping(buffer) {
+		const extraStationSlots = (buffer.byteLength - normalLength)/6;
+												  
+		return {
+			count: new Uint32Array(buffer, 0*4,1),
+			sumSig: new Uint32Array(buffer,1*4,1),
+			sumCrc: new Uint32Array(buffer,2*4,1),
+			minAltAgl: new Uint16Array(buffer,3*4,1),
+			minAlt: new Uint16Array(buffer,3*4+1*2,1),
+			minAltMaxSig: new Uint8Array(buffer,3*4+2*2,1),
+			maxSig: new Uint8Array(buffer,3*4+3*2+1,1),
+			extra: ! extraStationSlots ? undefined : {
+				number: extraStationSlots,
+				stations: new Uint16Array( buffer, normalLength, extraStationSlots ),
+				count: new Uint32Array( buffer, normalLength + extraStationSlots*2, extraStationSlots )
 			}
-			if( existing.minAltAgl > agl ) {
-				existing.minAltAgl = agl;
-			}
+		}
+}
+
+async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl, crc, signal ) {
+
+	function update(buffer) {
+		// We may change the output if we extend it
+		let outputBuffer = buffer;
+
+		// Lets get the structured data (this is a bit of a hack but TypedArray on a buffer
+		// will just expose a window into existing buffer so we don't have to do any fancy math.
+		// ...[0] is only option available as we only map one entry to each item
+		let existing = mapping(buffer);
+		if( existing.minAlt[0] > altitude ) {
+			existing.minAlt[0] = altitude;
 			
-			if( existing.maxSig < signal ) {
-				existing.maxSig = signal;
+			if( existing.minAltMaxSig[0] < signal ) {
+				existing.minAltMaxSig[0] = signal;
 			}
-			
-			existing.sumSig += signal;
-			existing.sumCrc += crc;
-			existing.count ++;
-			db.put( h3, record.buffer() );
-		})
-		.catch( (err) => {
-			record.allocate();
-			let existing = record.fields;
-			existing.minAlt = altitude;
-			existing.minAltMaxSig = signal;
-			existing.minAltAgl = agl;
-			existing.maxSig = signal;
-			existing.sumSig = signal;
-			existing.sumCrc = crc;
-			existing.count  = 1;
-			db.put( h3, record.buffer() );
+		}
+		if( existing.minAltAgl[0] > agl ) {
+			existing.minAltAgl[0] = agl;
+		}
+		
+		if( existing.maxSig[0] < signal ) {
+			existing.maxSig[0] = signal;
+		}
+		
+		existing.sumSig[0] += signal;
+		existing.sumCrc[0] += crc;
+		existing.count[0] ++;
 
-			// count distinct rows for the station
-			if( stations[ station ] ) {
-				stations[ station ].cells++;
+		// For global squares we also maintain a station list
+		// we do this by storing a the stationid and count for each one that hits the
+		// square, 
+		// - note this will occasionally invalidate the existing structure
+		// as it allocates a new buffer if more space is needed.
+		// It should probably sort the list as well
+		// but...
+		if( stationid && existing.extra ) {
+			let updateIdx = _find(existing.extra.stations,(f)=>(f == stationid));
+			if( updateIdx !== undefined ) {
+				existing.extra.count[updateIdx]++;
 			}
 			else {
-				stations[station] = { cells:1 }
+				// Look for empty slot, if we find it then we update,
+				let updateIdx = _find(existing.extra.stations,(f)=>(f == 0));
+				if( updateIdx !== undefined ) {
+					existing.extra.stations[updateIdx] = stationid;
+					existing.extra.count[updateIdx] = 1;
+				}
+				else {
+					// New buffer and copy into it, we will expand by two stations at a time
+					// it's not generous but should be ok
+					let nb = new Uint8Array( buffer.byteLength + 12 );
+					nb.set( buffer, 0 );
+
+					// We know where it goes so just put the data directly there rather
+					// than remapping the whole data structure
+					let s = new Uint16Array( nb, buffer.byteLength, 1 );
+					let c = new Uint32Array( nb, buffer.byteLength+2, 1 );
+					s[0] = stationid;
+					c[0] = 1;
+
+					console.log(h3,station,stationid,'expand',nb.byteLength)
+					//
+					outputBuffer = nb.buffer;
+				}
 			}
+		}
+
+		// Save back to db, either original or updated buffer
+//		console.log( h3, db.db.location, station, stationid,  'put', outputBuffer.constructor.name, outputBuffer.byteLength);
+		db.put( h3, new Buffer(outputBuffer) );
+	}
+
+
+	db.get( h3 )
+	  .then( (value) => {
+//		  console.log( h3, db.db.location, station, stationid, 'update', value.constructor.name, value.byteLength);
+		  update( value.buffer );
+	  })
+	  .catch( (err) => {
+
+		  // Allocate a new buffer to update and then set it in the database -
+		  // if we have a station id then twe will make sure we reserve some space for it
+		  let buffer = new Uint8Array( normalLength + (stationid ? 12 : 0) );
+		  update( buffer.buffer );
+//		  console.log( h3, db.db.location, station, stationid, 'insert',buffer.buffer.constructor.name, buffer.buffer.byteLength );
 		})
 	
 }
@@ -312,9 +422,9 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 	let length = 500;
 	let position = 0;
 
-	const types = [ 'minAgl', 'minAlt', 'minAltSig', 'avgSig', 'maxSig', 'avgCrc', 'count' ];
+	const types = [ 'minAgl', 'minAlt', 'minAltSig', 'avgSig', 'maxSig', 'avgCrc', 'count', 'stations' ];
 	const byteMultiplier = { count: 2 };
-	const lengthMultiplier = { h3out: 2 };
+	const lengthMultiplier = { h3out: 2, stations:numberOfStationsToTrack };
 
 	let data = { 
 		h3out: new Uint32Array( length*2 ),
@@ -324,31 +434,37 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 		avgSig: new Uint8Array( length ),
 		maxSig: new Uint8Array( length ),
 		avgCrc: new Uint8Array( length ),
-		count: new Uint32Array( length )
+		count: new Uint32Array( length ),
+		stations: station == 'global' ? new Uint16Array( length*numberOfStationsToTrack ) : undefined
 	};
 
 
-//	console.log( inputdb.approximateSize
-	let record = Record.clone();
-
 	// Go through all the keys
 	for await ( const [key,value] of inputdb.iterator()) {
-		record._setBuff( value );
-		let c = record.fields;
+		let c = mapping(value.buffer);
+//		console.log( station, 'iterate', value.buffer.constructor.name, value.buffer.byteLength );
 
 		// Save them in the output arrays
 		const lh = h3.h3IndexToSplitLong(''+key);
 		data.h3out[position*2] = lh[0];
 		data.h3out[position*2+1] = lh[1];
-		data.minAgl[position] = c.minAltAgl;
-		data.minAlt[position] = c.minAlt;
-		data.minAltSig[position] = c.minAltMaxSig;
-		data.maxSig[position] = c.maxSig;
-		data.count[position] = c.count;
+		data.minAgl[position] = c.minAltAgl[0];
+		data.minAlt[position] = c.minAlt[0];
+		data.minAltSig[position] = c.minAltMaxSig[0];
+		data.maxSig[position] = c.maxSig[0];
+		data.count[position] = c.count[0];
 		
 		// Calculated ones
-		data.avgSig[position] = Math.round(c.sumSig / c.count);
-		data.avgCrc[position] = Math.round(c.sumCrc / c.count);
+		data.avgSig[position] = Math.round(c.sumSig[0] / c.count[0]);
+		data.avgCrc[position] = Math.round(c.sumCrc[0] / c.count[0]);
+
+		if( c.extra ) {
+			let zip = _sortby( _zip( c.extra.stations, c.extra.count ), (s) => s[1] == 0 ? undefined : s[1] );
+//			console.log( zip, c.extra.stations, c.extra.count );
+			let o = new Uint16Array(data.stations.buffer,position*20,numberOfStationsToTrack);
+			o.set( _map(zip, (f) => f[0]));
+//			console.log(o)
+		}
 
 		// And make sure we don't run out of space
 		position++;
@@ -359,22 +475,26 @@ async function produceOutputFiles( station, inputdb, metadata ) {
 			}
 		}
 	}
+				
 
 	let bytes = 0;
 	// Now we have all the data we need we put each one into protobuf and serialise it to disk
 	function output( name, data ) {
+		const stationsInject = data.stations ? { stations: data.stations } : {};
+		
 		const outputTable = makeTable({
 			h3: new Uint32Array(data.h3out.buffer,0,position*2),
 			minAgl: data.minAgl,
 			minAlt: data.minAlt,
 			minAltSig: data.minAltSig,
 			maxSig: data.maxSig,
-			c: data.count,
+			count: data.count,
 			avgSig: data.avgSig,
-			avgCrc: data.avgCrc
+			avgCrc: data.avgCrc,
+			...stationsInject
 		});
 
-		console.log( name, 'bl:', outputTable.byteLength )
+//		console.log( name, 'bl:', outputTable.byteLength )
 
 		const pt = new PassThrough( { objectMode: true } )
 		const result = pt
