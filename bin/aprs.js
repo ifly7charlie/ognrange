@@ -35,9 +35,17 @@ import { Lock } from 'lock'
 let lock = Lock();
 
 let stations = {};
-let stationDbs = {};
 let globalDb = undefined;
 let statusDb = undefined;
+
+import LRU from 'lru-cache'
+
+const options = { max: process.env.MAX_STATION_DBS||800,
+				  length: function (n, key) { return 1 },
+				  dispose: function (key, n) { console.log( "flushed "+key+" from cache" ); },
+				  updateAgeOnGet: true, stale: true,
+				  maxAge: (process.env.STATION_DB_EXPIRY_HOURS||4) * 3600 * 1000 }
+, stationDbCache = new LRU(options)
 
 
 //
@@ -112,15 +120,19 @@ main()
 //
 // Dump all of the output files that need to be dumped
 async function produceOutputFiles() {
-	console.log( `producing output files for ${Object.keys(statusDb).length} stations + global ` )
+	console.log( `producing output files for ${stationDbCache.length} stations + global ` )
 	
 	// each of the stations
-	for( const station of Object.keys(stationDbs) ) {
-		await produceOutputFile( station, stationDbs[station] );
-	}
+	stationDbCache.forEach( async function (db,key) {
+		await produceOutputFile( key, db );
+	});
+		
 	// And the global output
 	await produceStationFile( statusDb );
 	await produceOutputFile( 'global', globalDb );
+
+	// Flush old database from the cache
+	stationDbCache.prune();
 }
 
 //
@@ -184,9 +196,11 @@ async function startAprsListener( m = undefined ) {
 
     // Failed to connect
     connection.on('error', (err) => {
-        console.log('Error: ' + err);
-        connection.disconnect();
-        connection.connect();
+		if( ! connection.exiting ) {
+			console.log('Error: ' + err);
+			connection.disconnect();
+			connection.connect();
+		}
     });
 
 	// Load the status
@@ -226,7 +240,7 @@ async function startAprsListener( m = undefined ) {
             console.log( "failed APRS connection, retrying" );
             connection.disconnect( () => { connection.connect() } );
         }
-		console.log( `elevation cache: ${getCacheSize()}, stations seen: ${nextStation-1}, openDbs: ${Object.keys(stationDbs).length+2}, packets: ${packetCount}` );
+		console.log( `elevation cache: ${getCacheSize()}, stations seen: ${nextStation-1}, openDbs: ${stationDbCache.length+2}, packets: ${packetCount}` );
         connection.valid = false;
 	}, 2*60*1000));
 
@@ -354,8 +368,9 @@ async function processPacket( packet ) {
 async function packetCallback( station, h3id, altitude, agl, glider, crc, signal ) {
 
 	// Open the database, do this first as takes a bit of time
-	if( ! stationDbs[station] ) {
-		stationDbs[station] = LevelUP(LevelDOWN(dbPath+'/stations/'+station))
+	let stationDb = stationDbCache.get(station);
+	if( ! stationDb ) {
+		stationDbCache.set(station, stationDb = LevelUP(LevelDOWN(dbPath+'/stations/'+station)))
 	}
 
 	// Find the id for the station or allocate
@@ -365,7 +380,7 @@ async function packetCallback( station, h3id, altitude, agl, glider, crc, signal
 	stations[station].clean = false;
 
 	// Merge into both the station db (0,0) and the global db with the stationid we allocated
-	mergeDataIntoDatabase( 0, 0, stationDbs[station], h3id, altitude, agl, crc, signal );
+	mergeDataIntoDatabase( 0, 0, stationDb, h3id, altitude, agl, crc, signal );
 	mergeDataIntoDatabase( station, stationid, globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
 }
 

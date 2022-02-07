@@ -19,6 +19,43 @@ The `pages/api` directory is mapped to `/api/*`. Files in this directory are tre
 ## Learn More
 
 
+## configuration
+
+config file is .env.local for aprs collector, for the front end it follows nextjs naming convention
+
+````
+# url of website
+NEXT_PUBLIC_SITEURL=
+
+# mapbox token, used for elevation tiles on server and for the map on the client
+NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=
+
+# where to store the accumulator databases
+DB_PATH=/Users/melissa/ognrange/db/
+
+# where to output the files used to render the map, this directory should be served
+# as /data/ on the webserver, or set NEXT_PUBLIC_DATA_URL to point to the correct
+# location if it's a different one from the server
+OUTPUT_PATH=/Users/melissa/ognrange/output/
+NEXT_PUBLIC_DATA_URL=
+
+# control the elevation tile cache, note tiles are not evicted on expiry 
+# so it will fill to MAX before anything happens
+MAX_ELEVATION_TILES=7200
+ELEVATION_TILE_EXPIRY_HOURS=8
+
+# control how precise the ground altitude is, difficult balance for mountains..
+# see https://docs.mapbox.com/help/glossary/zoom-level/,
+# resolution 12 gives 14m per pixel at 40 degrees which should be good enough
+ELEVATION_TILE_RESOLUTION=12
+
+# control the database handle caching for the accumulators
+# by default we will keep a few hundred open at a time, unlike tile cache
+# dbs will be flushed if they expire. (theory being that flying windows
+# might be short and less open is less risk of problems)
+MAX_STATION_DBS=800
+STATION_DB_EXPIRY_HOURS=4
+````
 
 
 ## rebuilding protobuf
