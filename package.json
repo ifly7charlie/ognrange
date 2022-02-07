@@ -8,11 +8,8 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@loaders.gl/arrow": "^3.1.7",
-    "@loaders.gl/core": "^3.1.7",
-    "@loaders.gl/gltf": "^3.1.7",
-    "@loaders.gl/images": "^3.1.7",
-    "@loaders.gl/json": "^3.1.7",
+    "@loaders.gl/arrow": "^2.0",
+    "@loaders.gl/json": "^2.0",
     "@mapbox/tilebelt": "^1.0.2",
     "@turf/turf": "^6.5.0",
     "apache-arrow": "^7.0.0",
@@ -26,6 +23,7 @@
     "levelup": "^5.1.1",
     "lock": "^1.1.0",
     "lodash.chunk": "^4.2.0",
+    "lodash.debounce": "^4.0.8",
     "lodash.find": "^4.6.0",
     "lodash.findindex": "^4.6.0",
     "lodash.keyby": "^4.6.0",
