@@ -2,27 +2,17 @@ import next from 'next'
 import { useRouter } from 'next/router'
 import Head from 'next/head'
 
-// What do we need to render the bootstrap part of the page
-import Container from 'react-bootstrap/Container';
-import Row from 'react-bootstrap/Row';
-import Col from 'react-bootstrap/Col';
-import Collapse from 'react-bootstrap/Collapse';
-import Navbar from 'react-bootstrap/Navbar'
-import Nav from 'react-bootstrap/Nav'
-import NavDropdown from 'react-bootstrap/NavDropdown'
-
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 
 // Helpers for loading contest information etc
 import { Nbsp, Icon } from '../lib/react/htmlhelper.js';
 
 // And connect to websockets...
 import CoverageMap from '../lib/react/deckgl.js';
-import cookies from 'next-cookies';
 
 import Router from 'next/router';
 
-import _debounce from 'lodash/debounce';
+import _debounce from 'lodash.debounce';
 
 export function IncludeJavascript() {
     return (
@@ -33,35 +23,6 @@ export function IncludeJavascript() {
     );
 }
 
-
-// Requires: classes, link, contestname, contestdates
-
-export function Menu( props ) {
-
-	// Try and extract a short form of the name, only letters and spaces stop at first number
-    return (
-        <>
-            <Navbar bg="light" fixed="top">
-                <Nav fill variant="tabs" defaultActiveKey={props.vc} style={{width:'100%'}}>
-					<Nav.Item key="sspot" style={{paddingTop:0,paddingBottom:0}}>
-						<Nav.Link href="http://glidernet.org" className="d-md-none">
-							OGN Range (Beta)
-						</Nav.Link>
-						<Nav.Link href='#' className="d-none d-md-block"  style={{paddingTop:0,paddingBottom:0}}>
-							{props.station||'All Stations'}
-						</Nav.Link>
-					</Nav.Item>
-					<Nav.Item key="settings">
-						<Nav.Link href='#' key='navlinksettings' eventKey='settings'
-								  onClick={() => { Router.push(props.override ? '/settings?mapType='+props.override : '/settings', undefined, {shallow:true}); }}>
-						</Nav.Link>
-					</Nav.Item>
-				</Nav>
-            </Navbar>
-            <br style={{clear:'both'}}/>
-        </>
-    );
-}
 
 //
 // Main page rendering :)
@@ -90,10 +51,10 @@ export default function CombinePage( props ) {
 	
 	// What the map is looking at
     const [viewport, setViewport] = useState({
-        latitude: parseFloat(lat)||51.87173333,
-        longitude: parseFloat(lng)||-0.551233333,
-        zoom: parseFloat(zoom)||6,
-		minZoom: 3.5,
+        latitude: parseFloat(lat||0)||51.87173333,
+        longitude: parseFloat(lng||0)||-0.551233333,
+        zoom: parseFloat(zoom||0)||6,
+		minZoom: 2.5,
 		maxZoom: 10,
         bearing: 0,
 		minPitch: 0,
@@ -102,14 +63,20 @@ export default function CombinePage( props ) {
         pitch: (! (props.options.mapType % 2)) ? 70 : 0
     });
 
+	// Debounced updating of the URL when the viewport is changed, this is a performance optimisation
+	function updateUrl(existing,vs) {
+		router.replace( { pathname: '/',
+						  query: { ...existing,
+								   'lat': (vs.latitude).toFixed(5), 'lng': (vs.longitude).toFixed(5), 'zoom': (vs.zoom).toFixed(1) }
+		}, undefined, { shallow: true,  });
+	}
+	const delayedUpdate = useRef(_debounce((existing,vs) => updateUrl(existing,vs), 300)).current; 
+	
 	// Synchronise it back to the url
 	function setViewportUrl(vs) {
-//		_debounce( (vs) => {
-			router.replace( { pathname: '/', query: { ...router.query, 'lat': (vs.latitude).toFixed(5), 'lng': (vs.longitude).toFixed(5), 'zoom': (vs.zoom).toFixed(1) }}, undefined, { shallow: true,  });
-//		}, 1000 );
+		delayedUpdate(router.query,vs)
 		setViewport(vs)
 	}
-
 	return (
 			<>
 				<Head>
@@ -117,18 +84,17 @@ export default function CombinePage( props ) {
 					<meta name='viewport' content='width=device-width, minimal-ui'/>
 					<IncludeJavascript/>
 				</Head>
-				<Menu station={station} setStation={setStation} override={mapType} visualisation={visualisation}/>
+
 				<div>
-					
  					<CoverageMap station={station} setStation={setStation} visualisation={visualisation}
 								 viewport={viewport} setViewport={setViewportUrl}
 								 options={props.options} setOptions={props.setOptions}>
 					</CoverageMap>
+					
 				</div>
 			</>
     );
 }
-
 export async function getServerSideProps(context) {
   return {
       props: { options: { mapType: 3 }}
