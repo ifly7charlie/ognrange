@@ -283,7 +283,7 @@ async function startAprsListener( m = undefined ) {
 		const h3delta = h3length - lastH3length;
 		const h3expired = flushStats.expired;
 		const h3written = flushStats.written;
-		console.log( `elevation cache: ${getCacheSize()}, openDbs: ${stationDbCache.length+2},  packets: ${packetCount} ${pps}/s` );
+		console.log( `elevation cache: ${getCacheSize()}, openDbs: ${stationDbCache.size+2},  packets: ${packetCount} ${pps}/s` );
 		console.log( `total stations: ${nextStation-1}, seen stations ${Object.keys(stations).length}` );
 		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta/h3length).toFixed(0)}%: `,
 					 ` expired ${h3expired} (${(h3expired*100/h3length).toFixed(0)}%), written ${h3written} (${(h3written*100/h3length).toFixed(0)}%)`,
