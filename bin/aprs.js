@@ -74,6 +74,32 @@ const numberOfStationsToTrack = 20;
 let dbPath = './db/';
 let outputPath = './public/data/';
 
+// shortcuts so regexp compiled once
+const reExtractDb = / ([0-9.]+)dB /
+const reExtractCrc = / ([0-9])c /
+
+// Cache so we aren't constantly reading/writing from the db
+let dirtyH3s = new Map();
+let lastH3update = new Map();
+let lastPacketCount = 0;
+let lastPacketsInInterval = 0;
+let lastH3length = 0;
+
+// APRS Server Keep Alive
+const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD||2 * 60 * 1000;
+
+// Cache control - we cache the datablocks by station and h3 to save us needing
+// to read/write them from/to the DB constantly. Note that this can use quite a lot
+// of memory, but is a lot easier on the computer
+//
+// - flush period is how long they can remain in memory without being written
+// - expirytime is how long they can remain in memory without being purged. If it
+//   is in memory then it will be used rather than reading from the db.
+// 
+const h3CacheFlushPeriod = (process.env.H3_CACHE_FLUSH_PERIOD||5)*60*1000;
+const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME||14)*60*1000;
+
+
 // We need to use a protected data structure to generate ids
 // for the station ID. This allows us to use atomics, will also
 // support clustering if we need it
@@ -119,6 +145,7 @@ async function handleExit(signal) {
 	console.log(`${signal}: flushing data`)
 	connection.exiting = true;
 	connection.disconnect();
+	flushDirtyH3s();
 	await produceOutputFiles();
 	stationDbCache.forEach( async function (db,key) {
 		db.close();
@@ -223,16 +250,15 @@ async function startAprsListener( m = undefined ) {
     // Start the APRS connection
     connection.connect();
 
-	// And every 2 minutes we need to confirm the APRS
+	// And every (2) minutes we need to confirm the APRS
 	// connection has had some traffic
 	intervals.push(setInterval( function() {
-
 		try {
 			// Send APRS keep alive or we will get dumped
 			connection.sendLine(`# ${CALLSIGN} ${process.env.NEXT_PUBLIC_WEBSOCKET_HOST}`);
 		} catch(e) {
 			console.log( `exception ${e} in sendLine status` );
-			connection.valud = false;
+			connection.valid = false;
 		}
 		
         // Re-establish the APRS connection if we haven't had anything in
@@ -240,9 +266,37 @@ async function startAprsListener( m = undefined ) {
             console.log( "failed APRS connection, retrying" );
             connection.disconnect( () => { connection.connect() } );
         }
-		console.log( `elevation cache: ${getCacheSize()}, stations seen: ${nextStation-1}, openDbs: ${stationDbCache.length+2}, packets: ${packetCount}` );
         connection.valid = false;
-	}, 2*60*1000));
+	}, aprsKeepAlivePeriod ));
+
+	// We also need to flush our h3 cache to disk on a regular basis
+	// this is used as an opportunity to display some statistics
+	intervals.push(setInterval( async function() {
+
+		// Flush the cache
+		const flushStats = await flushDirtyH3s();
+
+		// Report some status on that
+		const packets = (packetCount - lastPacketCount);
+		const pps = (packets/(h3CacheFlushPeriod/1000)).toFixed(1);
+		const h3length = flushStats.total;
+		const h3delta = h3length - lastH3length;
+		const h3expired = flushStats.expired;
+		const h3written = flushStats.written;
+		console.log( `elevation cache: ${getCacheSize()}, openDbs: ${stationDbCache.length+2},  packets: ${packetCount} ${pps}/s` );
+		console.log( `total stations: ${nextStation-1}, seen stations ${Object.keys(stations).length}` );
+		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta/h3length).toFixed(0)}%: `,
+					 ` expired ${h3expired} (${(h3expired*100/h3length).toFixed(0)}%), written ${h3written} (${(h3written*100/h3length).toFixed(0)}%)`,
+					 ` ${((h3written*100)/packets).toFixed(1)}% ${(h3written/(h3CacheFlushPeriod/1000)).toFixed(1)}/s ${(packets/h3written).toFixed(0)}:1`,
+	); 
+
+		// purge and flush H3s to disk
+		// carry forward state for stats next time round
+		lastPacketCount = packetCount;
+		lastH3length = h3length;
+		lastPacketsInInterval = packets;
+
+	}, h3CacheFlushPeriod ));
 
 	// Make sure we have these from existing DB as soon as possible
 	produceOutputFiles();
@@ -288,12 +342,16 @@ async function processPacket( packet ) {
 
     // Flarm ID we use is last 6 characters, check if OGN tracker or regular flarm
     const flarmId = packet.sourceCallsign.slice( packet.sourceCallsign.length - 6 );
-	const ognTracker = (packet.sourceCallsign.slice( 0, 3 ) == 'OGN');
+	const pawTracker = (packet.sourceCallsign.slice( 0, 3 ) == 'PAW');
 
 	// Lookup the altitude adjustment for the 
-    const sender = packet.digipeaters?.pop()?.callsign||'unknown';
+	const sender = packet.digipeaters?.pop()?.callsign||'unknown';
 
 	if( ignoreStation( sender ) ) {
+		return;
+	}
+	if( packet.destCallsign == 'OGNTRK' && packet.digipeaters?.[0]?.callsign?.slice(0,2) != 'qA' ) {
+		console.log( 'TRKREPEAT:', packet.origpacket );
 		return;
 	}
 
@@ -338,23 +396,31 @@ async function processPacket( packet ) {
         glider.lastTime = packet.timestamp;
     }
 
-	// Look for signal strength and checksum - we will ignore any packet without these
-	const values = packet.comment.match( /([0-9.]+)dB ([0-9])e/ );
-	if( values ) {
-		const strength = Math.round(values[1]);
-		const crc = parseInt(values[2]);
+	// Look for signal strength and checksum - we will ignore any packet without a signal strength
+	// sometimes this happens to be missing and other times it happens because it is reported as 0.0
+	const rawStrength = (packet.comment.match(reExtractDb)||[0,0])[1];
+	const strength = Math.round(parseFloat(rawStrength));
 
-		// If we have no signal strength then we'll ignore the packet... don't know where these
-		// come from or why they exist...
-		if( strength > 0 ) {
+	// crc may be absent, if it is then it's a 0
+	const crc = parseInt((packet.comment.match(reExtractCrc)||[0,0])[1]);
 
-			// Enrich with elevation and send to everybody, this is async
-			getElevationOffset( packet.latitude, packet.longitude,
-								async (gl) => {
-									const agl = Math.round(Math.max(altitude-gl,0));
-									packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, agl, glider, crc, strength );
-			});
+	// If we have no signal strength then we'll ignore the packet... don't know where these
+	// come from or why they exist...
+	if( strength > 0 ) {
+
+
+		// Can't use these as we don't actually know what they are so ignore them for now
+		if( rawStrength == 20.0 && pawTracker ) {
+//			console.log( pawTracker?'ignoring paw tracker':'??', packet.origpacket );
+			return;
 		}
+
+		// Enrich with elevation and send to everybody, this is async
+		getElevationOffset( packet.latitude, packet.longitude,
+							async (gl) => {
+								const agl = Math.round(Math.max(altitude-gl,0));
+								packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, agl, glider, crc, strength );
+		});
 	}
 }
 
@@ -366,6 +432,7 @@ async function packetCallback( station, h3id, altitude, agl, glider, crc, signal
 	let stationDb = stationDbCache.get(station);
 	if( ! stationDb ) {
 		stationDbCache.set(station, stationDb = LevelUP(LevelDOWN(dbPath+'/stations/'+station)))
+		stationDb.ognInitialTS = Date.now();
 	}
 
 	// Find the id for the station or allocate
@@ -375,8 +442,10 @@ async function packetCallback( station, h3id, altitude, agl, glider, crc, signal
 	stations[station].clean = false;
 
 	// Merge into both the station db (0,0) and the global db with the stationid we allocated
-	mergeDataIntoDatabase( 0, 0, stationDb, h3id, altitude, agl, crc, signal );
-	mergeDataIntoDatabase( station, stationid, globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
+	// we don't pass stationid into the station specific db because there only ever is one
+	// it gets used to build the list of stations that can see the cell
+	mergeDataIntoDatabase( 0,          station, stationDb, h3id, altitude, agl, crc, signal );
+	mergeDataIntoDatabase( stationid, 'global', globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
 }
 
 //
@@ -401,120 +470,242 @@ function mapping(buffer) {
 		}
 }
 
+function updateStationBuffer(stationid, dbname, h3, buffer, altitude, agl, crc, signal, release) {
+	
+	// We may change the output if we extend it
+	let outputBuffer = buffer;
+	
+	// Lets get the structured data (this is a bit of a hack but TypedArray on a buffer
+	// will just expose a window into existing buffer so we don't have to do any fancy math.
+	// ...[0] is only option available as we only map one entry to each item
+	let existing = mapping(buffer);
+	if( ! existing.minAlt[0] || existing.minAlt[0] > altitude ) {
+		existing.minAlt[0] = altitude;
+		
+		if( existing.minAltMaxSig[0] < signal ) {
+			existing.minAltMaxSig[0] = signal;
+		}
+	}
+	if( ! existing.minAltAgl[0] || existing.minAltAgl[0] > agl ) {
+		existing.minAltAgl[0] = agl;
+	}
+	
+	if( existing.maxSig[0] < signal ) {
+		existing.maxSig[0] = signal;
+	}
+	
+	existing.sumSig[0] += signal;
+	existing.sumCrc[0] += crc;
+	existing.count[0] ++;
+
+	// For global squares we also maintain a station list
+	// we do this by storing a the stationid and count for each one that hits the
+	// square, 
+	// - note this will occasionally invalidate the existing structure
+	// as it allocates a new buffer if more space is needed.
+	// It should probably sort the list as well
+	// but...
+	if( stationid && existing.extra ) {
+		
+		let updateIdx = _findindex(existing.extra.stations,(f)=>(f == stationid));
+		if( updateIdx >= 0 ) {
+			existing.extra.count[updateIdx]++;
+		}
+		else {
+			// Look for empty slot, if we find it then we update,
+			updateIdx = _findindex(existing.extra.stations,(f)=>(f == 0));
+			if( updateIdx >= 0 ) {
+				existing.extra.stations[updateIdx] = stationid;
+				existing.extra.count[updateIdx] = 1;
+			}
+			else {
+				// New buffer and copy into it, we will expand by two stations at a time
+				// it's not generous but should be ok
+				let nb = new Uint8Array( buffer.byteLength + 12 );
+				nb.set( buffer, 0 );
+
+				// We know where it goes so just put the data directly there rather
+				// than remapping the whole data structure
+				let s = new Uint16Array( nb, buffer.byteLength, 1 );
+				let c = new Uint32Array( nb, buffer.byteLength+4, 1 );
+				s[0] = stationid;
+				c[0] = 1;
+
+				//
+				outputBuffer = nb.buffer;
+			}
+		}
+	}
+
+	// Save back to db, either original or updated buffer
+	//		db.put( h3, Buffer.from(outputBuffer), {}, release );
+	const cacheKey = dbname+','+h3;
+	lastH3update.set(cacheKey, Date.now());
+	dirtyH3s.set(cacheKey,Buffer.from(outputBuffer));
+	release();
+}
+
 //
 // We store the database records as binary bytes - in the format described in the mapping() above
 // this reduces the amount of storage we need and means we aren't constantly parsing text
 // and printing text.
-async function mergeDataIntoDatabase( station, stationid, db, h3, altitude, agl, crc, signal ) {
-
-	function update(buffer, release) {
-		// We may change the output if we extend it
-		let outputBuffer = buffer;
-
-		// Lets get the structured data (this is a bit of a hack but TypedArray on a buffer
-		// will just expose a window into existing buffer so we don't have to do any fancy math.
-		// ...[0] is only option available as we only map one entry to each item
-		let existing = mapping(buffer);
-		if( ! existing.minAlt[0] || existing.minAlt[0] > altitude ) {
-			existing.minAlt[0] = altitude;
-			
-			if( existing.minAltMaxSig[0] < signal ) {
-				existing.minAltMaxSig[0] = signal;
-			}
-		}
-		if( ! existing.minAltAgl[0] || existing.minAltAgl[0] > agl ) {
-			existing.minAltAgl[0] = agl;
-		}
-		
-		if( existing.maxSig[0] < signal ) {
-			existing.maxSig[0] = signal;
-		}
-		
-		existing.sumSig[0] += signal;
-		existing.sumCrc[0] += crc;
-		existing.count[0] ++;
-
-		// For global squares we also maintain a station list
-		// we do this by storing a the stationid and count for each one that hits the
-		// square, 
-		// - note this will occasionally invalidate the existing structure
-		// as it allocates a new buffer if more space is needed.
-		// It should probably sort the list as well
-		// but...
-		if( stationid && existing.extra ) {
-			
-			let updateIdx = _findindex(existing.extra.stations,(f)=>(f == stationid));
-			if( updateIdx >= 0 ) {
-				existing.extra.count[updateIdx]++;
-			}
-			else {
-				// Look for empty slot, if we find it then we update,
-				updateIdx = _findindex(existing.extra.stations,(f)=>(f == 0));
-				if( updateIdx >= 0 ) {
-					existing.extra.stations[updateIdx] = stationid;
-					existing.extra.count[updateIdx] = 1;
-				}
-				else {
-					// New buffer and copy into it, we will expand by two stations at a time
-					// it's not generous but should be ok
-					let nb = new Uint8Array( buffer.byteLength + 12 );
-					nb.set( buffer, 0 );
-
-					// We know where it goes so just put the data directly there rather
-					// than remapping the whole data structure
-					let s = new Uint16Array( nb, buffer.byteLength, 1 );
-					let c = new Uint32Array( nb, buffer.byteLength+4, 1 );
-					s[0] = stationid;
-					c[0] = 1;
-
-					//
-					outputBuffer = nb.buffer;
-				}
-			}
-		}
-
-		// Save back to db, either original or updated buffer
-		db.put( h3, Buffer.from(outputBuffer), {}, release );
-	}
+async function mergeDataIntoDatabase( stationid, dbname, db, h3, altitude, agl, crc, signal ) {
 
 	// Because the DB is asynchronous we need to ensure that only
 	// one transaction is active for a given h3 at a time, this will
 	// block all the other ones until the first completes, it's per db
 	// no issues updating h3s in different dbs at the same time
-	lock( stationid.toString()+h3, function (release) {
+	lock( dbname+h3, function (release) {
 
-			  db.get( h3 )
-				.then( (value) => {
-					update( value.buffer, release() );
-				})
-				.catch( (err) => {
-					
-					// Allocate a new buffer to update and then set it in the database -
-					// if we have a station id then twe will make sure we reserve some space for it
-					let buffer = new Uint8Array( normalLength + (stationid ? 12 : 0) );
-					update( buffer.buffer, release() );
-				})
-		  })
+		// If we have some unwritten changes for this h3 then we will simply
+		// use the entry in the 'dirty' table. This table gets flushed
+		// on a periodic basis
+		const cacheKey = dbname+','+h3;
+		const cacheValue = dirtyH3s.get(cacheKey);
+		if( cacheValue ) {
+			updateStationBuffer( stationid, dbname, h3, cacheValue, altitude, agl, crc, signal, release() )
+		}
+		else {
+			db.get( h3 )
+			  .then( (value) => {
+				  updateStationBuffer( stationid, dbname, h3, value.buffer, altitude, agl, crc, signal, release() );
+			  })
+			  .catch( (err) => {
+				  // Allocate a new buffer to update and then set it in the database -
+				  // if we have a station id then twe will make sure we reserve some space
+				  // because we keep a list of all stations seen in the global cells
+				  let buffer = new Uint8Array( normalLength + (stationid ? 12 : 0) );
+				  updateStationBuffer( stationid, dbname, h3, buffer.buffer, altitude, agl, crc, signal, release() );
+			  });
+		}
+	});
 	
 }
+
+// When did we last flush?
+let lastDirtyWrite = 0;
+
+//
+// This function writes the H3 buffers to the disk if they are dirty, and 
+// clears the records if it has expired. It is actually a synchronous function
+// as it will not return before everything has been written
+async function flushDirtyH3s() {
+
+	const flushPeriod = 3*60*1000;
+	const nextDirtyWrite = Date.now();
+	const expirypoint = Math.max( lastDirtyWrite-flushPeriod, 0 );
+
+	let stats = {
+		total: dirtyH3s.size,
+		expired: 0,
+		written: 0,
+		databases: 0,
+	};
+	
+	// We will keep track of all the async actions to make sure we
+	// don't get out of order during the lock() or return before everything
+	// has been serialised
+	let promises = [];
+
+	const dbOps = new Map(); //[station]=>list of db ops
+
+	// Go through all H3s in memory and write them out if they were updated
+	// since last time we flushed
+	for (const [k,v] of dirtyH3s) {
+		const [ dbname, h3 ] =  (''+k).split(',');
+
+		promises.push( new Promise( (resolve) => {
+		
+			// Because the DB is asynchronous we need to ensure that only
+			// one transaction is active for a given h3 at a time, this will
+			// block all the other ones until the first completes, it's per db
+			// no issues updating h3s in different dbs at the same time
+			lock( dbname+h3, function (release) {
+				
+				const updateTime = lastH3update.get(k);
+				
+				// Only write if changes
+				if( updateTime >= lastDirtyWrite ) {
+					
+					// Add to the write out structures
+					if( ! dbOps.has(dbname) ) {
+						dbOps.set(dbname, new Array());
+					}
+					dbOps.get(dbname).push( { type: 'put', key: h3, value: Buffer.from(v) });
+					stats.written++;
+				}
+				
+				// If it's expired then we will purge it... 
+				else if( updateTime < expirypoint ) {
+					dirtyH3s.delete(k);
+					lastH3update.delete(k);
+					stats.expired++;
+				}
+				
+				// we are done, no race condition on write as it's either written to the
+				// disk above, or it was before and his simply expired, it's not possible
+				// to expire and write (expiry is period after last write)
+				release()();
+				resolve();
+			});
+		}));
+	}
+
+	// We need to wait for all promises to complete before we can do the next part
+	Promise.all( promises );
+	promises = [];
+	
+	// So we know where to start writing
+	lastDirtyWrite = nextDirtyWrite
+	stats.databases = dbOps.size;
+
+	// Now push these to the database
+	for ( const [station,v] of dbOps ) {
+		promises.push( new Promise( (resolve) => {
+			//
+			let db = (station != 'global') ? stationDbCache.get(station) : globalDb;
+			if( ! db ) {
+				console.log( `weirdly opening db to write for cache ${dbname}` );
+				stationDbCache.set(station, db = LevelUP(LevelDOWN(dbPath+'/stations/'+station)))	
+				db.ognInitialTS = Date.now();
+			}
+			db.batch(v, (e) => {
+				// log errors
+				if(e) console.err('error flushing db operations for station',station,e);
+				resolve();
+			});
+		}));
+	}
+	Promise.all( promises );
+	return stats;
+}
+
+
 
 //
 // Dump all of the output files that need to be dumped, this goes through
 // everything that may need to be written and writes it to the disk
 async function produceOutputFiles() {
-	console.log( `producing output files for ${stationDbCache.length} stations + global ` )
+	console.log( `producing output files for ${stationDbCache.size} stations + global ` )
+
+	let promises = [];
 	
 	// each of the stations
 	stationDbCache.forEach( async function (db,key) {
-		await produceOutputFile( key, db );
+		promises.push( new Promise( async function (resolve) {
+			await produceOutputFile( key, db );
+			resolve();
+		}));
 	});
-		
+
+	Promise.all(promises);
+	
 	// And the global output
 	await produceStationFile( statusDb );
 	await produceOutputFile( 'global', globalDb );
 
 	// Flush old database from the cache
-	stationDbCache.prune();
+	stationDbCache.purgeStale();
 }
 
 
