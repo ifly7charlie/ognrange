@@ -40,11 +40,10 @@ let statusDb = undefined;
 
 // Least Recently Used cache for Station Database connectiosn 
 import LRU from 'lru-cache'
-const options = { max: process.env.MAX_STATION_DBS||800,
-				  length: function (n, key) { return 1 },
-				  dispose: function (key, n) { n.close(); console.log( `closed database for ${key}` ); },
-				  updateAgeOnGet: true, stale: true,
-				  maxAge: (process.env.STATION_DB_EXPIRY_HOURS||4) * 3600 * 1000 }
+const options = { max: parseInt(process.env.MAX_STATION_DBS)||3200,
+				  dispose: function (key, n,r) { n.close(); console.log( `closed database for ${key}, ${r} ${(Date.now()-n.ognInitialTS)/1000/3600}h` ); },
+				  updateAgeOnGet: true, allowStale: true,
+				  ttl: (process.env.STATION_DB_EXPIRY_HOURS||12) * 3600 * 1000 }
 , stationDbCache = new LRU(options)
 
 
