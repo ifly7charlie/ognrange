@@ -55,7 +55,7 @@ export default function CombinePage( props ) {
         longitude: parseFloat(lng||0)||-0.551233333,
         zoom: parseFloat(zoom||0)||6,
 		minZoom: 2.5,
-		maxZoom: 10,
+		maxZoom: 13,
         bearing: 0,
 		minPitch: 0,
 		maxPitch: 85,
@@ -64,17 +64,17 @@ export default function CombinePage( props ) {
     });
 
 	// Debounced updating of the URL when the viewport is changed, this is a performance optimisation
-	function updateUrl(existing,vs) {
+	function updateUrl(existing,vs,s) {
 		router.replace( { pathname: '/',
 						  query: { ...existing,
 								   'lat': (vs.latitude).toFixed(5), 'lng': (vs.longitude).toFixed(5), 'zoom': (vs.zoom).toFixed(1) }
 		}, undefined, { shallow: true,  });
 	}
-	const delayedUpdate = useRef(_debounce((existing,vs) => updateUrl(existing,vs), 300)).current; 
+	const delayedUpdate = useRef(_debounce((existing,vs,s) => updateUrl(existing,vs,s), 300)).current;
 	
 	// Synchronise it back to the url
 	function setViewportUrl(vs) {
-		delayedUpdate(router.query,vs)
+		delayedUpdate(router.query,vs,station)
 		setViewport(vs)
 	}
 	return (
