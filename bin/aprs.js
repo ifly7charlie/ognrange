@@ -10,10 +10,6 @@ import { aprsParser } from  'js-aprs-fap';
 //import geo from './lib/getelevationoffset.js';
 import { getCacheSize, getElevationOffset } from '../lib/bin/getelevationoffset.js'
 
-// Helper function for geometry
-import distance from '@turf/distance';
-import { point } from '@turf/helpers';
-
 import LevelUP from 'levelup';
 import LevelDOWN from 'rocksdb';
 
@@ -84,15 +80,14 @@ let dbPath = './db/';
 let outputPath = './public/data/';
 
 // shortcuts so regexp compiled once
-const reExtractDb = / ([0-9.]+)dB /
-const reExtractCrc = / ([0-9])c /
+const reExtractDb = / ([0-9.]+)dB /;
+const reExtractCrc = / ([0-9])c /;
+const reExtractRot = / [+-]([0-9.]+)rot /;
+const reExtractVC = / [+-]([0-9]+)fpm /;
 
 // Cache so we aren't constantly reading/writing from the db
 let dirtyH3s = new Map();
 let lastH3update = new Map();
-let lastPacketCount = 0;
-let lastPacketsInInterval = 0;
-let lastH3length = 0;
 
 // APRS Server Keep Alive
 const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD||2 * 60 * 1000;
@@ -106,7 +101,7 @@ const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD||2 * 60 * 1000;
 //   is in memory then it will be used rather than reading from the db.
 // 
 const h3CacheFlushPeriod = (process.env.H3_CACHE_FLUSH_PERIOD||5)*60*1000;
-const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME||14)*60*1000;
+const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME||16)*60*1000;
 
 
 // We need to use a protected data structure to generate ids
@@ -114,6 +109,8 @@ const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME||14)*60*1000;
 // support clustering if we need it
 const sabbuffer = new SharedArrayBuffer(2);
 const nextStation = new Uint16Array(sabbuffer);
+let packetStats = { ignoredStation: 0, ignoredTracker:0, ignoredStationary:0, ignoredSignal0:0, ignoredPAW:0, count: 0 };
+
 
 // Run stuff magically
 main()
@@ -154,7 +151,8 @@ async function handleExit(signal) {
 	console.log(`${signal}: flushing data`)
 	connection.exiting = true;
 	connection.disconnect();
-	flushDirtyH3s();
+	
+	await flushDirtyH3s(true);
 	await produceOutputFiles();
 	stationDbCache.forEach( async function (db,key) {
 		db.close();
@@ -177,7 +175,10 @@ async function startAprsListener( m = undefined ) {
 
 	// In case we are using pm2 metrics
 	metrics = m;
-	let packetCount = 0;
+	let rawPacketCount = 0;
+	let lastPacketCount = 0;
+	let lastRawPacketCount = 0;
+	let lastH3length = 0;
 
     // Settings for connecting to the APRS server
     const CALLSIGN = process.env.NEXT_PUBLIC_SITEURL;
@@ -198,12 +199,15 @@ async function startAprsListener( m = undefined ) {
     // Handle a data packet
     connection.on('packet', async function (data) {
         connection.valid = true;
-        if(data.charAt(0) != '#' && !data.startsWith('user')) {
+		if( connection.exiting ) {
+			return;
+		}
+        if( data.charAt(0) != '#' && !data.startsWith('user')) {
             const packet = parser.parseaprs(data);
             if( "latitude" in packet && "longitude" in packet &&
                 "comment" in packet && packet.comment?.substr(0,2) == 'id' ) {
 				processPacket( packet );
-				packetCount++;
+				rawPacketCount++;
             }
 			else {
 				if( (packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && ! ignoreStation(packet.sourceCallsign)) {
@@ -223,7 +227,7 @@ async function startAprsListener( m = undefined ) {
 			}
         } else {
             // Server keepalive
-            console.log(data, '#', packetCount);
+            console.log(data, '#', rawPacketCount);
             if( data.match(/aprsc/) ) {
                 connection.aprsc = data;
             }
@@ -286,24 +290,27 @@ async function startAprsListener( m = undefined ) {
 		const flushStats = await flushDirtyH3s();
 
 		// Report some status on that
-		const packets = (packetCount - lastPacketCount);
+		const packets = (packetStats.count - lastPacketCount);
+		const rawPackets = (rawPacketCount - lastRawPacketCount);
 		const pps = (packets/(h3CacheFlushPeriod/1000)).toFixed(1);
+		const rawPps = (rawPackets/(h3CacheFlushPeriod/1000)).toFixed(1);
 		const h3length = flushStats.total;
 		const h3delta = h3length - lastH3length;
 		const h3expired = flushStats.expired;
 		const h3written = flushStats.written;
-		console.log( `elevation cache: ${getCacheSize()}, openDbs: ${stationDbCache.size+2},  packets: ${packetCount} ${pps}/s` );
+		console.log( `elevation cache: ${getCacheSize()}, openDbs: ${stationDbCache.size+2},  valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s` );
 		console.log( `total stations: ${nextStation-1}, seen stations ${Object.keys(stations).length}` );
-		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta/h3length).toFixed(0)}%: `,
+		console.log( JSON.stringify(packetStats))
+		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta/h3length).toFixed(0)}%): `,
 					 ` expired ${h3expired} (${(h3expired*100/h3length).toFixed(0)}%), written ${h3written} (${(h3written*100/h3length).toFixed(0)}%)`,
 					 ` ${((h3written*100)/packets).toFixed(1)}% ${(h3written/(h3CacheFlushPeriod/1000)).toFixed(1)}/s ${(packets/h3written).toFixed(0)}:1`,
 	); 
 
 		// purge and flush H3s to disk
 		// carry forward state for stats next time round
-		lastPacketCount = packetCount;
+		lastPacketCount = packetStats.count;
+		lastRawPacketCount = rawPacketCount;
 		lastH3length = h3length;
-		lastPacketsInInterval = packets;
 
 	}, h3CacheFlushPeriod ));
 
@@ -312,8 +319,10 @@ async function startAprsListener( m = undefined ) {
 
 	// On an interval we will dump out the coverage tables
 	intervals.push(setInterval( function() {
-		produceOutputFiles();
-	}, (process.env.OUTPUT_INTERVAL_MIN||15)*60*1000));
+		flushDirtyH3s(true).then( () => {
+			produceOutputFiles()
+		});
+	}, (process.env.OUTPUT_INTERVAL_MIN||60)*60*1000));
 	
 }
 
@@ -356,81 +365,59 @@ async function processPacket( packet ) {
 	// Lookup the altitude adjustment for the 
 	const sender = packet.digipeaters?.pop()?.callsign||'unknown';
 
+	// Obvious reasons to ignore stations
 	if( ignoreStation( sender ) ) {
+		packetStats.ignoredStation++;
 		return;
 	}
 	if( packet.destCallsign == 'OGNTRK' && packet.digipeaters?.[0]?.callsign?.slice(0,2) != 'qA' ) {
-		console.log( 'TRKREPEAT:', packet.origpacket );
+		packetStats.ignoredTracker++;
+		return;
+	}
+	if( pawTracker ) {
+		packetStats.ignoredPAW++;
 		return;
 	}
 
-	// Protect from file system injection - we only accept normal characters
-	if( ! sender.match(/^([a-zA-Z0-9]+)$/i)) {
-		console.log( 'invalid sender', sender )
-		return;
-	}
-	
-	// Apply the correction
     let altitude = Math.floor(packet.altitude);
 
-	// geojson for helper function slater
-	const jPoint = point( [packet.latitude, packet.longitude] );
-
-    // Check if the packet is late, based on previous packets for the glider
-    const now = (new Date()).getTime()/1000;
-    const td = Math.floor(now - packet.timestamp);
-
-    // Look it up, have we had packets for this before?
-	// we use this simply to make sure we aren't constantly recording points
-	// for stationary gliders
-    let glider = gliders[flarmId];
-	if( ! glider ) {
-		glider = gliders[flarmId] = { lastTime: packet.timestamp };
+	// Make sure they are moving... we can get this from the packet without any
+	// vertical speed of 30 is ~0.5feet per second or ~15cm/sec and I'm guessing
+	// helicopters can't hover that precisely. NOTE this threshold is not 0 because
+	// the roc jumps a lot in the packet stream.
+	if( packet.speed < 1 ) {
+		const rawRot = (packet.comment.match(reExtractRot)||[0,0])[1];
+		const rawVC = (packet.comment.match(reExtractVC)||[0,0])[1];
+		if( rawRot == 0.0 && rawVC < 30 ) {
+			packetStats.ignoredStationary++;
+			return;
+		}
 	}
-
-    // Check to make sure they have moved more than 50 meters, thermal circle normally 100+ m
-    // this reduces load from stationary gliders on the ground and allows us to track stationary gliders
-    // better. the 1 ensures that first packet gets picked up after restart
-    const distanceFromLast = glider.lastPoint ? distance( jPoint, glider.lastPoint ) : 1;
-	const elapsedTime = packet.timestamp - glider.lastTime;
-	
-    if( distanceFromLast < 0.05  ) {
-		glider.stationary++;
-        return;
-    }
-
-	// If it has moved then save it away to make sure we aren't stationary
-    if( packet.timestamp > glider.lastTime ) {        
-		glider.lastPoint = jPoint;
-        glider.lastTime = packet.timestamp;
-    }
 
 	// Look for signal strength and checksum - we will ignore any packet without a signal strength
 	// sometimes this happens to be missing and other times it happens because it is reported as 0.0
 	const rawStrength = (packet.comment.match(reExtractDb)||[0,0])[1];
-	const strength = Math.round(parseFloat(rawStrength));
+	const strength = Math.min(Math.round(parseFloat(rawStrength)*4),255);
 
 	// crc may be absent, if it is then it's a 0
 	const crc = parseInt((packet.comment.match(reExtractCrc)||[0,0])[1]);
 
 	// If we have no signal strength then we'll ignore the packet... don't know where these
 	// come from or why they exist...
-	if( strength > 0 ) {
-
-
-		// Can't use these as we don't actually know what they are so ignore them for now
-		if( rawStrength == 20.0 && pawTracker ) {
-//			console.log( pawTracker?'ignoring paw tracker':'??', packet.origpacket );
-			return;
-		}
-
-		// Enrich with elevation and send to everybody, this is async
-		getElevationOffset( packet.latitude, packet.longitude,
-							async (gl) => {
-								const agl = Math.round(Math.max(altitude-gl,0));
-								packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, agl, glider, crc, strength );
-		});
+	if( strength <= 0 ) {
+		packetStats.ignoredSignal0++;
+		return;
 	}
+
+	// Enrich with elevation and send to everybody, this is async
+	// and we don't need it's results to say we logged the packet
+	getElevationOffset( packet.latitude, packet.longitude,
+						async (gl) => {
+							const agl = Math.round(Math.max(altitude-gl,0));
+							packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, agl, glider, crc, strength );
+	});
+	
+	packetStats.count++;
 }
 
 //
@@ -598,7 +585,7 @@ let lastDirtyWrite = 0;
 // This function writes the H3 buffers to the disk if they are dirty, and 
 // clears the records if it has expired. It is actually a synchronous function
 // as it will not return before everything has been written
-async function flushDirtyH3s() {
+async function flushDirtyH3s(allUnwritten) {
 
 	const flushPeriod = 3*60*1000;
 	const nextDirtyWrite = Date.now();
@@ -633,8 +620,14 @@ async function flushDirtyH3s() {
 				
 				const updateTime = lastH3update.get(k);
 				
-				// Only write if changes
-				if( updateTime >= lastDirtyWrite ) {
+				// If it's expired then we will purge it... 
+				if( updateTime < expirypoint ) {
+					dirtyH3s.delete(k);
+					lastH3update.delete(k);
+					stats.expired++;
+				}
+				// Only write if changes and not active
+				else if( allUnwritten || updateTime < lastDirtyWrite ) {
 					
 					// Add to the write out structures
 					if( ! dbOps.has(dbname) ) {
@@ -644,12 +637,6 @@ async function flushDirtyH3s() {
 					stats.written++;
 				}
 				
-				// If it's expired then we will purge it... 
-				else if( updateTime < expirypoint ) {
-					dirtyH3s.delete(k);
-					lastH3update.delete(k);
-					stats.expired++;
-				}
 				
 				// we are done, no race condition on write as it's either written to the
 				// disk above, or it was before and his simply expired, it's not possible

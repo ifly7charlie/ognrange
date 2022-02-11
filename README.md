@@ -55,6 +55,16 @@ ELEVATION_TILE_RESOLUTION=12
 # might be short and less open is less risk of problems)
 MAX_STATION_DBS=800
 STATION_DB_EXPIRY_HOURS=4
+
+# Cache control - we cache the datablocks by station and h3 to save us needing
+# to read/write them from/to the DB constantly. Note that this can use quite a lot
+# of memory, but is a lot easier on the computer (in MINUTES)
+# - flush period is how long they can remain in memory without being written
+# - expirytime is how long they can remain in memory without being purged. If it
+#   is in memory then it will be used rather than reading from the db.
+H3_CACHE_FLUSH_PERIOD=5
+H3_CACHE_EXPIRY_TIME=16
+
 ````
 
 
