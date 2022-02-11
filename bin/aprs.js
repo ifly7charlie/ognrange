@@ -41,11 +41,20 @@ let statusDb = undefined;
 // Least Recently Used cache for Station Database connectiosn 
 import LRU from 'lru-cache'
 const options = { max: parseInt(process.env.MAX_STATION_DBS)||3200,
-				  dispose: function (key, n,r) { n.close(); console.log( `closed database for ${key}, ${r} ${(Date.now()-n.ognInitialTS)/1000/3600}h` ); },
+				  dispose: function (db, key, r) {
+					  try { db.close(); } catch (e) { console.log('ummm',e); }
+					  if( stationDbCache.getTtl(key) < h3CacheFlushPeriod ) {
+						  console.log( `Closing database ${key} while it's still needed. You should increase MAX_STATION_DBS in .env.local` );
+					  }
+				  },
 				  updateAgeOnGet: true, allowStale: true,
 				  ttl: (process.env.STATION_DB_EXPIRY_HOURS||12) * 3600 * 1000 }
-, stationDbCache = new LRU(options)
+	, stationDbCache = new LRU(options)
 
+stationDbCache.getTtl = (k) => {
+	return (typeof performance === 'object' && performance &&
+	 typeof performance.now === 'function' ? performance : Date).now() - stationDbCache.starts[stationDbCache.keyMap.get(k)]
+}
 
 // track any setInterval calls so we can stop them when asked to exit
 let intervals = [];
@@ -665,7 +674,7 @@ async function flushDirtyH3s() {
 			//
 			let db = (station != 'global') ? stationDbCache.get(station) : globalDb;
 			if( ! db ) {
-				console.log( `weirdly opening db to write for cache ${dbname}` );
+				console.log( `weirdly opening db to write for cache ${station}}` );
 				stationDbCache.set(station, db = LevelUP(LevelDOWN(dbPath+'/stations/'+station)))	
 				db.ognInitialTS = Date.now();
 			}
