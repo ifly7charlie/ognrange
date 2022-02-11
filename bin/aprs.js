@@ -17,6 +17,8 @@ import dotenv from 'dotenv';
 
 import { ignoreStation } from '../lib/bin/ignorestation.js'
 
+import { BinaryRecord, bufferTypes } from '../lib/bin/binaryrecord.js';
+
 import h3 from 'h3-js';
 
 import _findindex from 'lodash.findindex';
@@ -414,7 +416,7 @@ async function processPacket( packet ) {
 	getElevationOffset( packet.latitude, packet.longitude,
 						async (gl) => {
 							const agl = Math.round(Math.max(altitude-gl,0));
-							packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, agl, glider, crc, strength );
+							packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, agl, crc, strength );
 	});
 	
 	packetStats.count++;
@@ -422,7 +424,7 @@ async function processPacket( packet ) {
 
 //
 // Actually serialise the packet into the database after processing the data
-async function packetCallback( station, h3id, altitude, agl, glider, crc, signal ) {
+async function packetCallback( station, h3id, altitude, agl, crc, signal ) {
 
 	// Open the database, do this first as takes a bit of time
 	let stationDb = stationDbCache.get(station);
@@ -444,100 +446,14 @@ async function packetCallback( station, h3id, altitude, agl, glider, crc, signal
 	mergeDataIntoDatabase( stationid, 'global', globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
 }
 
-//
-// Generate a fake structure that maps directly into the byte array we are working with
-const normalLength = 3*4+3*2+2;
-function mapping(buffer) {
-		const extraStationSlots = (buffer.byteLength - normalLength)/6;
-												  
-		return {
-			count: new Uint32Array(buffer, 0*4,1),
-			sumSig: new Uint32Array(buffer,1*4,1),
-			sumCrc: new Uint32Array(buffer,2*4,1),
-			minAltAgl: new Uint16Array(buffer,3*4,1),
-			minAlt: new Uint16Array(buffer,3*4+1*2,1),
-			minAltMaxSig: new Uint8Array(buffer,3*4+2*2,1),
-			maxSig: new Uint8Array(buffer,3*4+3*2+1,1),
-			extra: ! extraStationSlots ? undefined : {
-				number: extraStationSlots,
-				stations: new Uint16Array( buffer, normalLength, extraStationSlots ),
-				count: new Uint32Array( buffer, normalLength + extraStationSlots*2, extraStationSlots )
-			}
-		}
-}
+function updateStationBuffer(stationid, dbname, h3, br, altitude, agl, crc, signal, release) {
 
-function updateStationBuffer(stationid, dbname, h3, buffer, altitude, agl, crc, signal, release) {
+	// Update the binary record with these values
+	br.update( altitude, agl, crc, signal, stationid );
 	
-	// We may change the output if we extend it
-	let outputBuffer = buffer;
-	
-	// Lets get the structured data (this is a bit of a hack but TypedArray on a buffer
-	// will just expose a window into existing buffer so we don't have to do any fancy math.
-	// ...[0] is only option available as we only map one entry to each item
-	let existing = mapping(buffer);
-	if( ! existing.minAlt[0] || existing.minAlt[0] > altitude ) {
-		existing.minAlt[0] = altitude;
-		
-		if( existing.minAltMaxSig[0] < signal ) {
-			existing.minAltMaxSig[0] = signal;
-		}
-	}
-	if( ! existing.minAltAgl[0] || existing.minAltAgl[0] > agl ) {
-		existing.minAltAgl[0] = agl;
-	}
-	
-	if( existing.maxSig[0] < signal ) {
-		existing.maxSig[0] = signal;
-	}
-	
-	existing.sumSig[0] += signal;
-	existing.sumCrc[0] += crc;
-	existing.count[0] ++;
-
-	// For global squares we also maintain a station list
-	// we do this by storing a the stationid and count for each one that hits the
-	// square, 
-	// - note this will occasionally invalidate the existing structure
-	// as it allocates a new buffer if more space is needed.
-	// It should probably sort the list as well
-	// but...
-	if( stationid && existing.extra ) {
-		
-		let updateIdx = _findindex(existing.extra.stations,(f)=>(f == stationid));
-		if( updateIdx >= 0 ) {
-			existing.extra.count[updateIdx]++;
-		}
-		else {
-			// Look for empty slot, if we find it then we update,
-			updateIdx = _findindex(existing.extra.stations,(f)=>(f == 0));
-			if( updateIdx >= 0 ) {
-				existing.extra.stations[updateIdx] = stationid;
-				existing.extra.count[updateIdx] = 1;
-			}
-			else {
-				// New buffer and copy into it, we will expand by two stations at a time
-				// it's not generous but should be ok
-				let nb = new Uint8Array( buffer.byteLength + 12 );
-				nb.set( buffer, 0 );
-
-				// We know where it goes so just put the data directly there rather
-				// than remapping the whole data structure
-				let s = new Uint16Array( nb, buffer.byteLength, 1 );
-				let c = new Uint32Array( nb, buffer.byteLength+4, 1 );
-				s[0] = stationid;
-				c[0] = 1;
-
-				//
-				outputBuffer = nb.buffer;
-			}
-		}
-	}
-
-	// Save back to db, either original or updated buffer
-	//		db.put( h3, Buffer.from(outputBuffer), {}, release );
+	// 
 	const cacheKey = dbname+','+h3;
 	lastH3update.set(cacheKey, Date.now());
-	dirtyH3s.set(cacheKey,Buffer.from(outputBuffer));
 	release();
 }
 
@@ -557,21 +473,21 @@ async function mergeDataIntoDatabase( stationid, dbname, db, h3, altitude, agl, 
 		// use the entry in the 'dirty' table. This table gets flushed
 		// on a periodic basis
 		const cacheKey = dbname+','+h3;
-		const cacheValue = dirtyH3s.get(cacheKey);
-		if( cacheValue ) {
-			updateStationBuffer( stationid, dbname, h3, cacheValue, altitude, agl, crc, signal, release() )
+		const br = dirtyH3s.get(cacheKey);
+		if( br ) {
+			updateStationBuffer( stationid, dbname, h3, br, altitude, agl, crc, signal, release() )
 		}
 		else {
 			db.get( h3 )
 			  .then( (value) => {
-				  updateStationBuffer( stationid, dbname, h3, value.buffer, altitude, agl, crc, signal, release() );
+				  const buffer = new BinaryRecord( value );
+				  dirtyH3s.set(cacheKey,buffer);
+				  updateStationBuffer( stationid, dbname, h3, buffer, altitude, agl, crc, signal, release() );
 			  })
 			  .catch( (err) => {
-				  // Allocate a new buffer to update and then set it in the database -
-				  // if we have a station id then twe will make sure we reserve some space
-				  // because we keep a list of all stations seen in the global cells
-				  let buffer = new Uint8Array( normalLength + (stationid ? 12 : 0) );
-				  updateStationBuffer( stationid, dbname, h3, buffer.buffer, altitude, agl, crc, signal, release() );
+				  const buffer = new BinaryRecord( stationid ? bufferTypes.global : bufferTypes.station );
+				  dirtyH3s.set(cacheKey,buffer);
+				  updateStationBuffer( stationid, dbname, h3, buffer, altitude, agl, crc, signal, release() );
 			  });
 		}
 	});
@@ -633,7 +549,7 @@ async function flushDirtyH3s(allUnwritten) {
 					if( ! dbOps.has(dbname) ) {
 						dbOps.set(dbname, new Array());
 					}
-					dbOps.get(dbname).push( { type: 'put', key: h3, value: Buffer.from(v) });
+					dbOps.get(dbname).push( { type: 'put', key: h3, value: Buffer.from(v.buffer()) });
 					stats.written++;
 				}
 				
@@ -716,8 +632,6 @@ async function produceOutputFiles() {
 // it also has the advantage that you can keep a snapshot in time simply
 // by keeping the file.
 async function produceOutputFile( station, inputdb ) {
-	let length = 500;
-	let position = 0;
 
 	// Form up meta data useful for the display, this needs to be written regardless
 	// 
@@ -729,110 +643,42 @@ async function produceOutputFile( station, inputdb ) {
 			console.log( 'missing metadata for ', station );
 		}
 	}
-	writeFile( outputPath+(station?station:'global')+'.json', JSON.stringify(stationmeta,null,2), (err) => err ? console.log("stationmeta write error",err) : null);
+	const name = (station||'global')
+	writeFile( outputPath+name+'.json', JSON.stringify(stationmeta,null,2), (err) => err ? console.log("stationmeta write error",err) : null);
 	
 	// Check to see if we need to produce an output file, set to 1 when clean
 	if( station != 'global' && stations[station].clean ) {
 		return 0;
 	}
-	
-	// Helper for resizing TypedArrays so we don't end up with them being huge
-	function resize( a, b ) {
-		let c = new a.constructor( b );	c.set( a );	return c;
-	}
 
-	// for global we need a list of stations
-	let stationsBuilder = station == 'global' ?
-						  makeBuilder({type: new Utf8()}):undefined;
-	let stationsCount = station == 'global' ?
-						makeBuilder({type: new Uint8()}):undefined;
+	// Start the writing process by initalising a set of serialisers for arrow data
+	let arrow = BinaryRecord.initArrow( station == 'global' ? bufferTypes.global : bufferTypes.station );
 
-	// we have two of these for each record
-	const lengthMultiplier = { h3out: 2 };
-
-	let data = { 
-		h3out: new Uint32Array( length*2 ),
-		minAgl: new Uint16Array( length ),
-		minAlt: new Uint16Array( length ),
-		minAltSig: new Uint8Array( length ),
-		avgSig: new Uint8Array( length ),
-		maxSig: new Uint8Array( length ),
-		avgCrc: new Uint8Array( length ),
-		count: new Uint32Array( length ),
-	};
-
-
-	// Go through all the keys
+	// Go throuh the whole database and load each record, parse it and add to the arrow
+	// structure. The structure is data aware so will generate appropriate output for
+	// each type
 	for await ( const [key,value] of inputdb.iterator()) {
-		let c = mapping(value.buffer);
-
-		// Save them in the output arrays
-		const lh = h3.h3IndexToSplitLong(''+key);
-		data.h3out[position*2] = lh[0];
-		data.h3out[position*2+1] = lh[1];
-		data.minAgl[position] = c.minAltAgl[0];
-		data.minAlt[position] = c.minAlt[0];
-		data.minAltSig[position] = c.minAltMaxSig[0];
-		data.maxSig[position] = c.maxSig[0];
-		data.count[position] = c.count[0];
-		
-		// Calculated ones
-		data.avgSig[position] = Math.round(c.sumSig[0] / c.count[0]);
-		data.avgCrc[position] = Math.round(c.sumCrc[0] / c.count[0]);
-
-		if( c.extra ) {
-			const zip = _sortby( _reject( _zip( c.extra.stations, c.extra.count ),
-										(r)=>!r[1] ),
-							   (s) => s[1] );
-			const o =  _map(zip, (f) => f[0].toString(16)).join(',');
-			stationsBuilder.append(o)
-			stationsCount.append(zip.length)
-		}
-
-		// And make sure we don't run out of space
-		position++;
-		if( position == length ) {
-			length += 500;
-			for ( const k of Object.keys(data)) {
-				data[k] = resize( data[k], length*(lengthMultiplier[k]||1) );
-			}
-		}
+		let br = new BinaryRecord(value);
+		br.appendToArrow( ''+key, arrow );
 	}
 
-	// Now we have all the data we need we put each one into protobuf and serialise it to disk
-	function output( name, data ) {
-		const stationsInject = station == 'global' ? { stations: stationsBuilder.finish().toVector(), scount: stationsCount.finish().toVector() } : {};
-		const outputTable = makeTable({
-			h3: new Uint32Array(data.h3out.buffer,0,position*2),
-			minAgl: new Uint16Array(data.minAgl,0,position),
-			minAlt: new Uint16Array(data.minAlt,0,position),
-			minAltSig: new Uint8Array(data.minAltSig,0,position),
-			maxSig: new Uint8Array(data.maxSig,0,position),
-			count: new Uint32Array(data.count,0,position),
-			avgSig: new Uint8Array(data.avgSig,0,position),
-			avgCrc: new Uint8Array(data.avgCrc,0,position),
-			...stationsInject
-		});
+	// Finalise the arrow table so we can serialise it to the disk
+	const outputTable = BinaryRecord.finalizeArrow(arrow);
 
-//		console.table( [...outputTable].slice(0,100))
-
-		const pt = new PassThrough( { objectMode: true } )
-		const result = pt
-			  .pipe( RecordBatchWriter.throughNode())
-			  .pipe( createWriteStream( './public/data/'+name+'.arrow' ));
-						
-		pt.write(outputTable);
-		pt.end();
-	}
-
-	// Output the station information
-	output( station, data );
+//	console.table( [...outputTable].slice(0,10))
+	
+	const pt = new PassThrough( { objectMode: true } )
+	const result = pt
+		.pipe( RecordBatchWriter.throughNode())
+		.pipe( createWriteStream( './public/data/'+name+'.arrow' ));
+	
+	pt.write(outputTable);
+	pt.end();
 
 	// We are clean so we won't dump till new packets
 	if( station != 'global' ) {
 		stations[station].clean = 1;
 	}
-	return position;
 }
 
 //

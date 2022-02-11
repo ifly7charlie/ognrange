@@ -13,6 +13,11 @@ body {
 	overflow: hidden
 }
 
+.stationList {
+	width: 100%;
+	font-size: small;
+}
+
 a {
   color: inherit;
   text-decoration: none;
