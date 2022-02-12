@@ -592,7 +592,7 @@ async function flushDirtyH3s(allUnwritten) {
 			}
 			db.batch(v, (e) => {
 				// log errors
-				if(e) console.err('error flushing db operations for station',station,e);
+				if(e) console.err('error flushing db operations for station id',dbid,e);
 				resolve();
 			});
 		}));
