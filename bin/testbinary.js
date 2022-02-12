@@ -171,11 +171,25 @@ async function main() {
 	}
 
 	{
-		let h = new CoverageHeader( 'day', 0, '80dbfffffffffff' );
+		let h = new CoverageHeader( 0, 'day', 0, '80dbfffffffffff' );
 		console.log( h.toString() );
-		h = new CoverageHeader( 'day', 1, '80dbfffffffffff' );
+//		console.log( h.dbKey );
+		h = new CoverageHeader( 0, 'day', 1, '80dbfffffffffff' );
 		console.log( h.toString() );
-		h = new CoverageHeader( 'week', 51, '80dbfffffffffff' );
+//		console.log( h.dbKey );
+		h = new CoverageHeader( 0, 'week', 51, '80dbfffffffffff' );
 		console.log( h.toString() );
+//		console.log( h.dbKey );
+
+		let l = new CoverageHeader( h.lockKey );
+//		console.log( l.dbKey );
+		console.log( h.lockKey, l.lockKey );
+		console.log( h.toString(), l.toString() );
+	}
+		if( 0 ) {
+		let r = CoverageHeader.getDbSearchRangeForAccumulator('week',1);
+		console.log( new CoverageHeader(r.gte).toString(), new CoverageHeader(r.lt).toString());
+		console.log( r.lt )
+		console.log( h.dbKey );
 	}
 }
