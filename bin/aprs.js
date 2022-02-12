@@ -302,7 +302,7 @@ async function startAprsListener( m = undefined ) {
 		console.log( `elevation cache: ${getCacheSize()}, openDbs: ${stationDbCache.size+2},  valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s` );
 		console.log( `total stations: ${nextStation-1}, seen stations ${Object.keys(stations).length}` );
 		console.log( JSON.stringify(packetStats))
-		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta/h3length).toFixed(0)}%): `,
+		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta*100/h3length).toFixed(0)}%): `,
 					 ` expired ${h3expired} (${(h3expired*100/h3length).toFixed(0)}%), written ${h3written} (${(h3written*100/h3length).toFixed(0)}%)`,
 					 ` ${((h3written*100)/packets).toFixed(1)}% ${(h3written/(h3CacheFlushPeriod/1000)).toFixed(1)}/s ${(packets/h3written).toFixed(0)}:1`,
 	); 
@@ -532,7 +532,7 @@ async function flushDirtyH3s(allUnwritten) {
 			// no issues updating h3s in different dbs at the same time
 			lock( h3k.lockKey, function (release) {
 				
-				const updateTime = lastH3update.get(h3k.cacheKey);
+				const updateTime = lastH3update.get(h3k);
 				
 				// If it's expired then we will purge it... 
 				if( updateTime < expirypoint ) {
