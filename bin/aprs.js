@@ -17,7 +17,8 @@ import dotenv from 'dotenv';
 
 import { ignoreStation } from '../lib/bin/ignorestation.js'
 
-import { CoverageRecord, bufferTypes } from '../lib/bin/binaryrecord.js';
+import { CoverageRecord, bufferTypes } from '../lib/bin/coveragerecord.js';
+import { CoverageHeader, accumulatorTypes } from '../lib/bin/coverageheader.js';
 
 import h3 from 'h3-js';
 
@@ -72,9 +73,6 @@ import { PassThrough } from 'stream';
 import { makeTable, tableFromArrays, RecordBatchWriter, makeVector, FixedSizeBinary,
 		 Utf8, Uint8, makeBuilder } from 'apache-arrow';
 
-// How many stations we will report to the front end, list is sorted so this means
-// 20 busiest stations
-const numberOfStationsToTrack = 20;
 
 // Default paths, can be overloaded using .env.local
 let dbPath = './db/';
@@ -112,6 +110,8 @@ const sabbuffer = new SharedArrayBuffer(2);
 const nextStation = new Uint16Array(sabbuffer);
 let packetStats = { ignoredStation: 0, ignoredTracker:0, ignoredStationary:0, ignoredSignal0:0, ignoredPAW:0, count: 0 };
 
+const currentAccumulator = [ 'day', 0 ];
+function getAccumulator() { return currentAccumulator; }
 
 // Run stuff magically
 main()
@@ -334,7 +334,7 @@ function getStationId( station, serialise = true ) {
 	let stationid = undefined;
 	if( station ) {
 		if( ! stations[ station ] ) {
-			stations[station]={}
+			stations[station]={ station:station }
 		}
 		
 		if( 'id' in stations[station] ) {
@@ -425,15 +425,16 @@ async function processPacket( packet ) {
 // Actually serialise the packet into the database after processing the data
 async function packetCallback( station, h3id, altitude, agl, crc, signal ) {
 
-	// Open the database, do this first as takes a bit of time
-	let stationDb = stationDbCache.get(station);
-	if( ! stationDb ) {
-		stationDbCache.set(station, stationDb = LevelUP(LevelDOWN(dbPath+'/stations/'+station)))
-		stationDb.ognInitialTS = Date.now();
-	}
-
 	// Find the id for the station or allocate
 	const stationid = await getStationId( station );
+	
+	// Open the database, do this first as takes a bit of time
+	let stationDb = stationDbCache.get(stationid);
+	if( ! stationDb ) {
+		stationDbCache.set(stationid, stationDb = LevelUP(LevelDOWN(dbPath+'/stations/'+station)))
+		stationDb.ognInitialTS = Date.now();
+		stationDb.ognStationName = station;
+	}
 
 	// Packet for station marks it for dumping next time round
 	stations[station].clean = false;
@@ -441,18 +442,17 @@ async function packetCallback( station, h3id, altitude, agl, crc, signal ) {
 	// Merge into both the station db (0,0) and the global db with the stationid we allocated
 	// we don't pass stationid into the station specific db because there only ever is one
 	// it gets used to build the list of stations that can see the cell
-	mergeDataIntoDatabase( 0,          station, stationDb, h3id, altitude, agl, crc, signal );
-	mergeDataIntoDatabase( stationid, 'global', globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
+	mergeDataIntoDatabase( 0,          stationid, stationDb, h3id, altitude, agl, crc, signal );
+	mergeDataIntoDatabase( stationid,  0,         globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
 }
 
-function updateStationBuffer(stationid, dbname, h3, br, altitude, agl, crc, signal, release) {
+function updateStationBuffer(stationid, h3k, br, altitude, agl, crc, signal, release) {
 
 	// Update the binary record with these values
 	br.update( altitude, agl, crc, signal, stationid );
 	
 	// 
-	const cacheKey = dbname+','+h3;
-	lastH3update.set(cacheKey, Date.now());
+	lastH3update.set(h3k, Date.now());
 	release();
 }
 
@@ -460,33 +460,33 @@ function updateStationBuffer(stationid, dbname, h3, br, altitude, agl, crc, sign
 // We store the database records as binary bytes - in the format described in the mapping() above
 // this reduces the amount of storage we need and means we aren't constantly parsing text
 // and printing text.
-async function mergeDataIntoDatabase( stationid, dbname, db, h3, altitude, agl, crc, signal ) {
+async function mergeDataIntoDatabase( stationid, dbStationId, db, h3, altitude, agl, crc, signal ) {
 
 	// Because the DB is asynchronous we need to ensure that only
 	// one transaction is active for a given h3 at a time, this will
 	// block all the other ones until the first completes, it's per db
 	// no issues updating h3s in different dbs at the same time
-	lock( dbname+h3, function (release) {
+	const h3k = new CoverageHeader( dbStationId, ...getAccumulator(h3), h3 );
+	lock( h3k.lockKey, function (release) {
 
 		// If we have some unwritten changes for this h3 then we will simply
 		// use the entry in the 'dirty' table. This table gets flushed
 		// on a periodic basis
-		const cacheKey = dbname+','+h3;
-		const br = dirtyH3s.get(cacheKey);
+		const br = dirtyH3s.get(h3k);
 		if( br ) {
-			updateStationBuffer( stationid, dbname, h3, br, altitude, agl, crc, signal, release() )
+			updateStationBuffer( stationid, h3k, br, altitude, agl, crc, signal, release() )
 		}
 		else {
-			db.get( h3 )
+			db.get( h3k.dbKey )
 			  .then( (value) => {
 				  const buffer = new CoverageRecord( value );
-				  dirtyH3s.set(cacheKey,buffer);
-				  updateStationBuffer( stationid, dbname, h3, buffer, altitude, agl, crc, signal, release() );
+				  dirtyH3s.set(h3k,buffer);
+				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, release() );
 			  })
 			  .catch( (err) => {
 				  const buffer = new CoverageRecord( stationid ? bufferTypes.global : bufferTypes.station );
-				  dirtyH3s.set(cacheKey,buffer);
-				  updateStationBuffer( stationid, dbname, h3, buffer, altitude, agl, crc, signal, release() );
+				  dirtyH3s.set(h3k,buffer);
+				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, release() );
 			  });
 		}
 	});
@@ -522,8 +522,7 @@ async function flushDirtyH3s(allUnwritten) {
 
 	// Go through all H3s in memory and write them out if they were updated
 	// since last time we flushed
-	for (const [k,v] of dirtyH3s) {
-		const [ dbname, h3 ] =  (''+k).split(',');
+	for (const [h3k,v] of dirtyH3s) {
 
 		promises.push( new Promise( (resolve) => {
 		
@@ -531,28 +530,26 @@ async function flushDirtyH3s(allUnwritten) {
 			// one transaction is active for a given h3 at a time, this will
 			// block all the other ones until the first completes, it's per db
 			// no issues updating h3s in different dbs at the same time
-			lock( dbname+h3, function (release) {
+			lock( h3k.lockKey, function (release) {
 				
-				const updateTime = lastH3update.get(k);
+				const updateTime = lastH3update.get(h3k.cacheKey);
 				
 				// If it's expired then we will purge it... 
 				if( updateTime < expirypoint ) {
-					dirtyH3s.delete(k);
-					lastH3update.delete(k);
+					dirtyH3s.delete(h3k);
+					lastH3update.delete(h3k);
 					stats.expired++;
 				}
 				// Only write if changes and not active
 				else if( allUnwritten || updateTime < lastDirtyWrite ) {
 					
 					// Add to the write out structures
-					if( ! dbOps.has(dbname) ) {
-						dbOps.set(dbname, new Array());
+					if( ! dbOps.has(h3k.dbid) ) {
+						dbOps.set(h3k.dbid, new Array());
 					}
-					dbOps.get(dbname).push( { type: 'put', key: h3, value: Buffer.from(v.buffer()) });
+					dbOps.get(h3k.dbid).push( { type: 'put', key: Buffer.from(h3k.dbKey), value: Buffer.from(v.buffer()) });
 					stats.written++;
 				}
-				
-				
 				// we are done, no race condition on write as it's either written to the
 				// disk above, or it was before and his simply expired, it's not possible
 				// to expire and write (expiry is period after last write)
@@ -571,14 +568,19 @@ async function flushDirtyH3s(allUnwritten) {
 	stats.databases = dbOps.size;
 
 	// Now push these to the database
-	for ( const [station,v] of dbOps ) {
+	for ( const [dbid,v] of dbOps ) {
 		promises.push( new Promise( (resolve) => {
 			//
-			let db = (station != 'global') ? stationDbCache.get(station) : globalDb;
+			let db = (dbid != 0) ? stationDbCache.get(dbid) : globalDb;
 			if( ! db ) {
-				console.log( `weirdly opening db to write for cache ${station}}` );
-				stationDbCache.set(station, db = LevelUP(LevelDOWN(dbPath+'/stations/'+station)))	
+				console.log( `weirdly opening db to write for cache ${dbid}, your stationDbCache is too small for active set` );
+				const stationName = _find(stations, { id: dbid })?.station;
+				if( ! stationName ) {
+					throw 'Unable to find station name for id ${dbid}... this is obviously not ideal, probably data corruption ;)';
+				}
+				stationDbCache.set(dbid, db = LevelUP(LevelDOWN(dbPath+'/stations/'+stationName)))
 				db.ognInitialTS = Date.now();
+				db.ognStationName = stationName;
 			}
 			db.batch(v, (e) => {
 				// log errors
@@ -591,8 +593,101 @@ async function flushDirtyH3s(allUnwritten) {
 	return stats;
 }
 
+//
+// Rotate and Rollup all the data we have
+// we do this by iterating through each database looking for things in default
+// aggregator (which is always just the raw h3id)
+/*
+async function rollup() {
 
+	let rollups = [ 'w', 'm', 'y' ];
 
+	let inputdb = globalDb;
+	{
+		let dbOps = [];
+
+		// We step through all of the items together and update as one
+		const primary = inputdb.iterator( { gte: '0', lte:'9' } );
+		const rollupIterators = _map( rollups, (r) => { r:r, iterator:inputdb.iterator( { gte: r+'0', lte: r+'9' } )});
+
+		// Initalise the rollup array with [k,v]
+		const rollups = _map( rollupIterators, (r) => { n:r.iterator.next(), ...r} );
+
+		
+		for await ( const [key,value] of primary.next() ) {
+
+			// The 'current' value - ie the data we are merging in.
+			const h3 = ''+key;
+			const currentBr = new CoverageRecord(value);
+			
+			for( let advance = true; ! advance; ) {
+				
+				// now we go through them in step form
+				for( const r of rollups ) {
+					let [prefixedh3r,rollupValue] = await rollup.n;
+					
+					const h3r = (''+prefixedh3r).slice(1);
+					
+					// Need to wait for others to catch up and to advance current
+					if( h3r > h3 ) {
+						return;
+					}
+					
+					let br = new CoverageRecord(rollupValue);
+					let updatedBr = null;
+					
+					// If rollup has a cell and we have nothing in current then we just 
+					// check if we need to remove cells
+					if( h3r < h3 ) {
+						updatedBr = br.removeInvalidStations(validStations);
+					}
+					else if( h3r == h3 ) {
+						updatedBr = br.rollup( currentBr );
+					}
+					
+					// Check to see what we need to do with the database
+					if( updatedBr != br ) {
+						if( ! updatedBr ) {
+							dbOps.push( { type: 'delete', key: h3r } );
+						}
+						else {
+							dbOps.push( { type: 'put', key: h3r, value: Buffer.from(updatedBr.buffer()) });
+						}
+					}
+					// Move to the next one, we don't advance till nobody has moved forward
+					rollup.n = rollup.iterator.next();
+					advance = false;
+				}
+			}
+		}
+		// Finally if we have rollups with data after us then we need to update their invalidstations
+		// now we go through them in step form
+		for( const r of rollups ) {
+			
+			let [prefixedh3r,rollupValue] = await rollup.n;
+
+			while( prefixedh3r ) { 
+				const h3r = (''+prefixedh3r).slice(1);
+				let br = new CoverageRecord(rollupValue);
+				let updatedBr = br.removeInvalidStations(validStations);;
+					
+				// Check to see what we need to do with the database
+				if( updatedBr != br ) {
+					if( ! updatedBr ) {
+						dbOps.push( { type: 'delete', key: h3r } );
+					}
+					else {
+						dbOps.push( { type: 'put', key: h3r, value: Buffer.from(updatedBr.buffer()) });
+					}
+				}
+				// Move to the next one, we don't advance till nobody has moved forward
+				let [prefixedh3r,rollupValue] = await rollup.iterator.next();
+			}
+		}
+		console.table( dbOps );
+	}
+}
+*/
 //
 // Dump all of the output files that need to be dumped, this goes through
 // everything that may need to be written and writes it to the disk
@@ -604,7 +699,7 @@ async function produceOutputFiles() {
 	// each of the stations
 	stationDbCache.forEach( async function (db,key) {
 		promises.push( new Promise( async function (resolve) {
-			await produceOutputFile( key, db );
+			await produceOutputFile( db );
 			resolve();
 		}));
 	});
@@ -613,7 +708,7 @@ async function produceOutputFiles() {
 	
 	// And the global output
 	await produceStationFile( statusDb );
-	await produceOutputFile( 'global', globalDb );
+	await produceOutputFile( globalDb );
 
 	// Flush old database from the cache
 	stationDbCache.purgeStale();
@@ -630,8 +725,10 @@ async function produceOutputFiles() {
 // distributing the load amongst either many servers or a CDN cache
 // it also has the advantage that you can keep a snapshot in time simply
 // by keeping the file.
-async function produceOutputFile( station, inputdb ) {
+async function produceOutputFile( inputdb ) {
 
+	const station = inputdb.stationName;
+	
 	// Form up meta data useful for the display, this needs to be written regardless
 	// 
 	let stationmeta = {	outputDate: new Date().toISOString() };
@@ -646,19 +743,19 @@ async function produceOutputFile( station, inputdb ) {
 	writeFile( outputPath+name+'.json', JSON.stringify(stationmeta,null,2), (err) => err ? console.log("stationmeta write error",err) : null);
 	
 	// Check to see if we need to produce an output file, set to 1 when clean
-	if( station != 'global' && stations[station].clean ) {
+	if( station && stations[station].clean ) {
 		return 0;
 	}
 
 	// Start the writing process by initalising a set of serialisers for arrow data
-	let arrow = CoverageRecord.initArrow( station == 'global' ? bufferTypes.global : bufferTypes.station );
+	let arrow = CoverageRecord.initArrow( (! station) ? bufferTypes.global : bufferTypes.station );
 
 	// Go throuh the whole database and load each record, parse it and add to the arrow
 	// structure. The structure is data aware so will generate appropriate output for
 	// each type
 	for await ( const [key,value] of inputdb.iterator()) {
 		let br = new CoverageRecord(value);
-		br.appendToArrow( ''+key, arrow );
+		br.appendToArrow( new CoverageHeader(key), arrow );
 	}
 
 	// Finalise the arrow table so we can serialise it to the disk
@@ -675,7 +772,7 @@ async function produceOutputFile( station, inputdb ) {
 	pt.end();
 
 	// We are clean so we won't dump till new packets
-	if( station != 'global' ) {
+	if( station ) {
 		stations[station].clean = 1;
 	}
 }
