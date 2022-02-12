@@ -11,7 +11,7 @@ main()
 //
 async function main() {
 
-	if(1)
+	if(0)
     {
         let br = new BinaryRecord( bufferTypes.station );
 
@@ -30,7 +30,7 @@ async function main() {
         xr.print();
     }
 
-	if(1)
+	if(0)
     {
         console.log('=== global rollup ===');
         let gr = new BinaryRecord( bufferTypes.global );
@@ -72,6 +72,7 @@ async function main() {
             console.log( 'pass - null return' );
         }
         console.log('-- rollup one plus add 1, rollup add another, remove 1 rollup. should have {2,3} left');
+		console.log("----" );
         gr.update(1,2,3,4,1);
         gr.update(1,2,3,4,2);
         r = r2.rollup(gr);
@@ -80,16 +81,39 @@ async function main() {
         gr.removeStation(1);
         r = r2.rollup(gr);
         r.print();
-
-        console.log('-- rollup switch' );
-        gr = new BinaryRecord( bufferTypes.global );
-        gr2 = new BinaryRecord( bufferTypes.global );
+		console.log("!!!" );
+	}
+	{
+        console.log('=================== rollup switch' );
+		let gr = new BinaryRecord( bufferTypes.global );
+        let gr2 = new BinaryRecord( bufferTypes.global );
         gr.update(1,2,3,4,1);
         gr2.update(10,20,30,40,2);
-        r = gr.rollup(gr2);
+        let r = gr.rollup(gr2);
         r.print();
+		console.log( '<==> (order dependent) should be opposite output' );
+        r = gr2.rollup(gr);
+        r.print();
+
+		console.log( '-- remove station (should print count2 for station1)' );
+		r.update(100,200,300,400,3);
+		r.update(10,20,30,40,1);
+		let s = new Set(); s.add(1); s.add(2);
+		r = r.removeInvalidStations(s)
+		r.print();
+		
+		console.log( '-- remove station (should print count2 for station1, count1 for station3)' );
+		r.update(100,200,300,22,3);
+        r.update(10,20,30,40,5);
+		r.update(10,20,30,40,1);
+		s.add(3);
+		r = r.removeInvalidStations(s)
+		s.delete(3);
+		r = r.removeInvalidStations(s)
+		r.print();
     }
 
+	if(0)
 	{
         console.log('=== station rollup ===');
 		{
@@ -101,7 +125,7 @@ async function main() {
 			let r = br.rollup(gr);
 			r.print()
 		}
-		console.log( '<==> (order independent) should be same output' );
+		console.log( '<==> (order dependent) should NOTbe same output' );
 		// note global rollups are NOT order independent but station
 		// ones should be
 		{
@@ -116,7 +140,7 @@ async function main() {
 
 	}
 
-	if( 1 )
+	if( 0 )
 	{
 		console.log( '--- arrow ---' );
         let gr = new BinaryRecord( bufferTypes.global );
