@@ -87,6 +87,8 @@ const reExtractVC = / [+-]([0-9]+)fpm /;
 // Cache so we aren't constantly reading/writing from the db
 let dirtyH3s = new Map();
 let lastH3update = new Map();
+let dirtyH3reuse = 0;
+let dirtyH3alloc = 0;
 
 // APRS Server Keep Alive
 const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD||2 * 60 * 1000;
@@ -299,6 +301,7 @@ async function startAprsListener( m = undefined ) {
 		const h3delta = h3length - lastH3length;
 		const h3expired = flushStats.expired;
 		const h3written = flushStats.written;
+		console.log( `dh3reuse ${dirtyH3reuse}, dh3alloc ${dirtyH3alloc}` );
 		console.log( `elevation cache: ${getCacheSize()}, openDbs: ${stationDbCache.size+2},  valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s` );
 		console.log( `total stations: ${nextStation-1}, seen stations ${Object.keys(stations).length}` );
 		console.log( JSON.stringify(packetStats))
@@ -452,7 +455,7 @@ function updateStationBuffer(stationid, h3k, br, altitude, agl, crc, signal, rel
 	br.update( altitude, agl, crc, signal, stationid );
 	
 	// 
-	lastH3update.set(h3k, Date.now());
+	lastH3update.set(h3k.lockKey, Date.now());
 	release();
 }
 
@@ -472,20 +475,23 @@ async function mergeDataIntoDatabase( stationid, dbStationId, db, h3, altitude, 
 		// If we have some unwritten changes for this h3 then we will simply
 		// use the entry in the 'dirty' table. This table gets flushed
 		// on a periodic basis
-		const br = dirtyH3s.get(h3k);
+		const br = dirtyH3s.get(h3k.lockKey);
 		if( br ) {
 			updateStationBuffer( stationid, h3k, br, altitude, agl, crc, signal, release() )
+			dirtyH3reuse++;
 		}
 		else {
 			db.get( h3k.dbKey )
 			  .then( (value) => {
 				  const buffer = new CoverageRecord( value );
-				  dirtyH3s.set(h3k,buffer);
+				  dirtyH3s.set(h3k.lockKey,buffer);
+				  dirtyH3alloc++;
 				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, release() );
 			  })
 			  .catch( (err) => {
 				  const buffer = new CoverageRecord( stationid ? bufferTypes.global : bufferTypes.station );
-				  dirtyH3s.set(h3k,buffer);
+				  dirtyH3s.set(h3k.lockKey,buffer);
+				  dirtyH3alloc++;
 				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, release() );
 			  });
 		}
@@ -522,7 +528,7 @@ async function flushDirtyH3s(allUnwritten) {
 
 	// Go through all H3s in memory and write them out if they were updated
 	// since last time we flushed
-	for (const [h3k,v] of dirtyH3s) {
+	for (const [h3klockkey,v] of dirtyH3s) {
 
 		promises.push( new Promise( (resolve) => {
 		
@@ -530,18 +536,20 @@ async function flushDirtyH3s(allUnwritten) {
 			// one transaction is active for a given h3 at a time, this will
 			// block all the other ones until the first completes, it's per db
 			// no issues updating h3s in different dbs at the same time
-			lock( h3k.lockKey, function (release) {
+			lock( h3klockkey, function (release) {
 				
-				const updateTime = lastH3update.get(h3k);
+				const updateTime = lastH3update.get(h3klockkey);
 				
 				// If it's expired then we will purge it... 
 				if( updateTime < expirypoint ) {
-					dirtyH3s.delete(h3k);
-					lastH3update.delete(h3k);
+					dirtyH3s.delete(h3klockkey);
+					lastH3update.delete(h3klockkey);
 					stats.expired++;
 				}
 				// Only write if changes and not active
 				else if( allUnwritten || updateTime < lastDirtyWrite ) {
+					
+					const h3k = new CoverageHeader(h3klockkey);
 					
 					// Add to the write out structures
 					if( ! dbOps.has(h3k.dbid) ) {
