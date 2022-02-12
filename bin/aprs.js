@@ -333,6 +333,7 @@ async function startAprsListener( m = undefined ) {
 
 	}, h3CacheFlushPeriod ));
 
+	/*
 	let doneOnce = false;
 	intervals.push(setInterval( async function() {
 		const now = new Date();
@@ -353,7 +354,7 @@ async function startAprsListener( m = undefined ) {
 			});
 		}
 	}, h3RollupPeriod ));
-
+*/
 	// Make sure we have these from existing DB as soon as possible
 	produceOutputFiles();
 
@@ -516,7 +517,7 @@ async function mergeDataIntoDatabase( stationid, dbStationId, db, h3, altitude, 
 			updateStationBuffer( stationid, h3k, br, altitude, agl, crc, signal, release() )
 		}
 		else {
-			db.get( h3k.lockKey )
+			db.get( h3k.dbKey() )
 			  .then( (value) => {
 				  const buffer = new CoverageRecord( value );
 				  dirtyH3s.set(h3k.lockKey,buffer);
@@ -588,7 +589,7 @@ async function flushDirtyH3s(allUnwritten) {
 					if( ! dbOps.has(h3k.dbid) ) {
 						dbOps.set(h3k.dbid, new Array());
 					}
-					dbOps.get(h3k.dbid).push( { type: 'put', key: h3klockkey, value: Buffer.from(v.buffer()) });
+					dbOps.get(h3k.dbid).push( { type: 'put', key: h3k.dbKey(), value: Buffer.from(v.buffer()) });
 					stats.written++;
 				}
 				// we are done, no race condition on write as it's either written to the
