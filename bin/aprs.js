@@ -17,7 +17,7 @@ import dotenv from 'dotenv';
 
 import { ignoreStation } from '../lib/bin/ignorestation.js'
 
-import { BinaryRecord, bufferTypes } from '../lib/bin/binaryrecord.js';
+import { CoverageRecord, bufferTypes } from '../lib/bin/binaryrecord.js';
 
 import h3 from 'h3-js';
 
@@ -25,7 +25,6 @@ import _findindex from 'lodash.findindex';
 import _zip from 'lodash.zip';
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
-import _sortby from 'lodash.sortby';
 import _reject from 'lodash.reject';
 
 // DB locking
@@ -480,12 +479,12 @@ async function mergeDataIntoDatabase( stationid, dbname, db, h3, altitude, agl, 
 		else {
 			db.get( h3 )
 			  .then( (value) => {
-				  const buffer = new BinaryRecord( value );
+				  const buffer = new CoverageRecord( value );
 				  dirtyH3s.set(cacheKey,buffer);
 				  updateStationBuffer( stationid, dbname, h3, buffer, altitude, agl, crc, signal, release() );
 			  })
 			  .catch( (err) => {
-				  const buffer = new BinaryRecord( stationid ? bufferTypes.global : bufferTypes.station );
+				  const buffer = new CoverageRecord( stationid ? bufferTypes.global : bufferTypes.station );
 				  dirtyH3s.set(cacheKey,buffer);
 				  updateStationBuffer( stationid, dbname, h3, buffer, altitude, agl, crc, signal, release() );
 			  });
@@ -652,18 +651,18 @@ async function produceOutputFile( station, inputdb ) {
 	}
 
 	// Start the writing process by initalising a set of serialisers for arrow data
-	let arrow = BinaryRecord.initArrow( station == 'global' ? bufferTypes.global : bufferTypes.station );
+	let arrow = CoverageRecord.initArrow( station == 'global' ? bufferTypes.global : bufferTypes.station );
 
 	// Go throuh the whole database and load each record, parse it and add to the arrow
 	// structure. The structure is data aware so will generate appropriate output for
 	// each type
 	for await ( const [key,value] of inputdb.iterator()) {
-		let br = new BinaryRecord(value);
+		let br = new CoverageRecord(value);
 		br.appendToArrow( ''+key, arrow );
 	}
 
 	// Finalise the arrow table so we can serialise it to the disk
-	const outputTable = BinaryRecord.finalizeArrow(arrow);
+	const outputTable = CoverageRecord.finalizeArrow(arrow);
 
 //	console.table( [...outputTable].slice(0,10))
 	
