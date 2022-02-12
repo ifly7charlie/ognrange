@@ -278,7 +278,7 @@ async function startAprsListener( m = undefined ) {
 		}
 		
         // Re-establish the APRS connection if we haven't had anything in
-        if( ! connection.valid ) {
+        if( ! connection.valid && ! connection.exiting ) {
             console.log( "failed APRS connection, retrying" );
             connection.disconnect( () => { connection.connect() } );
         }
