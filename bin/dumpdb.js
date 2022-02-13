@@ -26,7 +26,7 @@ async function main() {
 	outputPath = process.env.OUTPUT_PATH||outputPath;
 
 	let db = LevelUP(LevelDOWN(dbPath+'global'))
-	
+/*
 	for await ( const [key,value] of db.iterator() ) {
 		console.log( ''+key, value );
 	}
@@ -51,11 +51,10 @@ async function main() {
 		console.log( hr.lockKey )
 	}
 	console.log('>>> tada>>>');
-
+*/
 	
 	let n = db.iterator();
-	let p = await n.seek( '0/y/9' );
-
+	let accumulators = {};
 	let x = n.next();
 	let y = null;
 	 while(y = await x) {
@@ -64,11 +63,18 @@ async function main() {
 			const [key,value] = y;
 			let br = new CoverageRecord(value);
 			let hr = new CoverageHeader(key);
-
 			console.log( hr.lockKey )
-//		br.print();
-		}
-		x = n.next();
-	}
+
+			accumulators[ hr.accumulator ] = String(key);
+			console.log( 'skip to ->', CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ) )
+
+			// Skip to next bucket
+			await n.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
+		} 
+		 x = n.next();
+	 }
+
+	console.log( '--- accumulators found ---' );
+	console.log( accumulators );
 }
 
