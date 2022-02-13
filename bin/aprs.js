@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 // Import the APRS server
 import { ISSocket } from 'js-aprs-is';
 import { aprsParser } from  'js-aprs-fap';
@@ -22,8 +24,6 @@ import { CoverageHeader, accumulatorTypes } from '../lib/bin/coverageheader.js';
 
 import h3 from 'h3-js';
 
-import _findindex from 'lodash.findindex';
-import _zip from 'lodash.zip';
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
 import _sortby from 'lodash.sortby';
@@ -68,7 +68,7 @@ let metrics = undefined;
 // We serialise to disk using protobuf
 //import protobuf from 'protobufjs/light.js';
 //import { OnglideRangeMessage } from '../lib/range-protobuf.mjs';
-import { writeFile, mkdirSync, createWriteStream } from 'fs';
+import { writeFile, mkdirSync, createWriteStream, unlinkSync, symlinkSync } from 'fs';
 import { PassThrough } from 'stream';
 
 import { makeTable, tableFromArrays, RecordBatchWriter, makeVector, FixedSizeBinary,
@@ -103,7 +103,8 @@ const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD_MINUTES||2 * 60 * 
 const h3CacheFlushPeriod = (process.env.H3_CACHE_FLUSH_PERIOD_MINUTES||5)*60*1000;
 const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME_MINUTES||16)*60*1000;
 
-const h3RollupPeriod = (process.env.ROLLUP_PERIOD||1)*60*1000;
+const h3RollupPeriod = (process.env.ROLLUP_PERIOD_HOURS||60)*60*1000;
+
 // how much detail to collect, bigger numbers = more cells! goes up fast see
 // https://h3geo.org/docs/core-library/restable for what the sizes mean
 const H3_STATION_CELL_LEVEL = (process.env.H3_STATION_CELL_LEVEL||8);
@@ -362,15 +363,13 @@ async function startAprsListener( m = undefined ) {
 	
 	let doneOnce = false;
 	intervals.push(setInterval( async function() {
-		const now = new Date();
+//		const now = new Date();
 		const oldAccumulator = [...currentAccumulator];
 
 		// If the accumulator period has changed then we need to update
 		// where we are writing
-		if( now.getUTCMinutes() != currentAccumulator[1] && ! doneOnce ) {
-//			connection.disconnect();
-//			doneOnce = true;
-			currentAccumulator = [ 'day', now.getUTCMinutes() ]; // get it in UTC
+//		if( now.getUTCMinutes() != currentAccumulator[1] && ! doneOnce ) {
+//			currentAccumulator = [ 'current', now.getUTCMinutes() ]; // get it in UTC
 
 			// Make sure everything has been flushed - new ones should be into new accumulator
 			// which we are ignoring anyway
@@ -378,19 +377,19 @@ async function startAprsListener( m = undefined ) {
 				// rollup old accumulator
 				rollup( oldAccumulator );
 			});
-		}
+//		}
 	}, h3RollupPeriod ));
 
 	// Make sure we have these from existing DB as soon as possible
 	produceOutputFiles();
 
 	// On an interval we will dump out the coverage tables
-	intervals.push(setInterval( function() {
+/*	intervals.push(setInterval( function() {
 		flushDirtyH3s(true).then( () => {
 			produceOutputFiles()
 		});
 	}, (process.env.OUTPUT_INTERVAL_MIN||60)*60*1000));
-	
+*/	
 }
 
 
@@ -493,7 +492,7 @@ async function processPacket( packet ) {
 		packetStats.ignoredSignal0++;
 		return;
 	}
-
+	
 	// Enrich with elevation and send to everybody, this is async
 	// and we don't need it's results to say we logged the packet
 	getElevationOffset( packet.latitude, packet.longitude,
@@ -513,6 +512,9 @@ async function packetCallback( station, h3id, altitude, agl, crc, signal, gap, t
 	// Find the id for the station or allocate
 	const stationid = await getStationId( station );
 	
+	// Packet for station marks it for dumping next time round
+	stations[station].lastPacket = timestamp;
+	
 	// Open the database, do this first as takes a bit of time
 	let stationDb = stationDbCache.get(stationid);
 	if( ! stationDb ) {
@@ -520,9 +522,6 @@ async function packetCallback( station, h3id, altitude, agl, crc, signal, gap, t
 		stationDb.ognInitialTS = Date.now();
 		stationDb.ognStationName = station;
 	}
-
-	// Packet for station marks it for dumping next time round
-	stations[station].clean = false;
 
 	// Merge into both the station db (0,0) and the global db with the stationid we allocated
 	// we don't pass stationid into the station specific db because there only ever is one
@@ -687,21 +686,46 @@ async function flushDirtyH3s(allUnwritten) {
 
 async function rollup( accumulator ) {
 
-	const rollups = [ 'month', 'year' ];
+	console.log( "rollup!!");
+	const now = new Date();
+	const nowEpoch = Math.floor(Date.now()/1000);
+	const expiryEpoch = nowEpoch - ((process.env.STATION_EXPIRY_TIME_DAYS||31)*24*3600);
 	
-	let inputdb = globalDb;
+	const rollups = [ 'day', 'month', 'year' ];
+
+	// Determine if any stations have had traffic before expiry
+	const validStations = new Set();
+	Object.keys(stations).forEach( (k) => {
+		if( (stations[k].lastPacket||nowEpoch) > expiryEpoch ) {
+			validStations.add(Number(stations[k].id));
+		}
+		else {
+			console.log( `expiring ${k} no traffic for a while` );
+		}
+	});
+	
+	let db = globalDb;
+	let station = 0;
+	const name = (station||'global')
 	{
 		let dbOps = [];
 
-//	accumulators = { day: { bucket: currentAccumulator[1], previous: new Date(Date.now()-(24*3600+1)).getUTCMinute() },
-//					 month: { bucket: now.getUTCMonth(), previous: (now.getUTCMonth()+11)%12 },
-//					 year:  { bucket: now.getUTCYear(), previous: now.getUTCYear()-1 }};
+		accumulators = { day: { bucket: now.getUTCDay(), previous: new Date(Date.now()-(24*3600+1)).getUTCDay() },
+						 month: { bucket: now.getUTCMonth(), previous: (now.getUTCMonth()+11)%12 },
+						 year:  { bucket: now.getUTCFullYear(), previous: now.getUTCFullYear()-1 }};
 		//
 		// Basically we finish our current accumulator into the active buckets for each of the others
 		// and then we need to check if we should be moving them to new buckets or not
+	// Start the writing process by initalising a set of serialisers for arrow data
+//	let arrow = CoverageRecord.initArrow( (! station) ? bufferTypes.global : bufferTypes.station );
 		
 		// We step through all of the items together and update as one
-		const rollupIterators = _map( rollups, (r) => {return { type:r, iterator:inputdb.iterator( CoverageHeader.getDbSearchRangeForAccumulator( r, accumulators[r].bucket ))}});
+		const rollupIterators = _map( rollups, (r) => {
+			return { type:r,
+					 iterator:db.iterator( CoverageHeader.getDbSearchRangeForAccumulator( r, accumulators[r].bucket )),
+					 arrow: CoverageRecord.initArrow( (! station) ? bufferTypes.global : bufferTypes.station ),
+			}
+		});
 
 		console.log('my accu',CoverageHeader.getDbSearchRangeForAccumulator(...accumulator));
 		console.log( 'current h3k',(new CoverageHeader( 0, ...accumulator, '801212341234ffff' )).toString());
@@ -709,14 +733,15 @@ async function rollup( accumulator ) {
 		// Initalise the rollup array with [k,v]
 		const rollupData = _map( rollupIterators, (r) => {return { n:r.iterator.next(), ...r}} );
 
-		for await ( const [key,value] of inputdb.iterator()) {
+		/*
+		for await ( const [key,value] of db.iterator()) {
 			const h3kr = new CoverageHeader(key);
 			if( h3kr.bucket == accumulator[1] ) {
 				console.log( h3kr.toString() );
 			}
-		}
+		} */
 		
-		for await ( const [key,value] of inputdb.iterator( CoverageHeader.getDbSearchRangeForAccumulator(...accumulator)) ) {
+		for await ( const [key,value] of db.iterator( CoverageHeader.getDbSearchRangeForAccumulator(...accumulator)) ) {
 
 			// The 'current' value - ie the data we are merging in.
 			const h3k = new CoverageHeader(key);
@@ -732,10 +757,14 @@ async function rollup( accumulator ) {
 					let [prefixedh3r,rollupValue] = n || [null, null]; // iterator async so wait for it to complete
 
 					// We have hit the end of the data for the accumulator but we still have items
-					// then we need to copy the next data across
+					// then we need to copy the next data across - 
 					if( ! prefixedh3r ) {
 						if( r.lastCopiedH3r != h3k.lockKey ) {
-							dbOps.push( { type: 'put', key: Buffer.from(CoverageHeader.newAccumulator(h3k,r.type,r.bucket).dbkey), value: Buffer.from(currentBr.buffer()) } );
+							const h3kr = h3k.getAccumulatorForBucket(r.type,r.bucket);
+							dbOps.push( { type: 'put',
+										  key: h3kr.dbKey(),
+										  value: Buffer.from(currentBr.buffer()) } );
+							currentBr.appendToArrow( h3kr, r.arrow );
 							r.lastCopiedH3r = h3k.lockKey;
 						}
 						
@@ -744,7 +773,7 @@ async function rollup( accumulator ) {
 							r.iterator.end();
 							r.n = null;
 						}
-						return;
+						continue;
 					}
 					
 					const h3kr = new CoverageHeader(prefixedh3r);
@@ -753,7 +782,7 @@ async function rollup( accumulator ) {
 					// Need to wait for others to catch up and to advance current
 					// (primary is less than rollup)
 					if( ordering < 0 ) {
-						return;
+						continue;
 					}
 					
 					let br = new CoverageRecord(rollupValue);
@@ -774,18 +803,25 @@ async function rollup( accumulator ) {
 					// adjustment 
 					if( updatedBr != br ) {
 						if( ! updatedBr ) {
-							dbOps.push( { type: 'delete', key: Buffer.from(h3kr.dbkey) } );
+							dbOps.push( { type: 'del', key: h3kr.dbKey() } );
 						}
 						else {
-							dbOps.push( { type: 'put', key: Buffer.from(h3kr.dbkey), value: Buffer.from(updatedBr.buffer()) });
+							dbOps.push( { type: 'put', key: h3kr.dbKey(), value: Buffer.from(updatedBr.buffer()) });
 						}
 					}
+					if( updatedBr ) {
+						updatedBr.appendToArrow( h3kr, r.arrow );
+					}
+						
 					// Move to the next one, we don't advance till nobody has moved forward (async so promise)
 					r.n = r.iterator.next();
 					advance = false;
 				}
 				
 			} while( ! advance );
+
+			// Once we have accumulated we delete the accumulator key
+			dbOps.push( { type: 'del', key: h3k.dbKey() })
 		}
 		// Finally if we have rollups with data after us then we need to update their invalidstations
 		// now we go through them in step form
@@ -799,27 +835,76 @@ async function rollup( accumulator ) {
 					const h3kr = new CoverageHeader(prefixedh3r);
 					let br = new CoverageRecord(rollupValue);
 					
-					let updatedBr = br.removeInvalidStations(validStations);;
+					let updatedBr = br.removeInvalidStations(validStations);
 					
 					// Check to see what we need to do with the database
 					if( updatedBr != br ) {
 						if( ! updatedBr ) {
-							dbOps.push( { type: 'delete', key: Buffer.from(h3kr.dbkey) } );
+							dbOps.push( { type: 'del', key: h3kr.dbKey() } );
 						}
 						else {
-							dbOps.push( { type: 'put', key: Buffer.from(h3kr.dbkey), value: Buffer.from(updatedBr.buffer()) });
+							dbOps.push( { type: 'put', key: h3kr.dbKey(), value: Buffer.from(updatedBr.buffer()) });
 						}
 					}
+					if( updatedBr ) {
+						updatedBr.appendToArrow( h3kr, r.arrow );
+					}
 					// Move to the next one, we don't advance till nobody has moved forward
-					[prefixedh3r,rollupValue] = await r.iterator.next();
+					r.n = r.iterator.next();
+					n = r.n ? (await r.n) : undefined;
+					[prefixedh3r,rollupValue] = n || [null, null]; // iterator async so wait for it to complete
 				}
 
 				r.n = null;
 				r.iterator.end();
 			}
-			console.table( dbOps );
+
+			// We are going to write out our accumulators
+			const accumulatorName = `${name}.${r.type}.${accumulators[r.type].bucket}.arrow`;
+
+			// Finalise the arrow table so we can serialise it to the disk
+			{
+			const outputTable = CoverageRecord.finalizeArrow(r.arrow);
+			const pt = new PassThrough( { objectMode: true } )
+			const result = pt
+				.pipe( RecordBatchWriter.throughNode())
+				.pipe( createWriteStream( outputPath+accumulatorName ));
+			
+			pt.write(outputTable);
+			pt.end();
+			console.log( `written ${accumulatorName}` );
+			}
+			
+			try {
+				unlinkSync( outputPath+`${name}.${r.type}.arrow` );
+			} catch(e) {
+			}
+			try {
+				symlinkSync( outputPath+`${name}.${r.type}.arrow`, outputPath+accumulatorName, 'file' );
+			} catch(e) {
+				console.log( `error symlinking ${outputPath}${name}.${r.type}.arrow for ${outputPath+accumulatorName}` );
+			}
 		}
+
+		console.table(dbOps.slice(0,10))
+		dbOps = _sortby( dbOps, [ 'key' ])
+
+		//
+		// Finally execute all the operations on the database
+		console.log( `Writing ${dbOps.length} rollup operations on the database ${db.ognStationName||'global'}` );
+		const p = new Promise( (resolve) => {
+			db.batch(dbOps, (e) => {
+				// log errors
+				if(e) console.error('error flushing db operations for station id',name,e);
+				resolve();
+			});
+		});
+		await p;
+	
+		console.log( `Done ${dbOps.length} rollup operations on the database ${db.ognStationName||'global'}` );
 	}
+
+	
 }
 
 //
@@ -864,8 +949,10 @@ async function produceOutputFile( inputdb ) {
 	const station = inputdb.stationName;
 	
 	// Form up meta data useful for the display, this needs to be written regardless
-	// 
-	let stationmeta = {	outputDate: new Date().toISOString() };
+	//
+	let now = Math.floor(Date.now()/1000);
+	let outputDate = new Date().toISOString();
+	let stationmeta = {	outputDate: outputDate, outputEpoch: now };
 	if( station && station != 'global') {
 		try {
 			stationmeta = { ...stationmeta, meta: JSON.parse(await statusDb.get( station )) };
@@ -877,7 +964,7 @@ async function produceOutputFile( inputdb ) {
 	writeFile( outputPath+name+'.json', JSON.stringify(stationmeta,null,2), (err) => err ? console.log("stationmeta write error",err) : null);
 	
 	// Check to see if we need to produce an output file, set to 1 when clean
-	if( station && stations[station].clean ) {
+	if( station && stations[station].lastPacket < stations[station].lastOutputFile ) {
 		return 0;
 	}
 
@@ -907,7 +994,9 @@ async function produceOutputFile( inputdb ) {
 
 	// We are clean so we won't dump till new packets
 	if( station ) {
-		stations[station].clean = 1;
+		stations[station].outputDate = outputDate;
+		stations[station].outputEpoch = now;
+		stations[station].lastOutputFile = now;
 	}
 }
 
