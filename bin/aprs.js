@@ -855,7 +855,7 @@ async function produceOutputFile( inputdb ) {
 	const pt = new PassThrough( { objectMode: true } )
 	const result = pt
 		.pipe( RecordBatchWriter.throughNode())
-		.pipe( createWriteStream( outputPath+name+name+'.arrow' ));
+		.pipe( createWriteStream( outputPath+name+'.arrow' ));
 	
 	pt.write(outputTable);
 	pt.end();
