@@ -170,6 +170,9 @@ async function handleExit(signal) {
 	console.log(`${signal}: flushing data`)
 	connection.exiting = true;
 	connection.disconnect();
+	for( const i of intervals ) {
+		clearInterval(i);
+	}
 	
 	await flushDirtyH3s(true);
 	await produceOutputFiles();
@@ -178,9 +181,7 @@ async function handleExit(signal) {
 	});
 	globalDb.close();
 	statusDb.close();
-	for( const i of intervals ) {
-		clearInterval(i);
-	}
+	connection = null;
 	console.log(`${signal}: done`)
 }
 process.on('SIGINT', handleExit);
@@ -217,10 +218,10 @@ async function startAprsListener( m = undefined ) {
 
     // Handle a data packet
     connection.on('packet', async function (data) {
-        connection.valid = true;
-		if( connection.exiting ) {
+		if( !connection || connection.exiting ) {
 			return;
 		}
+        connection.valid = true;
         if( data.charAt(0) != '#' && !data.startsWith('user')) {
             const packet = parser.parseaprs(data);
             if( "latitude" in packet && "longitude" in packet &&
@@ -333,7 +334,6 @@ async function startAprsListener( m = undefined ) {
 
 	}, h3CacheFlushPeriod ));
 
-	/*
 	let doneOnce = false;
 	intervals.push(setInterval( async function() {
 		const now = new Date();
@@ -342,8 +342,8 @@ async function startAprsListener( m = undefined ) {
 		// If the accumulator period has changed then we need to update
 		// where we are writing
 		if( now.getUTCMinutes() != currentAccumulator[1] && ! doneOnce ) {
-			connection.disconnect();
-			doneOnce = true;
+//			connection.disconnect();
+//			doneOnce = true;
 			currentAccumulator = [ 'day', now.getUTCMinutes() ]; // get it in UTC
 
 			// Make sure everything has been flushed - new ones should be into new accumulator
@@ -354,7 +354,7 @@ async function startAprsListener( m = undefined ) {
 			});
 		}
 	}, h3RollupPeriod ));
-*/
+
 	// Make sure we have these from existing DB as soon as possible
 	produceOutputFiles();
 
