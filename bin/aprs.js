@@ -90,7 +90,7 @@ let dirtyH3s = new Map();
 let lastH3update = new Map();
 
 // APRS Server Keep Alive
-const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD||2 * 60 * 1000;
+const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD_MINUTES||2 * 60 * 1000;
 
 // Cache control - we cache the datablocks by station and h3 to save us needing
 // to read/write them from/to the DB constantly. Note that this can use quite a lot
@@ -100,8 +100,8 @@ const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD||2 * 60 * 1000;
 // - expirytime is how long they can remain in memory without being purged. If it
 //   is in memory then it will be used rather than reading from the db.
 // 
-const h3CacheFlushPeriod = (process.env.H3_CACHE_FLUSH_PERIOD||5)*60*1000;
-const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME||16)*60*1000;
+const h3CacheFlushPeriod = (process.env.H3_CACHE_FLUSH_PERIOD_MINUTES||5)*60*1000;
+const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME_MINUTES||16)*60*1000;
 
 const h3RollupPeriod = (process.env.ROLLUP_PERIOD||1)*60*1000;
 // how much detail to collect, bigger numbers = more cells! goes up fast see
