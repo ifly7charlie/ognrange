@@ -26,7 +26,7 @@ import _findindex from 'lodash.findindex';
 import _zip from 'lodash.zip';
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
-import _reject from 'lodash.reject';
+import _sortby from 'lodash.sortby';
 
 // DB locking
 import { Lock } from 'lock'
@@ -59,7 +59,8 @@ let intervals = [];
 
 // APRS connection
 let connection = {};
-let gliders = {};
+let aircraftStation = new Map();
+let aircraftSeen = new Map();
 
 // PM2 Metrics
 let metrics = undefined;
@@ -103,6 +104,10 @@ const h3CacheFlushPeriod = (process.env.H3_CACHE_FLUSH_PERIOD||5)*60*1000;
 const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME||16)*60*1000;
 
 const h3RollupPeriod = (process.env.ROLLUP_PERIOD||1)*60*1000;
+// how much detail to collect, bigger numbers = more cells! goes up fast see
+// https://h3geo.org/docs/core-library/restable for what the sizes mean
+const H3_STATION_CELL_LEVEL = (process.env.H3_STATION_CELL_LEVEL||8);
+const H3_GLOBAL_CELL_LEVEL = (process.env.H3_GLOBAL_CELL_LEVEL||7);
 
 // We need to use a protected data structure to generate ids
 // for the station ID. This allows us to use atomics, will also
@@ -334,6 +339,27 @@ async function startAprsListener( m = undefined ) {
 
 	}, h3CacheFlushPeriod ));
 
+	intervals.push(setInterval( async function() {
+
+		const purgeBefore = (Date.now()/1000) - (process.env.FORGET_AIRCRAFT_AFTER_HOURS||12)*60*3600;
+		let total = aircraftSeen.size;
+		
+		aircraftSeen.forEach( (timestamp,key) => {
+			if( timestamp < purgeBefore ) {
+				aircraftSeen.delete(key);
+			}
+		});
+		aircraftStation.forEach( (timestamp,key) => {
+			if( timestamp < purgeBefore ) {
+				aircraftStation.delete(key);
+			}
+		});
+		
+		let purged = total - aircraftSeen.size;
+		console.log( `purged ${purged} aircraft from gap map, ${aircraftSeen.size} remaining` );
+		
+	}, h3CacheFlushPeriod*2.5 ));
+	
 	let doneOnce = false;
 	intervals.push(setInterval( async function() {
 		const now = new Date();
@@ -435,6 +461,24 @@ async function processPacket( packet ) {
 		}
 	}
 
+	// If we have a gap then we will capture this (it was from a previous record but only time
+	// that is an issue is when rolling aggregators - at which point we have reset aircraftStation
+	// anyway (IS IT??)
+	//
+	// THIS LOGIC IS EXPERIMENTAL!
+	//
+	// The goal is to have some kind of shading that indicates how reliable packet reception is
+	// which is to  a little to do with how many packets are received.
+	let gap;
+	{
+		const gs = sender + '/' + flarmId;
+		const seen = aircraftSeen.get(flarmId);
+		const when = aircraftStation.get( gs );
+		gap = when ? Math.min(60,(packet.timestamp - when)) : (Math.min(60,Math.max(1,packet.timestamp - (seen||packet.timestamp))));
+		aircraftStation.set( gs, packet.timestamp );
+		aircraftSeen.set(flarmId, packet.timestamp );
+	}
+
 	// Look for signal strength and checksum - we will ignore any packet without a signal strength
 	// sometimes this happens to be missing and other times it happens because it is reported as 0.0
 	const rawStrength = (packet.comment.match(reExtractDb)||[0,0])[1];
@@ -455,7 +499,8 @@ async function processPacket( packet ) {
 	getElevationOffset( packet.latitude, packet.longitude,
 						async (gl) => {
 							const agl = Math.round(Math.max(altitude-gl,0));
-							packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude, 8), altitude, agl, crc, strength );
+							packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude,  H3_STATION_CELL_LEVEL),
+											altitude, agl, crc, strength, gap, packet.timestamp );
 	});
 	
 	packetStats.count++;
@@ -463,7 +508,7 @@ async function processPacket( packet ) {
 
 //
 // Actually serialise the packet into the database after processing the data
-async function packetCallback( station, h3id, altitude, agl, crc, signal ) {
+async function packetCallback( station, h3id, altitude, agl, crc, signal, gap, timestamp ) {
 
 	// Find the id for the station or allocate
 	const stationid = await getStationId( station );
@@ -482,14 +527,14 @@ async function packetCallback( station, h3id, altitude, agl, crc, signal ) {
 	// Merge into both the station db (0,0) and the global db with the stationid we allocated
 	// we don't pass stationid into the station specific db because there only ever is one
 	// it gets used to build the list of stations that can see the cell
-	mergeDataIntoDatabase( 0,          stationid, stationDb, h3id, altitude, agl, crc, signal );
-	mergeDataIntoDatabase( stationid,  0,         globalDb, h3.h3ToParent(h3id,7), altitude, agl, crc, signal);
+	mergeDataIntoDatabase( 0,          stationid, stationDb, h3id, altitude, agl, crc, signal, gap );
+	mergeDataIntoDatabase( stationid,  0,         globalDb, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL), altitude, agl, crc, signal, gap );
 }
 
-function updateStationBuffer(stationid, h3k, br, altitude, agl, crc, signal, release) {
+function updateStationBuffer(stationid, h3k, br, altitude, agl, crc, signal, gap, release) {
 
 	// Update the binary record with these values
-	br.update( altitude, agl, crc, signal, stationid );
+	br.update( altitude, agl, crc, signal, gap, stationid );
 	
 	// 
 	lastH3update.set(h3k.lockKey, Date.now());
@@ -500,7 +545,7 @@ function updateStationBuffer(stationid, h3k, br, altitude, agl, crc, signal, rel
 // We store the database records as binary bytes - in the format described in the mapping() above
 // this reduces the amount of storage we need and means we aren't constantly parsing text
 // and printing text.
-async function mergeDataIntoDatabase( stationid, dbStationId, db, h3, altitude, agl, crc, signal ) {
+async function mergeDataIntoDatabase( stationid, dbStationId, db, h3, altitude, agl, crc, signal, gap ) {
 
 	// Because the DB is asynchronous we need to ensure that only
 	// one transaction is active for a given h3 at a time, this will
@@ -514,19 +559,19 @@ async function mergeDataIntoDatabase( stationid, dbStationId, db, h3, altitude, 
 		// on a periodic basis
 		const br = dirtyH3s.get(h3k.lockKey);
 		if( br ) {
-			updateStationBuffer( stationid, h3k, br, altitude, agl, crc, signal, release() )
+			updateStationBuffer( stationid, h3k, br, altitude, agl, crc, signal, gap, release() )
 		}
 		else {
 			db.get( h3k.dbKey() )
 			  .then( (value) => {
 				  const buffer = new CoverageRecord( value );
 				  dirtyH3s.set(h3k.lockKey,buffer);
-				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, release() );
+				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, gap, release() );
 			  })
 			  .catch( (err) => {
 				  const buffer = new CoverageRecord( stationid ? bufferTypes.global : bufferTypes.station );
 				  dirtyH3s.set(h3k.lockKey,buffer);
-				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, release() );
+				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, gap, release() );
 			  });
 		}
 	});
