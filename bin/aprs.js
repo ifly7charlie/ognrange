@@ -21,12 +21,18 @@ import { ignoreStation } from '../lib/bin/ignorestation.js'
 
 import { CoverageRecord, bufferTypes } from '../lib/bin/coveragerecord.js';
 import { CoverageHeader, accumulatorTypes } from '../lib/bin/coverageheader.js';
+import { prefixWithZeros } from '../lib/bin/prefixwithzeros.js';
+
+import { mapAllCapped } from '../lib/bin/mapallcapped.js';
 
 import h3 from 'h3-js';
 
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
 import _sortby from 'lodash.sortby';
+import _isequal from 'lodash.isequal';
+import _clonedeep from 'lodash.clonedeep';
+import _filter from 'lodash.filter';
 
 // DB locking
 import { Lock } from 'lock'
@@ -54,13 +60,15 @@ stationDbCache.getTtl = (k) => {
 	 typeof performance.now === 'function' ? performance : Date).now() - stationDbCache.starts[stationDbCache.keyMap.get(k)]
 }
 
-// track any setInterval calls so we can stop them when asked to exit
+// track any setInterval/setTimeout calls so we can stop them when asked to exit
 let intervals = [];
+let timeouts = [];
 
 // APRS connection
 let connection = {};
 let aircraftStation = new Map();
 let aircraftSeen = new Map();
+let validStations = new Set();
 
 // PM2 Metrics
 let metrics = undefined;
@@ -68,11 +76,7 @@ let metrics = undefined;
 // We serialise to disk using protobuf
 //import protobuf from 'protobufjs/light.js';
 //import { OnglideRangeMessage } from '../lib/range-protobuf.mjs';
-import { writeFile, mkdirSync, createWriteStream, unlinkSync, symlinkSync } from 'fs';
-import { PassThrough } from 'stream';
-
-import { makeTable, tableFromArrays, RecordBatchWriter, makeVector, FixedSizeBinary,
-		 Utf8, Uint8, makeBuilder } from 'apache-arrow';
+import { writeFile, mkdirSync, unlinkSync, symlinkSync } from 'fs';
 
 
 // Default paths, can be overloaded using .env.local
@@ -86,38 +90,66 @@ const reExtractRot = / [+-]([0-9.]+)rot /;
 const reExtractVC = / [+-]([0-9]+)fpm /;
 
 // Cache so we aren't constantly reading/writing from the db
-let dirtyH3s = new Map();
-let lastH3update = new Map();
+let cachedH3s = new Map();
 
 // APRS Server Keep Alive
-const aprsKeepAlivePeriod = process.env.APRS_KEEPALIVE_PERIOD_MINUTES||2 * 60 * 1000;
+const aprsKeepAlivePeriod = (process.env.APRS_KEEPALIVE_PERIOD_MINUTES||2) * 60 * 1000;
 
-// Cache control - we cache the datablocks by station and h3 to save us needing
-// to read/write them from/to the DB constantly. Note that this can use quite a lot
-// of memory, but is a lot easier on the computer
-//
-// - flush period is how long they can remain in memory without being written
-// - expirytime is how long they can remain in memory without being purged. If it
-//   is in memory then it will be used rather than reading from the db.
-// 
-const h3CacheFlushPeriod = (process.env.H3_CACHE_FLUSH_PERIOD_MINUTES||5)*60*1000;
-const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME_MINUTES||16)*60*1000;
+/*
+# Cache control - we cache the datablocks by station and h3 to save us needing
+# to read/write them from/to the DB constantly. Note that this can use quite a lot
+# of memory, but is a lot easier on the computer (in MINUTES)
+# - flush period is how long they need to have been unused to be written
+#   it is also the period of time between checks for flushing. Increasing this
+#   will reduce the number of DB writes when there are lots of points being
+#   tracked
+# - MAXIMUM_DIRTY_PERIOD ensures that they will be written at least this often
+# - expirytime is how long they can remain in memory without being purged. If it
+#   is in memory then it will be used rather than reading from the db.
+#   purges happen normally at flush period intervals (so 5 and 16 really it will
+#   be flushed at the flush run at 20min)
+*/
+const h3CacheFlushPeriod = (process.env.H3_CACHE_FLUSH_PERIOD_MINUTES||1)*60*1000;
+const h3CacheExpiryTime = (process.env.H3_CACHE_EXPIRY_TIME_MINUTES||4)*60*1000;
+const h3CacheMaximumDirtyPeriod = (process.env.H3_CACHE_MAXIMUM_DIRTY_PERIOD_MINUTES||30)*60*1000;
 
-const h3RollupPeriod = (process.env.ROLLUP_PERIOD_HOURS||60)*60*1000;
+/*
+# ROLLUP is when the current accumulators are merged with the daily/monthly/annual
+# accumulators. All are done at the same time and the accumulators are 'rolled'
+# over to prevent double counting. This is a fairly costly activity so if the
+# disk or cpu load goes too high during this process (it potentially reads and 
+# writes EVERYTHING in every database) you should increase this number */
+const h3RollupPeriod = (process.env.ROLLUP_PERIOD_HOURS||3)*3600*1000;
+const ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_MS = (process.env.ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_SECONDS||60)*1000;
 
 // how much detail to collect, bigger numbers = more cells! goes up fast see
 // https://h3geo.org/docs/core-library/restable for what the sizes mean
 const H3_STATION_CELL_LEVEL = (process.env.H3_STATION_CELL_LEVEL||8);
 const H3_GLOBAL_CELL_LEVEL = (process.env.H3_GLOBAL_CELL_LEVEL||7);
 
+// # We keep maps of when we last saw aircraft and where so we can determine the
+// # timegap prior to the packet, this is sort of a proxy for the 'edge' of coverage
+// # however we don't need to know this forever so we should forget them after
+// # a while. The signfigence of forgetting is we will assume no gap before the
+// # first packet for the first aircraft/station pair. Doesn't start running
+// # until approximately this many hours have passed
+const FORGET_AIRCRAFT_AFTER_SEC = (process.env.FORGET_AIRCRAFT_AFTER_HOURS||12)*3600;
+
+// How far a station is allowed to move without resetting the history for it
+const STATION_MOVE_THRESHOLD_KM = (process.env.STATION_MOVE_THRESHOLD_KM||2);
+
+// If we haven't had traffic in this long then we expire the station
+const STATION_EXPIRY_TIME_SECS = (process.env.STATION_EXPIRY_TIME_DAYS||31)*3600*24;
+
 // We need to use a protected data structure to generate ids
 // for the station ID. This allows us to use atomics, will also
 // support clustering if we need it
 const sabbuffer = new SharedArrayBuffer(2);
 const nextStation = new Uint16Array(sabbuffer);
-let packetStats = { ignoredStation: 0, ignoredTracker:0, ignoredStationary:0, ignoredSignal0:0, ignoredPAW:0, count: 0 };
+let packetStats = { ignoredStation: 0, ignoredTracker:0, ignoredStationary:0, ignoredSignal0:0, ignoredPAW:0, count: 0, rawCount:0 };
+let rollupStats = { completed: 0, elapsed: 0 };
 
-let currentAccumulator = [ 'current', 0 ];
+let currentAccumulator = undefined; 
 let accumulators = {};
 
 function getAccumulator() { return currentAccumulator; }
@@ -134,24 +166,16 @@ async function main() {
 	dotenv.config({ path: '.env.local' })
 
 	dbPath = process.env.DB_PATH||dbPath;
-	outputPath = process.env.OUTPUT_PATH||outputPath;
-
-	const now = new Date();
-//	currentAccumulator = [ 'y', now.getUTCMinutes() ]; // get it in UTC
-
-	// Track all the accumulators
-	accumulators = { day: { bucket: now.getUTCMinutes(), previous: new Date(Date.now()-(24*3600+1)).getUTCMinutes() },
-					 month: { bucket: now.getUTCMonth(), previous: (now.getUTCMonth()+11)%12 },
-					 year:  { bucket: now.getUTCFullYear(), previous: now.getUTCFullYear()-1 }};
-	
-	console.log( currentAccumulator );
-	console.log( accumulators );
-
-	// Check and process unflushed accumulators at the start
-	// then we can increment the current number for each accumulator merge
-	
+	outputPath = process.env.OUTPUT_PATH||outputPath;	
 
 	console.log( `Configuration loaded DB@${dbPath} Output@${outputPath}` );
+
+	if( !outputPath.match(/\/$/)) {
+		outputPath += '/';
+	}
+	if( !dbPath.match(/\/$/)) {
+		dbPath += '/';
+	}
 
 	// Make sure our paths exist
 	try { 
@@ -179,9 +203,15 @@ async function handleExit(signal) {
 	for( const i of intervals ) {
 		clearInterval(i);
 	}
-	
+	for( const i of timeouts ) {
+		clearTimeout(i);
+	}
+
+	// Flush everything to disk
 	await flushDirtyH3s(true);
-	await produceOutputFiles();
+	await rollupAll( currentAccumulator, accumulators );
+
+	// Close all the databases and cleanly exit
 	stationDbCache.forEach( async function (db,key) {
 		db.close();
 	});
@@ -194,14 +224,16 @@ process.on('SIGINT', handleExit);
 process.on('SIGQUIT', handleExit);
 process.on('SIGTERM', handleExit);
 
-
+process.on('SIGINFO', displayStatus);
+process.on('SIGUSR1', async function () {
+	console.log( '-- data dump requested --' );
+	await flushDirtyH3s(true); rollupAll( currentAccumulator, accumulators ); })
 //
 // Connect to the APRS Server
 async function startAprsListener( m = undefined ) {
 
 	// In case we are using pm2 metrics
 	metrics = m;
-	let rawPacketCount = 0;
 	let lastPacketCount = 0;
 	let lastRawPacketCount = 0;
 	let lastH3length = 0;
@@ -229,18 +261,30 @@ async function startAprsListener( m = undefined ) {
 		}
         connection.valid = true;
         if( data.charAt(0) != '#' && !data.startsWith('user')) {
+			packetStats.rawCount++;
             const packet = parser.parseaprs(data);
             if( "latitude" in packet && "longitude" in packet &&
                 "comment" in packet && packet.comment?.substr(0,2) == 'id' ) {
 				processPacket( packet );
-				rawPacketCount++;
             }
 			else {
 				if( (packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && ! ignoreStation(packet.sourceCallsign)) {
 
 					if( packet.type == 'location' ) {	
 						const stationid = getStationId( packet.sourceCallsign, true );
-						stations[ packet.sourceCallsign ] = { ...stations[packet.sourceCallsign], lat: packet.latitude, lng: packet.longitude};
+
+						// Check if we have moved too far ( a little wander is considered ok )
+						const details = stations[ packet.sourceCallsign ];
+						if( details.lat && details.lng ) {
+							const distance = h3.pointDist( [details.lat,details.lng], [packet.latitude,packet.longitude], 'km' );
+							if( distance > STATION_MOVE_THRESHOLD_KM ) {
+								details.notice = `${Math.round(distance)}km move detected ${Date(packet.timestamp*1000).toISOString()} resetting history`;
+								details.moved = true; // we need to persist this
+								statusDb.put( packet.sourceCallsign, JSON.stringify(details) );
+							}
+						}
+						details.lat = packet.latitude;
+						details.lng = packet.longitude;
 					}
 					else if( packet.type == 'status' ) {
 						const stationid = getStationId( packet.sourceCallsign, false ); // don't write as we do it in next line
@@ -253,7 +297,7 @@ async function startAprsListener( m = undefined ) {
 			}
         } else {
             // Server keepalive
-            console.log(data, '#', rawPacketCount);
+            console.log(data, '#', packetStats.rawCount);
             if( data.match(/aprsc/) ) {
                 connection.aprsc = data;
             }
@@ -271,20 +315,29 @@ async function startAprsListener( m = undefined ) {
 
 	// Load the status
 	async function loadStationStatus(statusdb) {
+		const nowEpoch = Math.floor(Date.now()/1000);
+		const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
 		try { 
 			for await ( const [key,value] of statusdb.iterator()) {
 				stations[key] = JSON.parse(''+value)
+				if( (stations[key].lastPacket||nowEpoch) > expiryEpoch ) {
+					validStations.add(Number(stations[key].id));
+				}
 			}
 		} catch(e) {
 			console.log('oops',e)
 		}
-		
 		const nextid = (_reduce( stations, (highest,i) => { return highest < (i.id||0) ? i.id : highest }, 0 )||0)+1;
 		console.log( 'next id', nextid );
 		return nextid;
 	}
 	console.log( 'loading station status' );
 	Atomics.store(nextStation, 0, (await loadStationStatus(statusDb))||1)
+
+	// Check and process unflushed accumulators at the start
+	// then we can increment the current number for each accumulator merge
+	await rollupStartup(globalDb);
+	await updateAndProcessAccumulators();
 	
     // Start the APRS connection
     connection.connect();
@@ -317,16 +370,17 @@ async function startAprsListener( m = undefined ) {
 
 		// Report some status on that
 		const packets = (packetStats.count - lastPacketCount);
-		const rawPackets = (rawPacketCount - lastRawPacketCount);
-		const pps = (packets/(h3CacheFlushPeriod/1000)).toFixed(1);
-		const rawPps = (rawPackets/(h3CacheFlushPeriod/1000)).toFixed(1);
+		const rawPackets = (packetStats.rawCount - lastRawPacketCount);
+		const pps = packetStats.pps = (packets/(h3CacheFlushPeriod/1000)).toFixed(1);
+		const rawPps = packetStats.rawPps = (rawPackets/(h3CacheFlushPeriod/1000)).toFixed(1);
 		const h3length = flushStats.total;
 		const h3delta = h3length - lastH3length;
 		const h3expired = flushStats.expired;
 		const h3written = flushStats.written;
-		console.log( `elevation cache: ${getCacheSize()}, openDbs: ${stationDbCache.size+2},  valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s` );
-		console.log( `total stations: ${nextStation-1}, seen stations ${Object.keys(stations).length}` );
+		console.log( `elevation cache: ${getCacheSize()}, valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s` );
+		console.log( `total stations: ${nextStation-1}, valid stations ${validStations.size}, openDbs: ${stationDbCache.size+2}` );
 		console.log( JSON.stringify(packetStats))
+		console.log( JSON.stringify(rollupStats))
 		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta*100/h3length).toFixed(0)}%): `,
 					 ` expired ${h3expired} (${(h3expired*100/h3length).toFixed(0)}%), written ${h3written} (${(h3written*100/h3length).toFixed(0)}%)`,
 					 ` ${((h3written*100)/packets).toFixed(1)}% ${(h3written/(h3CacheFlushPeriod/1000)).toFixed(1)}/s ${(packets/h3written).toFixed(0)}:1`,
@@ -335,63 +389,52 @@ async function startAprsListener( m = undefined ) {
 		// purge and flush H3s to disk
 		// carry forward state for stats next time round
 		lastPacketCount = packetStats.count;
-		lastRawPacketCount = rawPacketCount;
+		lastRawPacketCount = packetStats.rawCount;
 		lastH3length = h3length;
 
 	}, h3CacheFlushPeriod ));
 
-	intervals.push(setInterval( async function() {
-
-		const purgeBefore = (Date.now()/1000) - (process.env.FORGET_AIRCRAFT_AFTER_HOURS||12)*60*3600;
-		let total = aircraftSeen.size;
-		
-		aircraftSeen.forEach( (timestamp,key) => {
-			if( timestamp < purgeBefore ) {
-				aircraftSeen.delete(key);
-			}
-		});
-		aircraftStation.forEach( (timestamp,key) => {
-			if( timestamp < purgeBefore ) {
-				aircraftStation.delete(key);
-			}
-		});
-		
-		let purged = total - aircraftSeen.size;
-		console.log( `purged ${purged} aircraft from gap map, ${aircraftSeen.size} remaining` );
-		
-	}, h3CacheFlushPeriod*2.5 ));
-	
-	let doneOnce = false;
-	intervals.push(setInterval( async function() {
-//		const now = new Date();
-		const oldAccumulator = [...currentAccumulator];
-
-		// If the accumulator period has changed then we need to update
-		// where we are writing
-//		if( now.getUTCMinutes() != currentAccumulator[1] && ! doneOnce ) {
-//			currentAccumulator = [ 'current', now.getUTCMinutes() ]; // get it in UTC
-
-			// Make sure everything has been flushed - new ones should be into new accumulator
-			// which we are ignoring anyway
-			flushDirtyH3s(true).then( () => {
-				// rollup old accumulator
-				rollup( oldAccumulator );
+	timeouts.push( setTimeout( () => {
+		intervals.push( setInterval( async function() {
+			
+			const purgeBefore = (Date.now()/1000) - FORGET_AIRCRAFT_AFTER_SEC;
+			let total = aircraftSeen.size;
+			
+			aircraftSeen.forEach( (timestamp,key) => {
+				if( timestamp < purgeBefore ) {
+					aircraftSeen.delete(key);
+				}
 			});
-//		}
+			aircraftStation.forEach( (timestamp,key) => {
+				if( timestamp < purgeBefore ) {
+					aircraftStation.delete(key);
+				}
+			});
+			
+			let purged = total - aircraftSeen.size;
+			console.log( `purged ${purged} aircraft from gap map, ${aircraftSeen.size} remaining` );
+			
+		}, (3600*1000) )); // every hour we do this
+	}, (FORGET_AIRCRAFT_AFTER_SEC+Math.random(300))*1000));
+	
+	// Make sure our accumulator is correct, this will also
+	// ensure we rollover and produce output files correctly
+	intervals.push(setInterval( async function() {		
+		updateAndProcessAccumulators();
+	}, ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_MS ));
+
+	// Make sure our accumulator is correct, this will also
+	// ensure we rollover and produce output files correctly
+	intervals.push(setInterval( async function() {		
+		rollupAll( current, accumulators );
 	}, h3RollupPeriod ));
-
-	// Make sure we have these from existing DB as soon as possible
-	produceOutputFiles();
-
-	// On an interval we will dump out the coverage tables
-/*	intervals.push(setInterval( function() {
-		flushDirtyH3s(true).then( () => {
-			produceOutputFiles()
-		});
-	}, (process.env.OUTPUT_INTERVAL_MIN||60)*60*1000));
-*/	
 }
 
+function displayStatus() {
+	console.log( `elevation cache: ${getCacheSize()}, h3cache: ${cachedH3s.size},  valid packets: ${packetStats.count} ${packetStats.pps}/s, all packets ${packetStats.rawCount} ${packetStats.rawPps}/s` );
+	console.log( `total stations: ${nextStation-1}, valid stations ${validStations.size}, openDbs: ${stationDbCache.size+2}` );
+	console.log( JSON.stringify(packetStats))
+}
 
 function getStationId( station, serialise = true ) {
 	// Figure out which station we are - this is synchronous though don't really
@@ -456,6 +499,7 @@ async function processPacket( packet ) {
 		const rawVC = (packet.comment.match(reExtractVC)||[0,0])[1];
 		if( rawRot == 0.0 && rawVC < 30 ) {
 			packetStats.ignoredStationary++;
+			aircraftSeen.set(flarmId, packet.timestamp );
 			return;
 		}
 	}
@@ -530,16 +574,6 @@ async function packetCallback( station, h3id, altitude, agl, crc, signal, gap, t
 	mergeDataIntoDatabase( stationid,  0,         globalDb, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL), altitude, agl, crc, signal, gap );
 }
 
-function updateStationBuffer(stationid, h3k, br, altitude, agl, crc, signal, gap, release) {
-
-	// Update the binary record with these values
-	br.update( altitude, agl, crc, signal, gap, stationid );
-	
-	// 
-	lastH3update.set(h3k.lockKey, Date.now());
-	release();
-}
-
 //
 // We store the database records as binary bytes - in the format described in the mapping() above
 // this reduces the amount of storage we need and means we aren't constantly parsing text
@@ -553,32 +587,35 @@ async function mergeDataIntoDatabase( stationid, dbStationId, db, h3, altitude, 
 	const h3k = new CoverageHeader( dbStationId, ...getAccumulator(h3), h3 );
 	lock( h3k.lockKey, function (release) {
 
-		// If we have some unwritten changes for this h3 then we will simply
+		// If we have some cached changes for this h3 then we will simply
 		// use the entry in the 'dirty' table. This table gets flushed
-		// on a periodic basis
-		const br = dirtyH3s.get(h3k.lockKey);
-		if( br ) {
-			updateStationBuffer( stationid, h3k, br, altitude, agl, crc, signal, gap, release() )
+		// on a periodic basis and saves us hitting the disk for very
+		// busy h3s
+		const cachedH3 = cachedH3s.get(h3k.lockKey);
+		if( cachedH3 ) {
+			cachedH3.dirty = true;
+			cachedH3.lastAccess = Date.now();
+			cachedH3.br.update( altitude, agl, crc, signal, gap, stationid );
+			release()();
 		}
 		else {
 			db.get( h3k.dbKey() )
 			  .then( (value) => {
 				  const buffer = new CoverageRecord( value );
-				  dirtyH3s.set(h3k.lockKey,buffer);
-				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, gap, release() );
+				  cachedH3s.set(h3k.lockKey,{br:buffer,dirty:true,lastAccess:Date.now(),lastWrite:Date.now()});
+				  buffer.update( altitude, agl, crc, signal, gap, stationid );
+				  release()();
 			  })
 			  .catch( (err) => {
 				  const buffer = new CoverageRecord( stationid ? bufferTypes.global : bufferTypes.station );
-				  dirtyH3s.set(h3k.lockKey,buffer);
-				  updateStationBuffer( stationid, h3k, buffer, altitude, agl, crc, signal, gap, release() );
+				  cachedH3s.set(h3k.lockKey,{br:buffer,dirty:true,lastAccess:Date.now(),lastWrite:Date.now()});
+				  buffer.update( altitude, agl, crc, signal, gap, stationid );
+				  release()();
 			  });
 		}
 	});
 	
 }
-
-// When did we last flush?
-let lastDirtyWrite = 0;
 
 //
 // This function writes the H3 buffers to the disk if they are dirty, and 
@@ -586,12 +623,15 @@ let lastDirtyWrite = 0;
 // as it will not return before everything has been written
 async function flushDirtyH3s(allUnwritten) {
 
-	const flushPeriod = 3*60*1000;
-	const nextDirtyWrite = Date.now();
-	const expirypoint = Math.max( lastDirtyWrite-flushPeriod, 0 );
+	// When do we write and when do we expire
+	const now = Date.now();
+	const flushTime = Math.max( 0, now - h3CacheFlushPeriod);
+	const maxDirtyTime = Math.max( 0, now - h3CacheMaximumDirtyPeriod);
+	const expiryTime = Math.max( 0, now - h3CacheExpiryTime);
+	
 
 	let stats = {
-		total: dirtyH3s.size,
+		total: cachedH3s.size,
 		expired: 0,
 		written: 0,
 		databases: 0,
@@ -606,7 +646,7 @@ async function flushDirtyH3s(allUnwritten) {
 
 	// Go through all H3s in memory and write them out if they were updated
 	// since last time we flushed
-	for (const [h3klockkey,v] of dirtyH3s) {
+	for (const [h3klockkey,v] of cachedH3s) {
 
 		promises.push( new Promise( (resolve) => {
 		
@@ -615,30 +655,36 @@ async function flushDirtyH3s(allUnwritten) {
 			// block all the other ones until the first completes, it's per db
 			// no issues updating h3s in different dbs at the same time
 			lock( h3klockkey, function (release) {
-				
-				const updateTime = lastH3update.get(h3klockkey);
-				
-				// If it's expired then we will purge it... 
-				if( updateTime < expirypoint ) {
-					dirtyH3s.delete(h3klockkey);
-					lastH3update.delete(h3klockkey);
+
+				// If we are dirty all we can do is write it out
+				if( v.dirty ) {
+
+					// either periodic flush (eg before rollup) or flushTime elapsed
+					// or it's been in the cache so long we need to flush it
+					if( allUnwritten || (v.lastAccess < flushTime) || (v.lastWrite < maxDirtyTime) ) {
+						const h3k = new CoverageHeader(h3klockkey);
+					
+						// Add to the write out structures
+						let ops = dbOps.get(h3k.dbid);
+						if( ! ops ) {
+							dbOps.set(h3k.dbid, ops = new Array());
+						}
+						ops.push( { type: 'put', key: h3k.dbKey(), value: Buffer.from(v.br.buffer()) });
+						stats.written++;
+						v.lastWrite = now;
+						v.dirty = false;
+					}
+				}
+				// If we are clean then we can be deleted
+				else if( v.lastAccess < expiryTime ) {
+					cachedH3s.delete(h3klockkey);
 					stats.expired++;
 				}
-				// Only write if changes and not active
-				else if( allUnwritten || updateTime < lastDirtyWrite ) {
-					
-					const h3k = new CoverageHeader(h3klockkey);
-					
-					// Add to the write out structures
-					if( ! dbOps.has(h3k.dbid) ) {
-						dbOps.set(h3k.dbid, new Array());
-					}
-					dbOps.get(h3k.dbid).push( { type: 'put', key: h3k.dbKey(), value: Buffer.from(v.buffer()) });
-					stats.written++;
-				}
+				
 				// we are done, no race condition on write as it's either written to the
-				// disk above, or it was before and his simply expired, it's not possible
-				// to expire and write (expiry is period after last write)
+				// disk above, or it was written earlier and has simply expired, it's not possible
+				// to expire and write (expiry is period after last write)... ie it's still
+				// in cache after write till expiry so only cache lock required for integrity
 				release()();
 				resolve();
 			});
@@ -646,11 +692,10 @@ async function flushDirtyH3s(allUnwritten) {
 	}
 
 	// We need to wait for all promises to complete before we can do the next part
-	Promise.all( promises );
+	await Promise.all( promises );
 	promises = [];
 	
 	// So we know where to start writing
-	lastDirtyWrite = nextDirtyWrite
 	stats.databases = dbOps.size;
 
 	// Now push these to the database
@@ -658,6 +703,13 @@ async function flushDirtyH3s(allUnwritten) {
 		promises.push( new Promise( (resolve) => {
 			//
 			let db = (dbid != 0) ? stationDbCache.get(dbid) : globalDb;
+
+			// If we are writing for it then it's a valid station
+			if( dbid ) {
+				validStations.add(dbid);
+			}
+
+			// Open DB if needed 
 			if( ! db ) {
 				console.log( `weirdly opening db to write for cache ${dbid}, your stationDbCache is too small for active set` );
 				const stationName = _find(stations, { id: dbid })?.station;
@@ -668,6 +720,8 @@ async function flushDirtyH3s(allUnwritten) {
 				db.ognInitialTS = Date.now();
 				db.ognStationName = stationName;
 			}
+			
+			// Execute all changes as a batch
 			db.batch(v, (e) => {
 				// log errors
 				if(e) console.error('error flushing db operations for station id',dbid,e);
@@ -675,330 +729,10 @@ async function flushDirtyH3s(allUnwritten) {
 			});
 		}));
 	}
-	Promise.all( promises );
+	await Promise.all( promises );
 	return stats;
 }
 
-//
-// Rotate and Rollup all the data we have
-// we do this by iterating through each database looking for things in default
-// aggregator (which is always just the raw h3id)
-
-async function rollup( accumulator ) {
-
-	console.log( "rollup!!");
-	const now = new Date();
-	const nowEpoch = Math.floor(Date.now()/1000);
-	const expiryEpoch = nowEpoch - ((process.env.STATION_EXPIRY_TIME_DAYS||31)*24*3600);
-	
-	const rollups = [ 'day', 'month', 'year' ];
-
-	// Determine if any stations have had traffic before expiry
-	const validStations = new Set();
-	Object.keys(stations).forEach( (k) => {
-		if( (stations[k].lastPacket||nowEpoch) > expiryEpoch ) {
-			validStations.add(Number(stations[k].id));
-		}
-		else {
-			console.log( `expiring ${k} no traffic for a while` );
-		}
-	});
-	
-	let db = globalDb;
-	let station = 0;
-	const name = (station||'global')
-	{
-		let dbOps = [];
-
-		accumulators = { day: { bucket: now.getUTCDay(), previous: new Date(Date.now()-(24*3600+1)).getUTCDay() },
-						 month: { bucket: now.getUTCMonth(), previous: (now.getUTCMonth()+11)%12 },
-						 year:  { bucket: now.getUTCFullYear(), previous: now.getUTCFullYear()-1 }};
-		//
-		// Basically we finish our current accumulator into the active buckets for each of the others
-		// and then we need to check if we should be moving them to new buckets or not
-	// Start the writing process by initalising a set of serialisers for arrow data
-//	let arrow = CoverageRecord.initArrow( (! station) ? bufferTypes.global : bufferTypes.station );
-		
-		// We step through all of the items together and update as one
-		const rollupIterators = _map( rollups, (r) => {
-			return { type:r,
-					 iterator:db.iterator( CoverageHeader.getDbSearchRangeForAccumulator( r, accumulators[r].bucket )),
-					 arrow: CoverageRecord.initArrow( (! station) ? bufferTypes.global : bufferTypes.station ),
-			}
-		});
-
-		console.log('my accu',CoverageHeader.getDbSearchRangeForAccumulator(...accumulator));
-		console.log( 'current h3k',(new CoverageHeader( 0, ...accumulator, '801212341234ffff' )).toString());
-
-		// Initalise the rollup array with [k,v]
-		const rollupData = _map( rollupIterators, (r) => {return { n:r.iterator.next(), ...r}} );
-
-		/*
-		for await ( const [key,value] of db.iterator()) {
-			const h3kr = new CoverageHeader(key);
-			if( h3kr.bucket == accumulator[1] ) {
-				console.log( h3kr.toString() );
-			}
-		} */
-		
-		for await ( const [key,value] of db.iterator( CoverageHeader.getDbSearchRangeForAccumulator(...accumulator)) ) {
-
-			// The 'current' value - ie the data we are merging in.
-			const h3k = new CoverageHeader(key);
-			const currentBr = new CoverageRecord(value);
-			let advance = true;
-
-			do {
-				advance = true;
-				
-				// now we go through them in step form
-				for( const r of rollupData ) {
-					let n = r.n ? (await r.n) : undefined;
-					let [prefixedh3r,rollupValue] = n || [null, null]; // iterator async so wait for it to complete
-
-					// We have hit the end of the data for the accumulator but we still have items
-					// then we need to copy the next data across - 
-					if( ! prefixedh3r ) {
-						if( r.lastCopiedH3r != h3k.lockKey ) {
-							const h3kr = h3k.getAccumulatorForBucket(r.type,r.bucket);
-							dbOps.push( { type: 'put',
-										  key: h3kr.dbKey(),
-										  value: Buffer.from(currentBr.buffer()) } );
-							currentBr.appendToArrow( h3kr, r.arrow );
-							r.lastCopiedH3r = h3k.lockKey;
-						}
-						
-						// We need to cleanup when we are done
-						if( r.n ) {
-							r.iterator.end();
-							r.n = null;
-						}
-						continue;
-					}
-					
-					const h3kr = new CoverageHeader(prefixedh3r);
-					const ordering = CoverageHeader.compare(h3k,h3kr);
-					
-					// Need to wait for others to catch up and to advance current
-					// (primary is less than rollup)
-					if( ordering < 0 ) {
-						continue;
-					}
-					
-					let br = new CoverageRecord(rollupValue);
-					let updatedBr = null;
-					
-					// Primary is greater than rollup
-					if( ordering > 0 ) {
-						updatedBr = br.removeInvalidStations(validStations);
-					}
-
-					// Otherwise we are the same so we need to rollup into it
-					else  {
-						updatedBr = br.rollup(currentBr, validStations);
-					}
-					
-					// Check to see what we need to do with the database
-					// this is a pointer check as pointer will ALWAYS change on
-					// adjustment 
-					if( updatedBr != br ) {
-						if( ! updatedBr ) {
-							dbOps.push( { type: 'del', key: h3kr.dbKey() } );
-						}
-						else {
-							dbOps.push( { type: 'put', key: h3kr.dbKey(), value: Buffer.from(updatedBr.buffer()) });
-						}
-					}
-					if( updatedBr ) {
-						updatedBr.appendToArrow( h3kr, r.arrow );
-					}
-						
-					// Move to the next one, we don't advance till nobody has moved forward (async so promise)
-					r.n = r.iterator.next();
-					advance = false;
-				}
-				
-			} while( ! advance );
-
-			// Once we have accumulated we delete the accumulator key
-			dbOps.push( { type: 'del', key: h3k.dbKey() })
-		}
-		// Finally if we have rollups with data after us then we need to update their invalidstations
-		// now we go through them in step form
-		for( const r of rollupData ) {
-
-			if( r.n ) {
-				let n = await r.n;
-				let [prefixedh3r,rollupValue] =  n||[null,null];
-				
-				while( prefixedh3r ) { 
-					const h3kr = new CoverageHeader(prefixedh3r);
-					let br = new CoverageRecord(rollupValue);
-					
-					let updatedBr = br.removeInvalidStations(validStations);
-					
-					// Check to see what we need to do with the database
-					if( updatedBr != br ) {
-						if( ! updatedBr ) {
-							dbOps.push( { type: 'del', key: h3kr.dbKey() } );
-						}
-						else {
-							dbOps.push( { type: 'put', key: h3kr.dbKey(), value: Buffer.from(updatedBr.buffer()) });
-						}
-					}
-					if( updatedBr ) {
-						updatedBr.appendToArrow( h3kr, r.arrow );
-					}
-					// Move to the next one, we don't advance till nobody has moved forward
-					r.n = r.iterator.next();
-					n = r.n ? (await r.n) : undefined;
-					[prefixedh3r,rollupValue] = n || [null, null]; // iterator async so wait for it to complete
-				}
-
-				r.n = null;
-				r.iterator.end();
-			}
-
-			// We are going to write out our accumulators
-			const accumulatorName = `${name}.${r.type}.${accumulators[r.type].bucket}.arrow`;
-
-			// Finalise the arrow table so we can serialise it to the disk
-			{
-			const outputTable = CoverageRecord.finalizeArrow(r.arrow);
-			const pt = new PassThrough( { objectMode: true } )
-			const result = pt
-				.pipe( RecordBatchWriter.throughNode())
-				.pipe( createWriteStream( outputPath+accumulatorName ));
-			
-			pt.write(outputTable);
-			pt.end();
-			console.log( `written ${accumulatorName}` );
-			}
-			
-			try {
-				unlinkSync( outputPath+`${name}.${r.type}.arrow` );
-			} catch(e) {
-			}
-			try {
-				symlinkSync( outputPath+`${name}.${r.type}.arrow`, outputPath+accumulatorName, 'file' );
-			} catch(e) {
-				console.log( `error symlinking ${outputPath}${name}.${r.type}.arrow for ${outputPath+accumulatorName}` );
-			}
-		}
-
-		console.table(dbOps.slice(0,10))
-		dbOps = _sortby( dbOps, [ 'key' ])
-
-		//
-		// Finally execute all the operations on the database
-		console.log( `Writing ${dbOps.length} rollup operations on the database ${db.ognStationName||'global'}` );
-		const p = new Promise( (resolve) => {
-			db.batch(dbOps, (e) => {
-				// log errors
-				if(e) console.error('error flushing db operations for station id',name,e);
-				resolve();
-			});
-		});
-		await p;
-	
-		console.log( `Done ${dbOps.length} rollup operations on the database ${db.ognStationName||'global'}` );
-	}
-
-	
-}
-
-//
-// Dump all of the output files that need to be dumped, this goes through
-// everything that may need to be written and writes it to the disk
-async function produceOutputFiles() {
-	console.log( `producing output files for ${stationDbCache.size} stations + global ` )
-
-	let promises = [];
-	
-	// each of the stations
-	stationDbCache.forEach( async function (db,key) {
-		promises.push( new Promise( async function (resolve) {
-			await produceOutputFile( db );
-			resolve();
-		}));
-	});
-
-	Promise.all(promises);
-	
-	// And the global output
-	await produceStationFile( statusDb );
-	await produceOutputFile( globalDb );
-
-	// Flush old database from the cache
-	stationDbCache.purgeStale();
-}
-
-
-//
-// Produce the output based on the accumulations in the database
-//
-// This outputs using Apache Arrow columnar table format which can be loaded
-// in a webworking by deck.gl speeding up the whole process.
-//
-// We generate a static file on a timed basis making it trivial for
-// distributing the load amongst either many servers or a CDN cache
-// it also has the advantage that you can keep a snapshot in time simply
-// by keeping the file.
-async function produceOutputFile( inputdb ) {
-
-	const station = inputdb.stationName;
-	
-	// Form up meta data useful for the display, this needs to be written regardless
-	//
-	let now = Math.floor(Date.now()/1000);
-	let outputDate = new Date().toISOString();
-	let stationmeta = {	outputDate: outputDate, outputEpoch: now };
-	if( station && station != 'global') {
-		try {
-			stationmeta = { ...stationmeta, meta: JSON.parse(await statusDb.get( station )) };
-		} catch(e) {
-			console.log( 'missing metadata for ', station );
-		}
-	}
-	const name = (station||'global')
-	writeFile( outputPath+name+'.json', JSON.stringify(stationmeta,null,2), (err) => err ? console.log("stationmeta write error",err) : null);
-	
-	// Check to see if we need to produce an output file, set to 1 when clean
-	if( station && stations[station].lastPacket < stations[station].lastOutputFile ) {
-		return 0;
-	}
-
-	// Start the writing process by initalising a set of serialisers for arrow data
-	let arrow = CoverageRecord.initArrow( (! station) ? bufferTypes.global : bufferTypes.station );
-
-	// Go throuh the whole database and load each record, parse it and add to the arrow
-	// structure. The structure is data aware so will generate appropriate output for
-	// each type
-	for await ( const [key,value] of inputdb.iterator()) {
-		let br = new CoverageRecord(value);
-		br.appendToArrow( new CoverageHeader(''+key), arrow );
-	}
-
-	// Finalise the arrow table so we can serialise it to the disk
-	const outputTable = CoverageRecord.finalizeArrow(arrow);
-
-//	console.table( [...outputTable].slice(0,10))
-	
-	const pt = new PassThrough( { objectMode: true } )
-	const result = pt
-		.pipe( RecordBatchWriter.throughNode())
-		.pipe( createWriteStream( outputPath+name+'.arrow' ));
-	
-	pt.write(outputTable);
-	pt.end();
-
-	// We are clean so we won't dump till new packets
-	if( station ) {
-		stations[station].outputDate = outputDate;
-		stations[station].outputEpoch = now;
-		stations[station].lastOutputFile = now;
-	}
-}
 
 //
 // Dump the meta data for all the stations, we take from our in memory copy
@@ -1007,10 +741,641 @@ async function produceOutputFile( inputdb ) {
 async function produceStationFile( statusdb ) {
 
 	// Form a list of hashes
-	let statusOutput = _map( stations, (v,k) => {return { station: k, ...v };});
+	let statusOutput = _filter( stations, (v) => {return v.valid});
 
 	// Write this to the stations.json file
 	writeFile( outputPath + 'stations.json', JSON.stringify(statusOutput,null,2), (err) => err ? console.log("station write error",err) : null);
 }
+
+//
+// We will add meta data to the database for each of the accumulators
+// this makes it easier to check what needs to be done
+function updateGlobalAccumulatorMetadata() {
+
+	const dbkey = CoverageHeader.getAccumulatorMeta( ...getAccumulator() ).dbKey();
+	const now = new Date;
+	
+	globalDb.get( dbkey )
+		.then( (value) => {
+			const meta = JSON.parse( String(value) );
+			meta.oldStarts = [ ...meta?.oldStarts, { start: meta.start, startUtc: meta.startUtc } ];
+			meta.accumulators = accumulators;
+			meta.start = Math.floor(now/1000);
+			metat.startUtc = now.toISOString();
+			globalDb.put( dbkey, JSON.stringify( meta ));
+		})
+		.catch((e) => {
+			globalDb.put( dbkey, JSON.stringify( {
+				accumulators: accumulators,
+				oldStarts: [],
+				start: Math.floor(now/1000),
+				startUtc: now.toISOString()
+			}));
+		});
+
+	// make sure we have an up to date header for each accumulator
+	for( const type in accumulators ) {
+		const currentHeader = CoverageHeader.getAccumulatorMeta( type, accumulators[type].bucket );
+		const dbkey = currentHeader.dbKey();
+		globalDb.get( dbkey )
+			.then( (value) => {
+				const meta = JSON.parse( String(value) );
+				globalDb.put( dbkey, JSON.stringify( { ...meta,
+													   accumulators: accumulators,
+													   currentAccumulator: currentAccumulator[1] }));
+			})
+			.catch( (e) => {
+				globalDb.put( dbkey, JSON.stringify( { start: Math.floor(now/1000),
+													   startUtc: now.toISOString(),
+													   accumulators: accumulators,
+													   currentAccumulator: currentAccumulator[1] }));
+			});
+	}
+}
+
+function updateAndProcessAccumulators() {
+	
+	const now = new Date();
+
+	// Calculate the bucket and short circuit if it's not changed - on startup current will
+	// be empty so we will carry on
+	const newAccumulatorBucket = (now.getUTCFullYear()%8) * 385 + now.getUTCMonth() * 32 + now.getUTCDate()
+	if( currentAccumulator?.[1] == newAccumulatorBucket ) {
+		return;
+	}
+
+	// Make a copy
+	const oldAccumulators = _clonedeep( accumulators );
+	const oldAccumulator = _clonedeep( currentAccumulator );
+
+	// We need a current that is basically unique so we don't rollup the wrong thing at the wrong time
+	// our goal is to make sure we survive restart without getting same code if it's not the same day...
+	// if you run this after an 8 year gap then welcome back ;) and I'm sorry ;)  [it has to fit in 12bits]
+	// this takes effect immediately so all new packets will move to the new accumulator
+	currentAccumulator = [ 'current', newAccumulatorBucket ];
+
+	const n = {
+		d: prefixWithZeros(2,now.getUTCDate()),
+		m: prefixWithZeros(2,String(now.getUTCMonth())),
+		y: now.getUTCFullYear()
+	};
+	
+	// Our accumulators
+	accumulators = { day: { bucket: now.getUTCDate(), file: `${n.y}-${n.m}-${n.d}`, },
+					 month: { bucket: now.getUTCMonth(), file: `${n.y}-${n.m}` },
+					 year:  { bucket: now.getUTCFullYear(), file: `${n.y}` }};
 	
 
+	// If we have a new accumulator then we need to do a rollup
+	if( oldAccumulator && currentAccumulator[1] != oldAccumulator[1] ) {
+
+		console.log( `accumulator rotation scheduling:` );
+		console.log( JSON.stringify(oldAccumulators) );
+		console.log( '----' );
+		console.log( JSON.stringify(accumulators) );
+
+		// Now we need to make sure we have flushed our H3 cache and everything
+		// inflight has finished before doing this. we could purge cache
+		// but that doesn't ensure that all the inflight has happened
+		flushDirtyH3s(true).then( () => {
+			console.log( `accumulator rotation happening` );
+			rollupAll( oldAccumulator, oldAccumulators, true );
+		})
+
+	}
+
+	// If any of the accumulators have changed then we need to update all the
+	// meta data
+	if( ! _isequal( accumulators, oldAccumulators ) || ! _isequal( currentAccumulator, oldAccumulator )) {
+		updateGlobalAccumulatorMetadata();
+	}
+}		
+
+	
+//
+// We need to make sure we know what rollups the DB has, and process pending rollup data
+// when the process starts. If we don't do this all sorts of weird may happen
+// (only used for global but could theoretically be used everywhere)
+async function rollupStartup( db ) {
+
+	let accumulatorsToPurge = {};
+	let hangingCurrents = [];
+
+	const now = new Date();
+	
+	// Our accumulators 
+	const expectedAccumulators = { day: { bucket: now.getUTCDate() },
+						   month: { bucket: now.getUTCMonth() },
+						   year:  { bucket: now.getUTCFullYear() }};
+
+	// We need a current that is basically unique so we don't rollup the wrong thing at the wrong time
+	// our goal is to make sure we survive restart without getting same code if it's not the same day...
+	// if you run this after an 8 year gap then welcome back ;) and I'm sorry ;)  [it has to fit in 12bits]
+	const expectedCurrentAccumulator = [ 'current', (now.getUTCFullYear()%8) * 385 + now.getUTCMonth() * 32 + now.getUTCDate()];
+		
+	// First thing we need to do is find all the accumulators in the database
+	let iterator = db.iterator();
+	let iteratorPromise = iterator.next(), row = null;
+	while( row = await iteratorPromise ) {
+		const [key,value] = row;
+		let hr = new CoverageHeader(key);
+
+		// 80000000 is the h3 cell code we use to
+		// store the metadata for our iterator
+		if( ! hr.isMeta ) {
+			console.log( 'ignoring weird database format', hr.h3 )
+			iterator.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
+			iteratorPromise = iterator.next();
+			continue;
+		}
+		const meta = JSON.parse( String(value) ) || {};
+
+		// If it's a current and not OUR current then we need to
+		// figure out what to do with it... We may merge it into rollup
+		// accumulators if it was current when they last updated their meta
+		if( hr.typeName == 'current' ) {
+			if( hr.bucket != expectedCurrentAccumulator[1] ) {
+				hangingCurrents[ hr.dbKey() ] = meta;
+				console.log( `current: hanging accumulator ${hr.accumulator} (${hr.bucket})`);
+			}
+			else {
+				console.log( `current: resuming accumulator ${hr.accumulator} (${hr.bucket}) as still valid`);
+			}
+		}
+
+		// accumulator not configured on this machine - dump and purge
+		else if( ! expectedAccumulators[ hr.typeName ] ) {
+			accumulatorsToPurge[ hr.accumulator ] = { accumulator: hr.accumulator, meta: meta, typeName: hr.typeName, t: hr.type, b: hr.bucket };
+		}
+		// new bucket for the accumulators - we should dump this
+		// and purge as adding new data to it will cause grief
+		// note the META will indicate the last active accumulator
+		// and we should merge that if we find it
+		else if( expectedAccumulators[ hr.typeName ].bucket != hr.bucket ) {
+			accumulatorsToPurge[ hr.accumulator ] = { accumulator: hr.accumulator, meta: meta, typeName: hr.typeName, t: hr.type, b: hr.bucket };
+		}
+		else {
+			console.log( `${hr.typeName}: resuming accumulator ${hr.accumulator} (${hr.bucket}) as still valid` );
+		}
+
+		// Done with this one lets skip forward
+		iterator.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
+		iteratorPromise = iterator.next();
+	}
+
+
+	//
+	// We will add meta data to the database for each of the current accumulators
+	// this makes it easier to check what needs to be done?
+	{
+			const dbkey = CoverageHeader.getAccumulatorMeta( ...expectedCurrentAccumulator ).dbKey();
+			db.get( dbkey )
+			  .then( (value) => {
+				  const meta = JSON.parse( String(value) );
+				  meta.oldStarts = [ ...meta?.oldStarts, { start: meta.start, startUtc: meta.startUtc } ];
+				  meta.start = Math.floor(now/1000);
+				  meta.startUtc = now.toISOString();
+				  globalDb.put( dbkey, JSON.stringify( meta ));
+			  })
+			  .catch((e) => {
+				  globalDb.put( dbkey, JSON.stringify( {
+					  start: Math.floor(now/1000),
+					  startUtc: now.toISOString()
+				  }));
+			  }
+		);
+
+		// make sure we have an up to date header for each accumulator
+		const currentAccumulatorHeader = CoverageHeader.getAccumulatorMeta( ...expectedCurrentAccumulator );
+		for( const type in expectedAccumulators ) {
+			const dbkey = CoverageHeader.getAccumulatorMeta( type, expectedAccumulators[type].bucket ).dbKey();
+			db.get( dbkey )
+			  .then( (value) => {
+				  const meta = JSON.parse( String(value) );
+				  globalDb.put( dbkey, JSON.stringify( { ...meta,
+														 currentAccumulator: currentAccumulatorHeader.bucket }));
+			  })
+			  .catch( (e) => {
+				  globalDb.put( dbkey, JSON.stringify( { start: Math.floor(now/1000),
+														 startUtc: now.toISOString(),
+														 currentAccumulator: currentAccumulatorHeader.bucket }));
+			  });
+		}
+	}		
+
+	// This is more interesting, this is a current that could be rolled into one of the other
+	// existing accumulators... 
+	if( hangingCurrents ) {
+		// we need to purge these	
+		for( const key in hangingCurrents ) {
+			const hangingHeader = new CoverageHeader( key );
+
+			const meta = hangingCurrents[key];
+			
+			// So we need to figure out what combination of expected and existing accumulators should
+			// be updated with the hanging accumulator, if we don't have the bucket anywhere any more
+			// then we zap it. Note the buckets can't change we will only ever roll up into the buckets
+			// the accumulator was started with
+			let rollupAccumulators = {};
+			for( const type of Object.keys(expectedAccumulators)) {
+				const ch = CoverageHeader.getAccumulatorMeta( type, meta.accumulators?.[type]?.bucket||-1 );
+				if( accumulatorsToPurge[ ch.accumulator ] || expectedAccumulators[type].bucket == ch.bucket ) {
+					rollupAccumulators[ type ] = { bucket: ch.bucket };
+				}
+			}
+
+			if( Object.keys(rollupAccumulators).length ) { 
+				console.log( ` rolling up hanging current accumulator ${hangingHeader.accumulator} into ${JSON.stringify(rollupAccumulators)}` );
+				await rollupAll( [hangingHeader.type,hangingHeader.bucket], rollupAccumulators, true );
+			} else {
+				console.log( `purging hanging current accumulator ${hangingHeader.accumulator} and associated sub accumulators` );
+			}
+
+			// now we clear it
+			globalDb.clear( CoverageHeader.getDbSearchRangeForAccumulator( hangingHeader.type, hangingHeader.bucket, true ),
+							(e) => { console.log( `${hangingHeader.type}/${hangingHeader.accumulator} clear completed ${e||'successfully'}`) } );
+		}
+	}
+	
+	// These are old accumulators we purge them because we aren't sure what else can be done
+	if( accumulatorsToPurge.length ) {
+		console.log( 'purging:' );
+		console.log( accumulatorsToPurge );
+		accumulatorsToPurge.forEach( (a) =>  {
+			globalDb.clear( CoverageHeader.getDbSearchRangeForAccumulator( a.t, a.b, true ),
+							(e) => { console.log( `${a.typeName}: ${a.accumulator} purged completed ${e||'successfully'}`) } );
+		});
+	}
+
+}
+
+//
+// This iterates through all open databases and rolls them up.
+// ***HMMMM OPEN DATABASE - so if DBs are not staying open we have a problem
+async function rollupAll( current, processAccumulators, newAccumulator = false ) {
+
+	// Make sure we have updated validStations
+	const nowEpoch = Math.floor(Date.now()/1000);
+	const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
+	validStations.clear()
+	for ( const station of Object.values(stations)) {
+		if( (station.lastPacket||nowEpoch) > expiryEpoch && ! station.moved) {
+			validStations.add(Number(station.id));
+		}
+		if( station.moved ) {
+			station.moved = false;
+			console.log( `purging moved station ${station.station}` );
+			statusDb.put( station.station, JSON.stringify(station) );
+		}
+	}
+	
+	console.log( `performing rollup and output of ${validStations.size} stations + global ` );
+	
+	rollupStats = { ...rollupStats, 
+					lastStart: Date.now(),
+					last: {		sumElapsed: 0,
+								operations: 0,
+								databases: 0, accumulators: processAccumulators }
+	};
+
+	// Global is biggest and takes longest
+	let promises = [];
+	promises.push( new Promise( async function (resolve) {
+		const r = await rollupDatabase( globalDb, 'global', current, processAccumulators );
+		rollupStats.last.sumElapsed += r.elapsed;
+		rollupStats.last.operations += r.operations;
+		rollupStats.last.databases ++;
+		resolve();
+	}));
+	
+	// each of the stations, capped at 20% of db cache (or 30 tasks) to reduce risk of purging the whole cache
+	// mapAllCapped will not return till all have completed, but this doesn't block the processing
+	// of the global db or other actions.
+	// it is worth running them in parallel as there is a lot of IO which would block
+	promises.push( mapAllCapped( Object.keys(stations), async function (station) {
+
+		// Open DB if needed 
+		let db = stationDbCache.get(stations[station].id)
+		if( ! db ) {
+			stationDbCache.set(stations[station].id, db = LevelUP(LevelDOWN(dbPath+'/stations/'+station)));
+			db.ognInitialTS = Date.now();
+			db.ognStationName = station;
+		}
+
+		// If a station is not valid we are clearing the data from it from the registers
+		if( ! validStations.has( stations[station].id ) ) {
+			// empty the database... we could delete it but this is very simple and should be good enough
+			console.log( `clearing database for ${station} as it is not valid` );
+			await db.clear();
+			return;
+		}
+		
+		const r = await rollupDatabase( db, station, current, processAccumulators, newAccumulator );
+		rollupStats.last.sumElapsed += r.elapsed;
+		rollupStats.last.operations += r.operations;
+		rollupStats.last.databases ++;
+		
+	}, Math.max(Math.floor(process.env.MAX_STATION_DBS/5),30) ));
+	
+	// And the global json
+	promises.push( produceStationFile( statusDb ) );
+
+	// Wait for all to be done
+	await Promise.allSettled(promises);
+	
+	// Flush old database from the cache
+	stationDbCache.purgeStale();
+
+	// Report stats on the rollup
+	rollupStats.lastElapsed = Date.now() - rollupStats.lastStart;
+	rollupStats.elapsed += rollupStats.lastElapsed;
+	rollupStats.completed++;
+	rollupStats.lastStart = (new Date(rollupStats.lastStart)).toISOString();
+	console.log( 'rollup completed', JSON.stringify(rollupStats) );
+}
+
+//
+// Rotate and Rollup all the data we have
+// we do this by iterating through each database looking for things in default
+// aggregator (which is always just the raw h3id)
+async function rollupDatabase( db, station, current, processAccumulators, newAccumulator ) {
+
+	const now = new Date();
+	const name = station;
+	let currentMeta = {};
+
+	// Details about when we wrote, also contains information about the station if
+	// it's not global
+	let stationMeta = station != 'global' ? stations[station] : {};
+	stationMeta.outputDate = now.toISOString();
+	stationMeta.outputEpoch = Math.floor(now/1000);
+	
+	let dbOps = [];
+	//
+	// Basically we finish our current accumulator into the active buckets for each of the others
+	// and then we need to check if we should be moving them to new buckets or not
+	
+	// We step through all of the items together and update as one
+	const rollupIterators = _map( Object.keys(processAccumulators), (r) => {
+		return { type:r, bucket: processAccumulators[r].bucket,
+				 meta: { rollups: [] },
+				 stats: {
+					 h3missing:0,
+					 h3noChange: 0,
+					 h3updated:0,
+					 h3emptied:0,
+				 },
+				 iterator: db.iterator( CoverageHeader.getDbSearchRangeForAccumulator( r, processAccumulators[r].bucket )),
+				 arrow: CoverageRecord.initArrow( (station == 'global') ? bufferTypes.global : bufferTypes.station ),
+		}
+	});
+
+	// Enrich with the meta data for each accumulator type
+	await Promise.all( _map( [...rollupIterators, { type: current[0], bucket: current[1] }],
+							 (r) => new Promise( (resolve) => {
+								 const ch = CoverageHeader.getAccumulatorMeta( r.type, r.bucket );
+								 db.get( ch.dbKey()) 
+									 .then( (value) => {
+										 if( r.type == current[0] && r.bucket == current[1] ) { currentMeta = JSON.parse(value);  }
+										 else { r.meta = JSON.parse(String(value)||{}); }
+										 resolve()
+									 })
+									 .catch( (e) => { resolve(); } )
+							 })));
+
+	// Initalise the rollup array with [k,v]
+	const rollupData = _map( rollupIterators, (r) => {return { n:r.iterator.next(), ...r}} );
+
+	// Create the 'outer' iterator - this walks through the primary accumulator 
+	for await ( const [key,value] of db.iterator( CoverageHeader.getDbSearchRangeForAccumulator(...current)) ) {
+
+		// The 'current' value - ie the data we are merging in.
+		const h3k = new CoverageHeader(key);
+
+		if( h3k.isMeta ) {
+			continue;
+		}
+		
+		const currentBr = new CoverageRecord(value);
+		let advance = true;
+
+		do {
+			advance = true;
+			
+			// now we go through each of the rollups in lockstep
+			// we advance and action all of the rollups till their
+			// key matches the outer key. This is async so makes sense
+			// to do them interleaved even though we await
+			for( const r of rollupData ) {
+
+				// iterator async so wait for it to complete
+				let n = r.n ? (await r.n) : undefined;
+				let [prefixedh3r,rollupValue] = n || [null, null]; 
+
+				// We have hit the end of the data for the accumulator but we still have items
+				// then we need to copy the next data across - 
+				if( ! prefixedh3r ) {
+					
+					if( r.lastCopiedH3r != h3k.lockKey ) {
+						const h3kr = h3k.getAccumulatorForBucket(r.type,r.bucket);
+						dbOps.push( { type: 'put',
+									  key: h3kr.dbKey(),
+									  value: Buffer.from(currentBr.buffer()) } );
+						currentBr.appendToArrow( h3kr, r.arrow );
+						r.lastCopiedH3r = h3k.lockKey;
+						r.stats.h3missing++;
+					}
+					
+					// We need to cleanup when we are done
+					if( r.n ) {
+						r.iterator.end();
+						r.n = null;
+					}
+					continue;
+				}
+				
+				const h3kr = new CoverageHeader(prefixedh3r);
+				if( h3kr.isMeta ) { // skip meta
+					continue;
+				}
+
+				// One check for ordering so we know if we need to
+				// advance or are done
+				const ordering = CoverageHeader.compare(h3k,h3kr);
+								
+				// Need to wait for others to catch up and to advance current
+				// (primary is less than rollup) depends on await working twice on
+				// a promise (await r.n above) because we haven't done .next()
+				// this is fine but will yield which is also fine
+				if( ordering < 0 ) {
+					continue;
+				}
+
+				// We know we are editing the record so load it up, our update
+				// methods will return a new CoverageRecord if they change anything
+				// hence the updatedBr
+				let br = new CoverageRecord(rollupValue);
+				let updatedBr = null;
+				
+				// Primary is greater than rollup
+				if( ordering > 0 ) {
+					updatedBr = br.removeInvalidStations(validStations);
+				}
+
+				// Otherwise we are the same so we need to rollup into it
+				else  {
+					updatedBr = br.rollup(currentBr, validStations);
+				}
+				
+				// Check to see what we need to do with the database
+				// this is a pointer check as pointer will ALWAYS change on
+				// adjustment 
+				if( updatedBr != br ) {
+					if( ! updatedBr ) {
+						dbOps.push( { type: 'del', key: h3kr.dbKey() } );
+						r.stats.h3emptied++;
+					}
+					else {
+						r.stats.h3updated++;
+						dbOps.push( { type: 'put', key: h3kr.dbKey(), value: Buffer.from(updatedBr.buffer()) });
+					}
+				}
+				else {
+					r.stats.h3noChange++;
+				}
+				
+				// If we had data then write it out
+				if( updatedBr ) {
+					updatedBr.appendToArrow( h3kr, r.arrow );
+				}
+				
+				// Move to the next one, we don't advance till nobody has moved forward (async so promise)
+				r.n = r.iterator.next();
+				advance = false;
+			}
+			
+		} while( ! advance );
+
+		// Once we have accumulated we delete the accumulator key
+		dbOps.push( { type: 'del', key: h3k.dbKey() })
+	}
+
+	
+	// Finally if we have rollups with data after us then we need to update their invalidstations
+	// now we go through them in step form
+	for( const r of rollupData ) {
+		if( r.n ) {
+			let n = await r.n;
+			let [prefixedh3r,rollupValue] =  n||[null,null];
+			
+			while( prefixedh3r ) { 
+				const h3kr = new CoverageHeader(prefixedh3r);
+				let br = new CoverageRecord(rollupValue);
+				
+				let updatedBr = br.removeInvalidStations(validStations);
+				
+				// Check to see what we need to do with the database
+				if( updatedBr != br ) {
+					if( ! updatedBr ) {
+						dbOps.push( { type: 'del', key: h3kr.dbKey() } );
+						r.stats.h3emptied++;
+					}
+					else {	
+						dbOps.push( { type: 'put', key: h3kr.dbKey(), value: Buffer.from(updatedBr.buffer()) });
+						r.stats.h3updated++;
+					}
+				}
+				else {
+					r.stats.h3noChange++;
+				}
+				
+				if( updatedBr ) {
+					updatedBr.appendToArrow( h3kr, r.arrow );
+				}
+				// Move to the next one, we don't advance till nobody has moved forward
+				r.n = r.iterator.next();
+				n = r.n ? (await r.n) : undefined;
+				[prefixedh3r,rollupValue] = n || [null, null]; // iterator async so wait for it to complete
+			}
+
+			r.n = null;
+			r.iterator.end();
+		}
+	}
+
+	stationMeta.accumulators = [];
+
+	// Write everything out
+	for( const r of rollupData ) {
+
+		// We are going to write out our accumulators this saves us writing it
+		// in a different process and ensures that we always write the correct thing
+		const accumulatorName = `${name}/${name}.${r.type}.${processAccumulators[r.type].file}`;
+		
+		// Keep a record of all the rollups in the meta
+		// each record
+		if( ! r.meta.rollups ) {
+			r.meta.rollups = [];
+		}
+		r.meta.rollups.push( { source: currentMeta, stats: r.stats, file: accumulatorName } );
+		stationMeta.accumulators.push( r.meta );
+
+		// May not have a directory if new station
+		mkdirSync(outputPath + name, {recursive:true});
+
+		// Finalise the arrow table and serialise it to the disk
+		CoverageRecord.finalizeArrow(r.arrow, outputPath+accumulatorName+'.arrow' );
+
+		writeFile( outputPath + accumulatorName + '.json',
+				   JSON.stringify(r.meta,null,2), (err) => err ? console.log("rollup json metadata write failed",err) : null)
+		
+		// link it all up for latest
+		symlink( outputPath+accumulatorName, outputPath+`${name}/${name}.${r.type}.arrow` );
+	}
+
+	stationMeta.lastOutputFile = now;
+	
+	// record when we wrote for the whole station
+	writeFile( outputPath+name+'.json', JSON.stringify(stationMeta,null,2), (err) => err ? console.log("stationmeta write error",err) : null);
+
+	if( station != 'global' ) {
+		delete stationMeta.accumulators; // don't persist this it's not important
+		await statusDb.put( station, JSON.stringify(stations[station]) );
+	}
+
+	// If we have a new accumulator then we need to purge the old meta data records - we
+	// have already purged the data above
+	if( newAccumulator ) {
+		dbOps.push( { type: 'del', key: CoverageHeader.getAccumulatorMeta( ...current ).dbKey() });
+	}
+	
+	// Is this actually beneficial? - feed operations to the database in key type sorted order
+	// so it can just process them. Keys should be stored clustered so theoretically this will
+	// help with writing but perhaps benchmarking is a good idea
+	dbOps = _sortby( dbOps, [ 'key', 'type' ])
+
+	//
+	// Finally execute all the operations on the database
+	const p = new Promise( (resolve) => {
+		db.batch(dbOps, (e) => {
+			// log errors
+			if(e) console.error('error flushing db operations for station id',name,e);
+			resolve();
+		});
+	});
+	await p;
+
+	return { elapsed: Date.now() - now, operations: dbOps.length };
+}								
+
+function symlink(src,dest) {
+	try {
+		unlinkSync( dest );
+	} catch(e) {
+	}
+	try {
+		symlinkSync( src, dest, 'file' );
+	} catch(e) {
+		console.log( `error symlinking ${src}.arrow to ${dest}: ${e}` );
+	}
+}

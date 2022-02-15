@@ -28,7 +28,7 @@ async function main() {
 	let db = LevelUP(LevelDOWN(dbPath+'global'))
 /*
 	for await ( const [key,value] of db.iterator() ) {
-		console.log( ''+key, value );
+		console.log( ''+key );
 	}
 	console.log('---');
 
@@ -51,28 +51,42 @@ async function main() {
 		console.log( hr.lockKey )
 	}
 	console.log('>>> tada>>>');
-*/
+	*/
+
+	console.log( CoverageHeader.getDbSearchRangeForAccumulator('day',0, true) );
+	for await ( const [key,value] of db.iterator( CoverageHeader.getDbSearchRangeForAccumulator('day',1,true) )) {
+		console.log(String(key))
+		db.del( key );
+	}
+
 	
 	let n = db.iterator();
 	let accumulators = {};
 	let x = n.next();
 	let y = null;
-	 while(y = await x) {
+	while( y = await x) {
+		const [key,value] = y;
+		let hr = new CoverageHeader(key);
 
-		if( y ) {
+		if( hr.isMeta ) {
+			console.log( String(key) );
+			accumulators[ hr.accumulator ] = String(value);
+
+			db.db.approximateSize( CoverageHeader.getAccumulatorBegin(hr.type,hr.bucket),
+								   CoverageHeader.getAccumulatorEnd(hr.type,hr.buclet),
+								   (e,r) => { console.log( String(key), r ); } );
+		}
+		
+		// Skip to next bucket
+		n.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
+		x = n.next();
+		
+		if( y = await x) {
 			const [key,value] = y;
-			let br = new CoverageRecord(value);
 			let hr = new CoverageHeader(key);
-			console.log( hr.lockKey )
-
-			accumulators[ hr.accumulator ] = String(key);
-			console.log( 'skip to ->', CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ) )
-
-			// Skip to next bucket
-			await n.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
-		} 
-		 x = n.next();
-	 }
+		}
+		
+	}
 
 	console.log( '--- accumulators found ---' );
 	console.log( accumulators );
