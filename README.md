@@ -295,5 +295,13 @@ ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_SECONDS=60
 
 # how often do we need to report to the APRS server
 APRS_KEEPALIVE_PERIOD_MINUTES=2
+
+# Filter what packets are being received - eg to set up regional range tool
+# uses standard APRS filters, this one basically means send me everything
+APRS_TRAFFIC_FILTER=t/spuoimnwt
+
+# Server and port to connect to 
+APRS_SERVER=aprs.glidernet.org:14580
+
 ````
 

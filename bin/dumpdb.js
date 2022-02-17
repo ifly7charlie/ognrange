@@ -61,7 +61,7 @@ async function main() {
 
 	
 	let n = db.iterator();
-	let accumulators = {};
+	let accumulators = {}, count = {};
 	let x = n.next();
 	let y = null;
 	while( y = await x) {
@@ -69,16 +69,20 @@ async function main() {
 		let hr = new CoverageHeader(key);
 
 		if( hr.isMeta ) {
-			console.log( String(key) );
-			accumulators[ hr.accumulator ] = String(value);
+			accumulators[ hr.accumulator ] = { hr: hr, meta: JSON.parse(String(value)), count:0, size: 0};
 
 			db.db.approximateSize( CoverageHeader.getAccumulatorBegin(hr.type,hr.bucket),
-								   CoverageHeader.getAccumulatorEnd(hr.type,hr.buclet),
-								   (e,r) => { console.log( String(key), r ); } );
+								   CoverageHeader.getAccumulatorEnd(hr.type,hr.bucket),
+								   (e,r) => { accumulators[ hr.accumulator ].size = r } );
 		}
+		else {
+			if( accumulators[ hr.accumulator ] ) {
+				accumulators[ hr.accumulator ].count++;
+			}
 		
-		// Skip to next bucket
-		n.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
+			// Skip to next bucket
+//			n.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
+		}
 		x = n.next();
 		
 		if( y = await x) {
@@ -87,8 +91,9 @@ async function main() {
 		}
 		
 	}
-
-	console.log( '--- accumulators found ---' );
-	console.log( accumulators );
+	for (const a in accumulators ) {
+		console.log( `${accumulators[a].hr.typeName} [${a}]: ${accumulators[a].count} records, ~ ${accumulators[a].size} bytes` );
+		console.log( '  '+ JSON.stringify(accumulators[a].meta) );
+	}
 }
 
