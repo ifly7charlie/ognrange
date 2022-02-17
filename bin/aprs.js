@@ -1430,9 +1430,9 @@ async function rollupDatabase( db, station, current, processAccumulators, newAcc
 		if( (r.stats.h3source) != (r.stats.h3missing + r.stats.h3updated) ) {
 			console.error( "********* stats don't add up ", JSON.stringify({m:r.meta,s:r.stats}))
 		}
-		if( r.stats.h3source*rollupData.length != (r.stats.dbOps) ) {
-			console.error( "********* dbops don't add up ", JSON.stringify({m:r.meta,s:r.stats}))
-		}
+//		if( r.stats.h3source*rollupData.length != (r.stats.dbOps) ) {
+//			console.error( "********* dbops don't add up ", JSON.stringify({m:r.meta,s:r.stats}))
+//		}
 	}
 
 	stationMeta.lastOutputFile = now;
