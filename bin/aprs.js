@@ -1246,7 +1246,7 @@ async function rollupDatabase( db, station, current, processAccumulators, newAcc
 						currentBr.appendToArrow( h3kr, r.arrow );
 						r.lastCopiedH3p = h3p.lockKey;
 						r.stats.h3missing++;
-						console.log('       h3missing (end)', r.type, h3p.dbKey()); 
+//						console.log('       h3missing (end)', r.type, h3p.dbKey()); 
 					}
 					
 					// We need to cleanup when we are done
@@ -1282,7 +1282,7 @@ async function rollupDatabase( db, station, current, processAccumulators, newAcc
 						currentBr.appendToArrow( h3kr, r.arrow );
 						r.lastCopiedH3p = h3p.lockKey;
 						r.stats.h3missing++;
-						console.log('       h3missing', r.type, (h3p.dbKey())); 
+//						console.log('       h3missing', r.type, (h3p.dbKey())); 
 					}
 					continue;
 				}
@@ -1316,17 +1316,17 @@ async function rollupDatabase( db, station, current, processAccumulators, newAcc
 					if( ! updatedBr ) {
 						dbOps.push( { type: 'del', key: h3kr.dbKey() } );
 						r.stats.h3emptied++;
-						console.log('       h3emptied'); 
+//						console.log('       h3emptied'); 
 					}
 					else {
 						r.stats.h3updated++;
 						dbOps.push( { type: 'put', key: h3kr.dbKey(), value: Buffer.from(updatedBr.buffer()) });
-						console.log('       h3updated'); 
+//						console.log('       h3updated'); 
 					}
 				}
 				else {
 					r.stats.h3noChange++;
-						console.log('       h3nochange'); 
+//						console.log('       h3nochange'); 
 				}
 				
 				// If we had data then write it out
@@ -1356,7 +1356,7 @@ async function rollupDatabase( db, station, current, processAccumulators, newAcc
 			while( prefixedh3r ) { 
 				const h3kr = new CoverageHeader(prefixedh3r);
 				let br = new CoverageRecord(rollupValue);
-				console.log( ' x ', h3kr.dbKey() );
+//				console.log( ' x ', h3kr.dbKey() );
 				
 				let updatedBr = br.removeInvalidStations(validStations);
 				
