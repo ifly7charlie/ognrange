@@ -8,9 +8,9 @@ import { ignoreStation } from '../lib/bin/ignorestation.js'
 import { CoverageRecord, bufferTypes } from '../lib/bin/coveragerecord.js';
 import { CoverageHeader, accumulatorTypes } from '../lib/bin/coverageheader.js';
 
-// Default paths, can be overloaded using .env.local
-let dbPath = './db/';
-let outputPath = './public/data/';
+import { DB_PATH, OUTPUT_PATH } from '../lib/bin/config.js';
+
+import yargs from 'yargs';
 
 main()
     .then("exiting");
@@ -19,46 +19,47 @@ main()
 // Primary configuration loading and start the aprs receiver
 async function main() {
 
-	// Load the configuration from a file
-	dotenv.config({ path: '.env.local' })
+	const args = yargs(process.argv.slice(2))
+		.option( 'db', 
+				  { alias: 'd',
+					type: 'string',
+					default: 'global',
+					description: 'Choose Database'
+		})
+		.option( 'all',
+				  { alias: 'a',
+					type: 'boolean',
+					description: 'dump all records'})
+		.option( 'match',
+				 { type: 'string',
+				   description: 'regex match of dbkey' })
+		.option( 'size',
+				  { alias: 's',
+					type: 'boolean',
+					description: 'determine approximate size of each block of records' })
+		.help()
+		.alias( 'help', 'h' ).argv;
+			
 
-	dbPath = process.env.DB_PATH||dbPath;
-	outputPath = process.env.OUTPUT_PATH||outputPath;
-
-	let db = LevelUP(LevelDOWN(dbPath+'global'))
-/*
-	for await ( const [key,value] of db.iterator() ) {
-		console.log( ''+key );
+	// What file
+	let dbPath = DB_PATH;
+	if( args.db && args.db != 'global' ) {
+		dbPath += '/stations/' + args.db;
 	}
-	console.log('---');
-
-	for await ( const [key,value] of db.iterator({ gte: '0/y/87283318affffff'}) ) {
-		console.log( ''+key, value );
+	else {
+		dbPath += 'global';
 	}
 
-	console.log('++++');
+	let db = null
+
+	try {
+		db = LevelUP(LevelDOWN(dbPath, {createIfMissing:false}));
+	} catch(e) {
+		console.error(e)
+	}
+
+	console.log( '---', dbPath, '---' );
 	
-	for await ( const [key,value] of db.iterator() ) {
-		let br = new CoverageRecord(value);
-		let hr = new CoverageHeader(key);
-		console.log( hr.lockKey )
-	}
-		
-	console.log('---');
-	for await ( const [key,value] of db.iterator({gte: new CoverageHeader('0/y/87283318affffff').lockKey}) ) {
-		let br = new CoverageRecord(value);
-		let hr = new CoverageHeader(key);
-		console.log( hr.lockKey )
-	}
-	console.log('>>> tada>>>');
-	*/
-
-	console.log( CoverageHeader.getDbSearchRangeForAccumulator('day',0, true) );
-	for await ( const [key,value] of db.iterator( CoverageHeader.getDbSearchRangeForAccumulator('day',1,true) )) {
-		console.log(String(key))
-		db.del( key );
-	}
-
 	
 	let n = db.iterator();
 	let accumulators = {}, count = {};
@@ -68,20 +69,30 @@ async function main() {
 		const [key,value] = y;
 		let hr = new CoverageHeader(key);
 
-		if( hr.isMeta ) {
-			accumulators[ hr.accumulator ] = { hr: hr, meta: JSON.parse(String(value)), count:0, size: 0};
-
-			db.db.approximateSize( CoverageHeader.getAccumulatorBegin(hr.type,hr.bucket),
-								   CoverageHeader.getAccumulatorEnd(hr.type,hr.bucket),
-								   (e,r) => { accumulators[ hr.accumulator ].size = r } );
-		}
-		else {
-			if( accumulators[ hr.accumulator ] ) {
-				accumulators[ hr.accumulator ].count++;
+		if( ! args.match || hr.dbKey().match( args.match )) {
+			
+			if( hr.isMeta ) {
+				accumulators[ hr.accumulator ] = { hr: hr, meta: JSON.parse(String(value)), count:0, size: 0};
+				console.log( hr.toString(), String(value))
+				
+				if( args.size ) {
+					db.db.approximateSize( CoverageHeader.getAccumulatorBegin(hr.type,hr.bucket),
+										   CoverageHeader.getAccumulatorEnd(hr.type,hr.bucket),
+										   (e,r) => { accumulators[ hr.accumulator ].size = r } );
+				}
 			}
-		
-			// Skip to next bucket
-//			n.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
+			else {
+				if( accumulators[ hr.accumulator ] ) {
+					accumulators[ hr.accumulator ].count++;
+				}
+				
+				if( args.all ) {
+					console.log( hr.dbKey(), JSON.stringify(new CoverageRecord(value).toObject()));
+				}
+				else {
+					n.seek( CoverageHeader.getAccumulatorEnd( hr.type, hr.bucket ));
+				}
+			}
 		}
 		x = n.next();
 		
