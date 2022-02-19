@@ -3,14 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-      "dev": "NODE_OPTIONS='--inspect' next dev",
-      "aprs": "bin/aprs.js",
-      "build": "next build",
-      "start": "next start",
-      "lint": "next lint",
-      "test": "ava --serial",
-      "testcoverage": "c8 ava --serial",
-      "aprscoverage": "c8 bin/aprs.js"
+    "dev": "NODE_OPTIONS='--inspect' next dev",
+    "aprs": "bin/aprs.js",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "ava --serial",
+    "testcoverage": "c8 ava --serial",
+    "aprscoverage": "c8 bin/aprs.js"
   },
   "dependencies": {
     "@loaders.gl/arrow": "^2.0",
@@ -48,7 +48,8 @@
     "react": "17.0.2",
     "react-bootstrap": "^2.1.2",
     "react-dom": "17.0.2",
-    "react-map-gl": "=6.1.16"
+    "react-map-gl": "=6.1.16",
+    "yargs": "^17.3.1"
   },
   "devDependencies": {
     "ava": "^4.0.1",
