@@ -235,8 +235,9 @@ async function startAprsListener( m = undefined ) {
 						if( details.lat && details.lng ) {
 							const distance = h3.pointDist( [details.lat,details.lng], [packet.latitude,packet.longitude], 'km' );
 							if( distance > STATION_MOVE_THRESHOLD_KM ) {
-								details.notice = `${Math.round(distance)}km move detected ${Date(packet.timestamp*1000).toISOString()} resetting history`;
+								details.notice = `${Math.round(distance)}km move detected ${(new Date(packet.timestamp*1000)).toISOString()} resetting history`;
 								details.moved = true; // we need to persist this
+								console.log( `station ${packet.sourceCallsign} has moved location from ${details.lat},${details.lng} to ${packet.latitude},${packet.longitude} which is ${distance.toFixed(1)}km`);
 								statusDb.put( packet.sourceCallsign, JSON.stringify(details) );
 							}
 						}
