@@ -17,7 +17,7 @@ const args = yargs(process.argv.slice(2))
 	.option( 'file', 
 			 { alias: 'f',
 			   type: 'string',
-			   default: '.year.arrow',
+			   default: 'year.arrow',
 			   description: 'Arrow file'
 		})
 		.help()
