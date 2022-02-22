@@ -1,7 +1,6 @@
 {
   "name": "ognrange",
   "private": true,
-  "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS='--inspect' next dev",
     "aprs": "bin/aprs.js",
@@ -38,6 +37,7 @@
     "lodash.map": "^4.6.0",
     "lodash.reduce": "^4.6.0",
     "lodash.sortby": "^4.7.0",
+    "lodash.uniq": "^4.5.0",
     "lru-cache": "^7.0.0",
     "mapbox-gl": "^2.7.0",
     "ndarray": "^1.0.19",
@@ -47,8 +47,11 @@
     "pngjs": "^6.0.0",
     "react": "17.0.2",
     "react-bootstrap": "^2.1.2",
+    "react-dock": "^0.5.1",
     "react-dom": "17.0.2",
     "react-map-gl": "=6.1.16",
+    "react-select": "^5.2.2",
+    "swr": "^1.2.2",
     "yargs": "^17.3.1"
   },
   "devDependencies": {
