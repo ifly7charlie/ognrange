@@ -345,9 +345,16 @@ async function startAprsListener( m = undefined ) {
 		console.log( JSON.stringify(packetStats))
 		console.log( JSON.stringify(rollupStats))
 		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta*100/h3length).toFixed(0)}%): `,
-					 ` expired ${h3expired} (${(h3expired*100/h3length).toFixed(0)}%), written ${h3written} (${(h3written*100/h3length).toFixed(0)}%)`,
+					 ` expired ${h3expired} (${(h3expired*100/h3length).toFixed(0)}%), written ${h3written} (${(h3written*100/h3length).toFixed(0)}%)[${flushStats.databases} stations]`,
 					 ` ${((h3written*100)/packets).toFixed(1)}% ${(h3written/(H3_CACHE_FLUSH_PERIOD_MS/1000)).toFixed(1)}/s ${(packets/h3written).toFixed(0)}:1`,
-	); 
+				   );
+
+		// Although this isn't an error it does mean that there will be churn in the DB cache and
+		// that will increase load - which is not ideal because we are obviously busy otherwise we wouldn't have
+		// so many stations sending us traffic...
+		if( flushStats.databases > MAX_STATION_DBS*0.9 ) {
+			console.log( `** please increase the database cache (MAX_STATION_DBS) it should be larger than the number of stations receiving traffic in H3_CACHE_FLUSH_PERIOD_MINUTES (${H3_CACHE_FLUSH_PERIOD_MINUTES})` );
+		}
 
 		// purge and flush H3s to disk
 		// carry forward state for stats next time round
