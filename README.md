@@ -231,7 +231,9 @@ ELEVATION_TILE_RESOLUTION=11
 # dbs will be flushed if they expire. (theory being that flying windows
 # might be short and less open is less risk of problems)
 # note that each DB uses 4 or 5 file handles MINIMUM so ulimit must be
-# large enough!
+# large enough! You want to set the number to be at least 20% larger
+# than the maximum number of stations that are likely to be receiving
+# simultaneously on a busy day
 MAX_STATION_DBS=1200
 STATION_DB_EXPIRY_HOURS=4
 
