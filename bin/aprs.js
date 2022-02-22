@@ -50,7 +50,7 @@ import { mkdirSync } from 'fs';
 
 // shortcuts so regexp compiled once
 const reExtractDb = / ([0-9.]+)dB /;
-const reExtractCrc = / ([0-9])c /;
+const reExtractCrc = / ([0-9])e /;
 const reExtractRot = / [+-]([0-9.]+)rot /;
 const reExtractVC = / [+-]([0-9]+)fpm /;
 
