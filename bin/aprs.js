@@ -341,7 +341,7 @@ async function startAprsListener( m = undefined ) {
 		const h3expired = flushStats.expired;
 		const h3written = flushStats.written;
 		console.log( `elevation cache: ${getCacheSize()}, valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s` );
-		console.log( `total stations: ${nextStation-1}, openDbs: ${stationDbCache.size+2}` );
+		console.log( `total stations: ${nextStation-1}, openDbs: ${stationDbCache.size+2}/${MAX_STATION_DBS}` );
 		console.log( JSON.stringify(packetStats))
 		console.log( JSON.stringify(rollupStats))
 		console.log( `h3s: ${h3length} delta ${h3delta} (${(h3delta*100/h3length).toFixed(0)}%): `,
@@ -403,7 +403,7 @@ async function startAprsListener( m = undefined ) {
 
 function displayStatus() {
 	console.log( `elevation cache: ${getCacheSize()}, h3cache: ${cachedH3s.size},  valid packets: ${packetStats.count} ${packetStats.pps}/s, all packets ${packetStats.rawCount} ${packetStats.rawPps}/s` );
-	console.log( `total stations: ${nextStation-1}, openDbs: ${stationDbCache.size+2}` );
+	console.log( `total stations: ${nextStation-1}, openDbs: ${stationDbCache.size+2}/${MAX_STATION_DBS}` );
 	console.log( JSON.stringify(packetStats))
 }
 
