@@ -197,7 +197,7 @@ export default function CombinePage( props ) {
 						  <div style={{padding:'7px'}}>
 							  <h2>OGN Coverage</h2>
 							  <div>
-								  This is a beta version of a replacement for the <a href="https://ognrange.glidernet.org">current OGN coverage tool</a>. I'm currently working on optimizing the data collection and processing functions. This UI is a placeholder so apologies in advance if it doesn't work very well! If you speak 'React' and want to help please track me down on GitHub (ifly7charlie).
+								  This is a beta version of a replacement for the <a href="https://ognrange.glidernet.org">current OGN coverage tool</a>. I&apos;m currently working on optimizing the data collection and processing functions. This UI is a placeholder so apologies in advance if it doesn't work very well! If you speak &apos;React&apos; and want to help please track me down on GitHub (ifly7charlie).
 							  </div>
 							  <hr/>
 							  <div>
