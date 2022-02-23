@@ -40,7 +40,8 @@ const normalVisualisations = [
 ];
 const globalVisualisations = [
 	{ label: 'Expected between packet gap', value: 'expectedGap' },
-	{ label: 'Number of stations', value: 'stations' }
+	{ label: 'Number of stations', value: 'stations' },
+	{ label: 'Primary station', value: 'primaryStation' }
 ];
 
 // Convert list of files into a select
@@ -89,7 +90,7 @@ export default function CombinePage( props ) {
 
 	// Figure out our visualisations
 	const [visualisations,selectedVisualisation] = useMemo( _ => {
-		const vis = [...normalVisualisations, ...(station == 'global' ? globalVisualisations : [])];
+		const vis = [...normalVisualisations, ...((station||'global') == 'global' ? globalVisualisations : [])];
 		return [ vis, _find( vis, { value: visualisation })];
 	}, [visualisation, station]);
 	
