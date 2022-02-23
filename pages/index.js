@@ -37,7 +37,6 @@ const normalVisualisations = [
 	{ label: 'Max Signal @ Minimum Altitude', value: 'minAltSig' },
 	{ label: 'Avg CRC errors', value: 'avgCrc' },
 	{ label: 'Average between packet gap', value: 'avgGap' },
-	{ label: 'Minimum Altitude', value: 'minAlt' },
 ];
 const globalVisualisations = [
 	{ label: 'Expected between packet gap', value: 'expectedGap' },
