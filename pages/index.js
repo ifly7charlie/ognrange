@@ -209,7 +209,7 @@ export default function CombinePage( props ) {
 							  <hr/>
 							  {expanded &&
 							   <>
-								   <CoverageDetails details={details}
+								   <CoverageDetails details={details} station={station}
 													highlightStations={highlightStations} setHighlightStations={setHighlightStations}/>
 							   </>
 							  }
