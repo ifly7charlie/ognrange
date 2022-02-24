@@ -178,6 +178,7 @@ export default function CombinePage( props ) {
 	
 	// Synchronise it back to the url
 	function setViewportUrl(vs) {
+        vs.bearing = 0;
 		delayedUpdate(router.query,vs,station)
 		setViewport(vs)
 	}
