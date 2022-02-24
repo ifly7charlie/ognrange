@@ -84,11 +84,10 @@ export default function CombinePage( props ) {
 						 (o) => {
 							 console.log('===',o.value.slice( -(file?.length||data?.files?.year?.current?.length||1)),file);
 							 return o.value.slice( -(file?.length||data?.files?.year?.current?.length||1)) == file
-						 } ) : null
+						 } ) : null;
 
-		console.log( selects, selected );
 		return [selects,selected];
-	}, [file,data?.files?.day?.current]);
+	}, [file,data?.files?.day?.current])
 
 	// Figure out our visualisations
 	const [visualisations,selectedVisualisation] = useMemo( _ => {
@@ -108,7 +107,7 @@ export default function CombinePage( props ) {
 	const [highlightStations, setHighlightStations] = useState(defaultHighlight)
 
 	const selectedStation = {
-		value: station, label: station
+		value: station||'global', label: station||'All Stations (global)'
 	};
 
 	const defaultStationSelection = [
@@ -116,7 +115,6 @@ export default function CombinePage( props ) {
 	];
 
 	async function findStation( s ) {
-		console.log( s );
 		if( s.length > 2 ) {
 			try {
 				let re = new RegExp( s, 'i' );
@@ -141,7 +139,6 @@ export default function CombinePage( props ) {
 	}
 
 	function setFile( newFile ) {
-		console.log( 'setFile', newFile, file );
 		if( file === newFile ) {
 			newFile = '';
 		}
@@ -191,7 +188,6 @@ export default function CombinePage( props ) {
 	}
 	function onDockVisibleChange( isVisible ) {
 		setExpanded( isVisible );
-		console.log( 'visible', isVisible );
 	}
 
 
@@ -228,10 +224,10 @@ export default function CombinePage( props ) {
 							  </div>
 							  <hr/>
 							  <div>	
-								  <AsyncSelect loadOptions={findStation} defaultValue={selectedStation} defaultOptions={defaultStationSelection} onChange={(v)=>setStation(v.value)}/><br/><br/>
+								  <AsyncSelect loadOptions={findStation} value={selectedStation} defaultOptions={defaultStationSelection} onChange={(v)=>setStation(v.value)}/><br/><br/>
 								  <b>Select available time period to display:</b>
-								  <Select options={selects} defaultValue={selected} onChange={(v)=>setFile(v.value)}/>
-								  <Select options={visualisations} defaultValue={selectedVisualisation} onChange={(v)=>setVisualisation(v.value)}/>
+								  <Select options={selects} value={selected} onChange={(v)=>setFile(v.value)}/>
+								  <Select options={visualisations} value={selectedVisualisation} onChange={(v)=>setVisualisation(v.value)}/>
 							  </div>
 							  <hr/>
 							  {expanded &&
