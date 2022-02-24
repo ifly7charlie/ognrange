@@ -7,10 +7,11 @@ import { useState, useRef, useMemo, useEffect } from 'react';
 // Helpers for loading contest information etc
 import { Nbsp, Icon } from '../lib/react/htmlhelper.js';
 import Select from 'react-select';
+import AsyncSelect from 'react-select/async';
 import useSWR from 'swr';
 
 // And connect to websockets...
-import { CoverageMap, CoverageDetails } from '../lib/react/deckgl.js';
+import { CoverageMap, CoverageDetails, stationMeta } from '../lib/react/deckgl.js';
 
 import Router from 'next/router';
 import { Dock } from 'react-dock';
@@ -18,6 +19,7 @@ import { Dock } from 'react-dock';
 import _debounce from 'lodash.debounce';
 import _map from 'lodash.map';
 import _find from 'lodash.find';
+import _filter from 'lodash.filter';
 
 export function IncludeJavascript() {
     return (
@@ -104,6 +106,31 @@ export default function CombinePage( props ) {
 	const defaultHighlight = {};
 	if( station ) { defaultHighlight[station]=1 }
 	const [highlightStations, setHighlightStations] = useState(defaultHighlight)
+
+	const selectedStation = {
+		value: station, label: station
+	};
+
+	const defaultStationSelection = [
+		{ label: 'All Stations (global)', value: '' }
+	];
+
+	async function findStation( s ) {
+		console.log( s );
+		if( s.length > 2 ) {
+			try {
+				let re = new RegExp( s, 'i' );
+				
+				const p = _map( _filter( stationMeta, (v) => v.station.match(re) ),
+								(o) => { return {value: o.station, label: o.station}} );
+				return p;
+			} catch( e ) {
+				return [];
+			}
+		}
+		return [{ value: '', label: 'All Stations (global)' }];
+	}
+		
 	
 	// Update the station by updating the query url preserving all parameters but station
 	function setStation( newStation ) {
@@ -200,8 +227,8 @@ export default function CombinePage( props ) {
 								  This is a beta version of a replacement for the <a href="https://ognrange.glidernet.org">current OGN coverage tool</a>. I&apos;m currently working on optimizing the data collection and processing functions. This UI is a placeholder so apologies in advance if it doesn't work very well! If you speak &apos;React&apos; and want to help please track me down on GitHub (ifly7charlie).
 							  </div>
 							  <hr/>
-							  <div>
-								  <b>{station||'all stations (global)'}</b><br/>(you can click on stations)<br/><br/>
+							  <div>	
+								  <AsyncSelect loadOptions={findStation} defaultValue={selectedStation} defaultOptions={defaultStationSelection} onChange={(v)=>setStation(v.value)}/><br/><br/>
 								  <b>Select available time period to display:</b>
 								  <Select options={selects} defaultValue={selected} onChange={(v)=>setFile(v.value)}/>
 								  <Select options={visualisations} defaultValue={selectedVisualisation} onChange={(v)=>setVisualisation(v.value)}/>
