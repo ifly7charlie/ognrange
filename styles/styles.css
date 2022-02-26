@@ -10,7 +10,7 @@ body {
 /* This stops display of the tooltip when it is outside of the map container, which means the
    screen doesn't constantly flicker  */
 #deckgl-wrapper {
-	overflow: hidden
+	overflow: hidden;
 }
 
 .stationList {
@@ -25,4 +25,44 @@ a {
 
 * {
   box-sizing: border-box;
+}
+
+.progress-bar {
+  position: absolute;
+  background: #444;
+  color: #fff;
+  text-align: center;
+  top: 40%;
+  left: 40%;
+
+  width: 100px;
+  margin-left: -50px;
+  padding: 5px;
+}
+
+# see lib/react/progressFetch for details and licence
+.loading .progress-bar {
+  opacity: 1;
+}
+
+.loading-complete .progress-bar {
+  transition: opacity .2s .2s ease-out;
+  opacity: 0;
+}
+
+.progress-bar .progress {
+  background: #fff;
+  display: inline-block;
+  width: 100%;
+  height: 0.3em;
+  padding-top: -16px;
+  transform-origin: left;
+  transform: scaleX(0);
+  box-sizing: border-box;
+/*  height: 100%; */
+  box-shadow: 0 0 4px 1px #888;
+}
+
+.loading .progress {
+  transition: transform 100ms linear;
 }
