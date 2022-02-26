@@ -295,8 +295,9 @@ ROLLUP_PERIOD_HOURS=2
 # helps with testing
 ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_SECONDS=60
 
-# how often do we need to report to the APRS server
-APRS_KEEPALIVE_PERIOD_MINUTES=2
+# how often do we need to report to the APRS server, also how often
+# we check for lost connection to the server
+APRS_KEEPALIVE_PERIOD_SECONDS=45
 
 # Filter what packets are being received - eg to set up regional range tool
 # uses standard APRS filters, this one basically means send me everything

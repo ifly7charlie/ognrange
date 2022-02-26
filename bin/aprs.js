@@ -56,6 +56,7 @@ const reExtractVC = / [+-]([0-9]+)fpm /;
 
 
 import { ROLLUP_PERIOD_MINUTES,
+		 NEXT_PUBLIC_SITEURL,
 		 APRS_SERVER, APRS_TRAFFIC_FILTER,
 		 APRS_KEEPALIVE_PERIOD_MS,
 	     H3_CACHE_FLUSH_PERIOD_MS,
@@ -131,8 +132,33 @@ async function main() {
 	globalDb = LevelUP(LevelDOWN(DB_PATH+'global'))
 	statusDb = LevelUP(LevelDOWN(DB_PATH+'status'))
 
-	// And start listening for messages
-	await startAprsListener();
+	// Load the status of the current stations
+	async function loadStationStatus(statusdb) {
+		const nowEpoch = Math.floor(Date.now()/1000);
+		const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
+		try { 
+			for await ( const [key,value] of statusdb.iterator()) {
+				stations[key] = JSON.parse(String(value))
+			}
+		} catch(e) {
+			console.log('Unable to loadStationStatus',e)
+		}
+		const nextid = (_reduce( stations, (highest,i) => { return highest < (i.id||0) ? i.id : highest }, 0 )||0)+1;
+		console.log( 'next station id', nextid );
+		return nextid;
+	}
+	console.log( 'loading station status' );
+	Atomics.store(nextStation, 0, (await loadStationStatus(statusDb))||1)
+
+	// Check and process unflushed accumulators at the start
+	// then we can increment the current number for each accumulator merge
+	await (startupPromise = rollupStartup({globalDb, statusDb, stationDbCache, stations}));
+	await (startupPromise = updateAndProcessAccumulators({globalDb, statusDb, stationDbCache, stations}));
+	startupPromise = null;
+
+	// Start listening to APRS and setup the regular housekeeping functions
+	startAprsListener();
+	setupPeriodicFunctions();
 }
 
 //
@@ -150,7 +176,10 @@ async function handleExit(signal) {
 	for( const i of Object.values(timeouts) ) {
 		clearTimeout(i);
 	}
-
+	if( connection && connection.interval ) {
+		clearInterval( connection.interval );
+	}
+	
 	if( startupPromise ) {
 		await startupPromise;
 	}
@@ -188,18 +217,23 @@ process.on('SIGUSR1', async function () {
 
 //
 // Connect to the APRS Server
-async function startAprsListener( m = undefined ) {
-
-	// In case we are using pm2 metrics
-	metrics = m;
-	let lastPacketCount = 0;
-	let lastRawPacketCount = 0;
-	let lastH3length = 0;
+async function startAprsListener() {
 
     // Settings for connecting to the APRS server
-    const CALLSIGN = process.env.NEXT_PUBLIC_SITEURL;
+    const CALLSIGN = NEXT_PUBLIC_SITEURL;
     const PASSCODE = -1;
     const [ APRSSERVER, PORTNUMBER ] = APRS_SERVER.split(':')||['aprs.glidernet.org','14580'];
+
+	// If we were connected then cleanup the old stuff
+	if( connection ) {
+		console.log( `reconnecting to ${APRSSERVER}:${PORTNUMBER}` );
+		try {
+			connection.disconnect();
+			clearInterval( connection.interval );
+		} catch(e) {
+		}
+		connection = null;
+	}
 	
     // Connect to the APRS server
     connection = new ISSocket(APRSSERVER, parseInt(PORTNUMBER)||14580, 'OGNRANGE', '', APRS_TRAFFIC_FILTER, `ognrange v${gv}` );
@@ -265,38 +299,15 @@ async function startAprsListener( m = undefined ) {
         }
     });
 
-    // Failed to connect
+    // Failed to connect, will create a new connection at the next periodic interval
     connection.on('error', (err) => {
 		if( ! connection.exiting ) {
 			console.log('Error: ' + err);
 			connection.disconnect();
-			connection.connect();
+			connection.valid = false;
 		}
     });
 
-	// Load the status
-	async function loadStationStatus(statusdb) {
-		const nowEpoch = Math.floor(Date.now()/1000);
-		const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
-		try { 
-			for await ( const [key,value] of statusdb.iterator()) {
-				stations[key] = JSON.parse(''+value)
-			}
-		} catch(e) {
-			console.log('oops',e)
-		}
-		const nextid = (_reduce( stations, (highest,i) => { return highest < (i.id||0) ? i.id : highest }, 0 )||0)+1;
-		console.log( 'next id', nextid );
-		return nextid;
-	}
-	console.log( 'loading station status' );
-	Atomics.store(nextStation, 0, (await loadStationStatus(statusDb))||1)
-
-	// Check and process unflushed accumulators at the start
-	// then we can increment the current number for each accumulator merge
-	await (startupPromise = rollupStartup({globalDb, statusDb, stationDbCache, stations}));
-	await (startupPromise = updateAndProcessAccumulators({globalDb, statusDb, stationDbCache, stations}));
-	startupPromise = null;
 
 	if( ! connection || connection.exiting ) {
 		return;
@@ -304,26 +315,44 @@ async function startAprsListener( m = undefined ) {
 	
     // Start the APRS connection
     connection.connect();
-
-	// And every (2) minutes we need to confirm the APRS
-	// connection has had some traffic
-	intervals.push(setInterval( function() {
+	
+	// And every (APRS_KEEPALIVE_PERIOD) minutes we need to confirm the APRS
+	// connection has had some traffic, and reconnect if not
+	connection.interval = setInterval( function() {
 		try {
 			// Send APRS keep alive or we will get dumped
 			connection.sendLine(`# ${CALLSIGN} ${gv}`);
 		} catch(e) {
 			console.log( `exception ${e} in sendLine status` );
-			connection.valid = false;
 		}
 		
         // Re-establish the APRS connection if we haven't had anything in
-        if( ! connection.valid && ! connection.exiting ) {
+        if( !connection || ((! connection.isConnected() || ! connection.valid) && ! connection.exiting)) {
             console.log( "failed APRS connection, retrying" );
-            connection.disconnect( () => { connection.connect() } );
+			try {
+				connection.disconnect();
+			} catch(e) {
+			}
+			// We want to restart the APRS listener if this happens
+			startAprsListener();
         }
-        connection.valid = false;
-	}, APRS_KEEPALIVE_PERIOD_MS ));
+		if( connection ) {
+			connection.valid = false; // reset by receiving a packet
+		}
+	}, APRS_KEEPALIVE_PERIOD_MS );
+}
 
+
+//
+// We have a series of different tasks that need to be done on a
+// regular basis, they can all persist through a reconnection of
+// the APRS server
+async function setupPeriodicFunctions() {
+
+	let lastPacketCount = 0;
+	let lastRawPacketCount = 0;
+	let lastH3length = 0;
+	
 	// We also need to flush our h3 cache to disk on a regular basis
 	// this is used as an opportunity to display some statistics
 	intervals.push(setInterval( async function() {
