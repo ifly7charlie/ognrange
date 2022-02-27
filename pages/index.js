@@ -69,21 +69,23 @@ export default function CombinePage( props ) {
 	const { data, error } = useSWR( '/data/'+(station||'global')+'/'+(station||'global')+'.index.json', fetcher );
 //	const { data: stations, error: stationError } = useSWR( '/data/station-list.json', fetcher );
 
-	const [selects,selected] = useMemo( _=>{
-		const selects = data ? _map(data.files,
-								(value,key)=>{
-									return {label: key,
-											options: _map( value.all,
-														   (cfile) => {
-															   return { label: (cfile.match(/([0-9-]+)$/)||[cfile])[0],
-																		value: (cfile.match(/((day|month|year)\.[0-9-]+)$/)||[cfile])[0] }
-														   })}
-								}) : null;
+	const [availableFiles,selectedFile] = useMemo( _=>{
+		if( ! data ) { return [ null, null ] }
+		
+		const selects = _map(data.files,
+							 (value,key)=>{
+								 return {label: key,
+										 options: _map( value.all,
+														(cfile) => {
+															return { label: (cfile.match(/([0-9-]+)$/)||[cfile])[0],
+																	 value: (cfile.match(/((day|month|year)\.[0-9-]+)$/)||[cfile])[0] }
+														})}
+							 }).reverse();
+		const effectiveFile = (file && file != '') ? file : data.files.year.current;
 		const [type] = file?.split('.') || ['year'];
 		const selected = selects ? _find( _find( selects, { label: type } )?.options||[],
 						 (o) => {
-							 console.log('===',o.value.slice( -(file?.length||data?.files?.year?.current?.length||1)),file);
-							 return o.value.slice( -(file?.length||data?.files?.year?.current?.length||1)) == file
+							 return effectiveFile.slice( -(o.value.length)) == o.value
 						 } ) : null;
 
 		return [selects,selected];
@@ -227,7 +229,7 @@ export default function CombinePage( props ) {
 							  <div>	
 								  <AsyncSelect loadOptions={findStation} value={selectedStation} defaultOptions={defaultStationSelection} onChange={(v)=>setStation(v.value)}/><br/><br/>
 								  <b>Select available time period to display:</b>
-								  <Select options={selects} value={selected} onChange={(v)=>setFile(v.value)}/>
+								  <Select options={availableFiles} value={selectedFile} onChange={(v)=>setFile(v.value)}/>
 								  <Select options={visualisations} value={selectedVisualisation} onChange={(v)=>setVisualisation(v.value)}/>
 							  </div>
 							  <hr/>
