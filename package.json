@@ -5,6 +5,7 @@
     "dev": "NODE_OPTIONS='--inspect' next dev",
     "aprs": "bin/aprs.js",
     "build": "next build",
+    "export": "next export",
     "start": "next start",
     "lint": "next lint",
     "test": "ava --serial",
@@ -12,6 +13,8 @@
     "aprscoverage": "c8 bin/aprs.js"
   },
   "dependencies": {
+    "@deck.gl/geo-layers": "^8.7.0",
+    "@deck.gl/layers": "^8.7.0",
     "@loaders.gl/arrow": "^2.0",
     "@loaders.gl/json": "^2.0",
     "@mapbox/tilebelt": "^1.0.2",
