@@ -250,10 +250,3 @@ export default function CombinePage( props ) {
     );
 	
 }
-export async function getServerSideProps(context) {
-  return {
-      props: { options: { mapType: 3 }}
-  };
-}
-
-
