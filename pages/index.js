@@ -48,6 +48,7 @@ const globalVisualisations = [
 
 // Convert list of files into a select
 const fetcher = (...args) => fetch(...args).then(res => res.json())
+const DATA_URL = process.env.NEXT_PUBLIC_DATA_URL || '/data/'
 
 //
 // Main page rendering :)
@@ -66,22 +67,28 @@ export default function CombinePage( props ) {
 	}
 
 	// Load the associated index
-	const { data, error } = useSWR( '/data/'+(station||'global')+'/'+(station||'global')+'.index.json', fetcher );
-//	const { data: stations, error: stationError } = useSWR( '/data/station-list.json', fetcher );
+	const { data, error } = useSWR( DATA_URL+(station||'global')+'/'+(station||'global')+'.index.json', fetcher );
 
+	// Display the right ones to the user
 	const [availableFiles,selectedFile] = useMemo( _=>{
-		if( ! data ) { return [ null, null ] }
-		
-		const selects = _map(data.files,
+		const files = data?.files || ({ year: { current: 'year', all: [ 'year' ]}});
+		const selects = _map( files,
 							 (value,key)=>{
 								 return {label: key,
 										 options: _map( value.all,
 														(cfile) => {
-															return { label: (cfile.match(/([0-9-]+)$/)||[cfile])[0],
-																	 value: (cfile.match(/((day|month|year)\.[0-9-]+)$/)||[cfile])[0] }
+															// latest is also symbolic linked, we use that instead
+															if( cfile == value.current ) {
+																return { label: 'Current '+key+' ('+(cfile.match(/([0-9-]+)$/)||[cfile])[0]+')',
+																		 value: key }
+															}
+															else {
+																return { label: (cfile.match(/([0-9-]+)$/)||[cfile])[0],
+																		 value: (cfile.match(/((day|month|year)\.[0-9-]+)$/)||[cfile])[0] }
+															}
 														})}
 							 }).reverse();
-		const effectiveFile = (file && file != '') ? file : data.files.year.current;
+		const effectiveFile = (file && file != '') ? file : files.year.current;
 		const [type] = file?.split('.') || ['year'];
 		const selected = selects ? _find( _find( selects, { label: type } )?.options||[],
 						 (o) => {
