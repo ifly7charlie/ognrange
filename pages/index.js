@@ -86,7 +86,8 @@ export default function CombinePage( props ) {
 																return { label: (cfile.match(/([0-9-]+)$/)||[cfile])[0],
 																		 value: (cfile.match(/((day|month|year)\.[0-9-]+)$/)||[cfile])[0] }
 															}
-														})}
+														}).reverse()
+										}
 							 }).reverse();
 		const effectiveFile = (file && file != '') ? file : files.year.current;
 		const [type] = file?.split('.') || ['year'];
