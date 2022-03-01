@@ -165,9 +165,9 @@ export default function CombinePage( props ) {
 	
 	// What the map is looking at
     const [viewport, setViewport] = useState({
-        latitude: parseFloat(lat||0)||51.87173333,
-        longitude: parseFloat(lng||0)||-0.551233333,
-        zoom: parseFloat(zoom||0)||6,
+        latitude: parseFloat(lat||0)||49.50305,
+        longitude: parseFloat(lng||0)||13.27524,
+        zoom: parseFloat(zoom||0)||3.3,
 		minZoom: 2.5,
 		maxZoom: 13,
         bearing: 0,
