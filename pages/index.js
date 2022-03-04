@@ -180,20 +180,20 @@ export default function CombinePage( props ) {
 
 	
 	// Debounced updating of the URL when the viewport is changed, this is a performance optimisation
-	function updateUrl(vs) {
-		if( router.isReady ) {
-			router.replace( { pathname: '/',
-							  query: { ...router.query,
-									   'lat': (vs.latitude).toFixed(5), 'lng': (vs.longitude).toFixed(5), 'zoom': (vs.zoom).toFixed(1) }
-			}, undefined, { shallow: true,  });
-		}
+	function updateUrl(query,vs) {
+		router.replace( { pathname: '/',
+						  query: { ...query,
+								   'lat': (vs.latitude).toFixed(5), 'lng': (vs.longitude).toFixed(5), 'zoom': (vs.zoom).toFixed(1) }
+		}, undefined, { shallow: true,  });
 	}
-	const delayedUpdate = useRef(_debounce((vs,s) => updateUrl(vs,s), 300)).current;
+	const delayedUpdate = useRef(_debounce((query,vs) => updateUrl(query,vs), 300)).current;
 	
 	// Synchronise it back to the url
 	function setViewportUrl(vs) {
         vs.bearing = 0;
-		delayedUpdate(vs)
+		if( router.isReady ) {
+			delayedUpdate(router.query,vs)
+		}
 		setViewport(vs)
 	}
 
