@@ -168,8 +168,16 @@ async function main() {
 // and then kill of any timers
 async function handleExit(signal) {
 	console.log(`${signal}: flushing data`)
-	connection.exiting = true;
-	connection.disconnect();
+	if( connection ) {
+		connection.exiting = true;
+		connection.disconnect && connection.disconnect()
+	}
+
+	if( startupPromise ) {
+		console.log( 'waiting for startup to finish' );
+		await startupPromise;
+	}
+	
 	for( const i of intervals ) {
 		clearInterval(i);
 	}
@@ -179,11 +187,7 @@ async function handleExit(signal) {
 	if( connection && connection.interval ) {
 		clearInterval( connection.interval );
 	}
-	
-	if( startupPromise ) {
-		await startupPromise;
-	}
-	
+		
 	// Flush everything to disk
 	console.log( await flushDirtyH3s( {globalDb, stationDbCache, stations, allUnwritten:true } ));
 	if( getAccumulator() ) {
@@ -514,8 +518,6 @@ async function processPacket( packet ) {
 	// If we have a gap then we will capture this (it was from a previous record but only time
 	// that is an issue is when rolling aggregators - at which point we have reset aircraftStation
 	// anyway (IS IT??)
-	//
-	// THIS LOGIC IS EXPERIMENTAL!
 	//
 	// The goal is to have some kind of shading that indicates how reliable packet reception is
 	// which is to  a little to do with how many packets are received.
