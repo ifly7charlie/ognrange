@@ -66,6 +66,20 @@ export default function CombinePage( props ) {
 		visualisation = 'avgSig';
 	}
 
+	// What the map is looking at
+    const [viewport, setViewport] = useState({
+        latitude: parseFloat(lat||0)||49.50305,
+        longitude: parseFloat(lng||0)||13.27524,
+        zoom: parseFloat(zoom||0)||3.3,
+		minZoom: 2.5,
+		maxZoom: 13,
+        bearing: 0,
+		minPitch: 0,
+		maxPitch: 85,
+		altitude: 1.5,
+        pitch: (! (props.options.mapType % 2)) ? 70 : 0
+    });
+	
 	// Load the associated index
 	const { data, error } = useSWR( DATA_URL+(station||'global')+'/'+(station||'global')+'.index.json', fetcher );
 
@@ -123,7 +137,7 @@ export default function CombinePage( props ) {
 	const defaultStationSelection = [
 		{ label: 'All Stations (global)', value: '' }
 	];
-
+	
 	async function findStation( s ) {
 		if( s.length > 2 ) {
 			try {
@@ -138,10 +152,12 @@ export default function CombinePage( props ) {
 		}
 		return [{ value: '', label: 'All Stations (global)' }];
 	}
-		
 	
 	// Update the station by updating the query url preserving all parameters but station
 	function setStation( newStation ) {
+		if( ! stationMeta ) {
+			return;
+		}
 		if( station === newStation ) {
 			newStation = '';
 		}
@@ -163,33 +179,21 @@ export default function CombinePage( props ) {
 	}
 
 	
-	// What the map is looking at
-    const [viewport, setViewport] = useState({
-        latitude: parseFloat(lat||0)||49.50305,
-        longitude: parseFloat(lng||0)||13.27524,
-        zoom: parseFloat(zoom||0)||3.3,
-		minZoom: 2.5,
-		maxZoom: 13,
-        bearing: 0,
-		minPitch: 0,
-		maxPitch: 85,
-		altitude: 1.5,
-        pitch: (! (props.options.mapType % 2)) ? 70 : 0
-    });
-
 	// Debounced updating of the URL when the viewport is changed, this is a performance optimisation
-	function updateUrl(existing,vs,s) {
-		router.replace( { pathname: '/',
-						  query: { ...existing,
-								   'lat': (vs.latitude).toFixed(5), 'lng': (vs.longitude).toFixed(5), 'zoom': (vs.zoom).toFixed(1) }
-		}, undefined, { shallow: true,  });
+	function updateUrl(vs) {
+		if( router.isReady ) {
+			router.replace( { pathname: '/',
+							  query: { ...router.query,
+									   'lat': (vs.latitude).toFixed(5), 'lng': (vs.longitude).toFixed(5), 'zoom': (vs.zoom).toFixed(1) }
+			}, undefined, { shallow: true,  });
+		}
 	}
-	const delayedUpdate = useRef(_debounce((existing,vs,s) => updateUrl(existing,vs,s), 300)).current;
+	const delayedUpdate = useRef(_debounce((vs,s) => updateUrl(vs,s), 300)).current;
 	
 	// Synchronise it back to the url
 	function setViewportUrl(vs) {
         vs.bearing = 0;
-		delayedUpdate(router.query,vs,station)
+		delayedUpdate(vs)
 		setViewport(vs)
 	}
 
