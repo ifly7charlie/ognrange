@@ -80,6 +80,13 @@ export default function CombinePage( props ) {
         pitch: (! (props.options.mapType % 2)) ? 70 : 0
     });
 	
+	useEffect(() => {
+		console.log('ue', router.isReady);
+		if (router.isReady && lat && lng ) {
+			setViewport({...viewport, longitude:parseFloat(lng), latitude:parseFloat(lat), zoom:parseFloat(zoom||0)||3.3});
+		}
+	}, [router.isReady]);
+	
 	// Load the associated index
 	const { data, error } = useSWR( DATA_URL+(station||'global')+'/'+(station||'global')+'.index.json', fetcher );
 
