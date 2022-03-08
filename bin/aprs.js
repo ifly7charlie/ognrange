@@ -4,24 +4,25 @@
 import { ISSocket } from 'js-aprs-is';
 import { aprsParser } from  'js-aprs-fap';
 
-// Correction factors
-//import { altitudeOffsetAdjust } from '../offsets.js';
-//import { getOffset } from '../egm96.mjs';
-
 // Height above ground calculations, uses mapbox to get height for point
 //import geo from './lib/getelevationoffset.js';
 import { getCacheSize, getElevationOffset } from '../lib/bin/getelevationoffset.js'
 
-import LevelUP from 'levelup';
-import LevelDOWN from 'leveldown';
+import { mkdirSync } from 'fs';
 
 import { ignoreStation } from '../lib/bin/ignorestation.js'
 
+// DB
+import LevelUP from 'levelup';
+import LevelDOWN from 'leveldown';
+
+// DB Structure
 import { CoverageRecord, bufferTypes } from '../lib/bin/coveragerecord.js';
 import { CoverageHeader } from '../lib/bin/coverageheader.js';
 
 import { gitVersion } from '../lib/bin/gitversion.js';
 
+// H3 hexagon cell library
 import h3 from 'h3-js';
 
 import _reduce from 'lodash.reduce';
@@ -38,15 +39,15 @@ let startupPromise = null;
 
 // APRS connection
 let connection = {};
+
+// Tracking aircraft so we can calculate gaps and double check for
+// planes that have GPS on but are stationary and have poor
+// coverage so jump a lot
 let aircraftStation = new Map();
-let aircraftSeen = new Map();
+let allAircraft = new Map();
 
 // PM2 Metrics
 let metrics = undefined;
-
-
-import { mkdirSync } from 'fs';
-
 
 // shortcuts so regexp compiled once
 const reExtractDb = / ([0-9.]+)dB /;
@@ -85,7 +86,9 @@ const gv = gitVersion().trim();
 // support clustering if we need it
 const sabbuffer = new SharedArrayBuffer(2);
 const nextStation = new Uint16Array(sabbuffer);
-let packetStats = { ignoredStation: 0, ignoredTracker:0, ignoredStationary:0, ignoredSignal0:0, ignoredPAW:0, count: 0, rawCount:0 };
+let packetStats = { ignoredStation:0, ignoredTracker:0, ignoredStationary:0, ignoredSignal0:0, ignoredPAW:0, 
+					ignoredH3stationary:0,
+					count:0, rawCount:0 };
 
 // Least Recently Used cache for Station Database connectiosn 
 import LRU from 'lru-cache'
@@ -386,7 +389,7 @@ async function setupPeriodicFunctions() {
 		// that will increase load - which is not ideal because we are obviously busy otherwise we wouldn't have
 		// so many stations sending us traffic...
 		if( flushStats.databases > MAX_STATION_DBS*0.9 ) {
-			console.log( `** please increase the database cache (MAX_STATION_DBS) it should be larger than the number of stations receiving traffic in H3_CACHE_FLUSH_PERIOD_MINUTES (${H3_CACHE_FLUSH_PERIOD_MINUTES})` );
+			console.log( `** please increase the database cache (MAX_STATION_DBS) it should be larger than the number of stations receiving traffic in H3_CACHE_FLUSH_PERIOD_MINUTES` );
 		}
 
 		// purge and flush H3s to disk
@@ -402,11 +405,13 @@ async function setupPeriodicFunctions() {
 		intervals.push( setInterval( async function() {
 			
 			const purgeBefore = (Date.now()/1000) - FORGET_AIRCRAFT_AFTER_SEC;
-			let total = aircraftSeen.size;
+			const purgeH3sBefore = (Date.now()/1000) - 3600; // 1 hour
+			let total = allAircraft.size;
 			
-			aircraftSeen.forEach( (timestamp,key) => {
-				if( timestamp < purgeBefore ) {
 					aircraftSeen.delete(key);
+			allAircraft.forEach( (aircraft,key) => {
+				if( aircraft.seen < purgeBefore ) {
+					allAircraft.delete(key);
 				}
 			});
 			aircraftStation.forEach( (timestamp,key) => {
@@ -415,8 +420,8 @@ async function setupPeriodicFunctions() {
 				}
 			});
 			
-			let purged = total - aircraftSeen.size;
-			console.log( `purged ${purged} aircraft from gap map, ${aircraftSeen.size} remaining` );
+			let purged = total - allAircraft.size;
+			console.log( `purged ${purged} aircraft from gap map, ${allAircraft.size} remaining` );
 			
 		}, (3600*1000) )); // every hour we do this
 	}, (FORGET_AIRCRAFT_AFTER_SEC+Math.random(300))*1000));
@@ -483,10 +488,10 @@ async function processPacket( packet ) {
 	const pawTracker = (packet.sourceCallsign.slice( 0, 3 ) == 'PAW');
 
 	// Lookup the altitude adjustment for the 
-	const sender = packet.digipeaters?.pop()?.callsign||'unknown';
+	const station = packet.digipeaters?.pop()?.callsign||'unknown';
 
 	// Obvious reasons to ignore stations
-	if( ignoreStation( sender ) ) {
+	if( ignoreStation( station ) ) {
 		packetStats.ignoredStation++;
 		return;
 	}
@@ -498,8 +503,14 @@ async function processPacket( packet ) {
 		packetStats.ignoredPAW++;
 		return;
 	}
-
+	
     let altitude = Math.floor(packet.altitude);
+
+	// Proxy for the plane
+	let aircraft = allAircraft.get(flarmId);
+	if( ! aircraft ) {
+		allAircraft.set( flarmId, aircraft = { h3s: new Set(), first: packet.timestamp, packets: 0, seen:0 });
+	}
 
 	// Make sure they are moving... we can get this from the packet without any
 	// vertical speed of 30 is ~0.5feet per second or ~15cm/sec and I'm guessing
@@ -510,7 +521,7 @@ async function processPacket( packet ) {
 		const rawVC = (packet.comment.match(reExtractVC)||[0,0])[1];
 		if( rawRot == 0.0 && rawVC < 30 ) {
 			packetStats.ignoredStationary++;
-			aircraftSeen.set(flarmId, packet.timestamp );
+			aircraft.seen = packet.timestamp;
 			return;
 		}
 	}
@@ -522,26 +533,72 @@ async function processPacket( packet ) {
 	// The goal is to have some kind of shading that indicates how reliable packet reception is
 	// which is to  a little to do with how many packets are received.
 	let gap;
+	let first = false;
 	{
-		const gs = sender + '/' + flarmId;
-		const seen = aircraftSeen.get(flarmId);
+		const seen = aircraft.seen;
 		const when = aircraftStation.get( gs );
 		gap = when ? Math.min(60,(packet.timestamp - when)) : (Math.min(60,Math.max(1,packet.timestamp - (seen||packet.timestamp))));
 		aircraftStation.set( gs, packet.timestamp );
 		aircraftSeen.set(flarmId, packet.timestamp );
+			first = true;
+		}
+	}
+
+	// A GPS device indoors in poor coverage may report movement even though it is
+	// not. Over a period of a year of sending 1pps it this alone is enough traffic
+	// to overflow the counters. As we are generally excluding stationary devices
+	// this is a bit of extra logic to identify devices that remain in a small
+	// set of cells for a lot of points. Most stationary devices will be picked up
+	// by the normal logic, this is basically a long term backup plan to stop
+	// overflow caused by planes in 'hangers'
+	//
+	// store in a set until we have 4 and then  we can zap that (less private info stored)
+	// 9 is 174m/side or an area of 0.1sqkm - h3 could be about
+	// 2xedgeLength in width so that's about 350m, so this is max 10kph at 120s/ per h3.
+	// 10 is 65m/side so 130m/120s => 3.9kph
+	// (4 => allows to jump over side as hexagon no point is near more than
+	//       3 other hexagons)
+	//
+	// we could check to see if they are adjacent but I don't think that is necessary
+	// as any aircraft that is actually moving will eventually end up with more h3s
+	//
+	// also, helicopters?! may miss hovers for start but should not skip anything
+	// afterwards.
+	//
+	if( first ) {
+		aircraft.h3s.add(h3.geoToH3(packet.latitude, packet.longitude, 10));
+		if( aircraft.h3s.size > 4 ) {
+			// remove oldest (first in set is always the earliest added)
+			// also reset count as there has been a change to h3s so may
+			// be moving - this is less likely to false positive
+			aircraft.h3s.delete( aircraft.h3s.values().next().value );
+			aircraft.packets = 0; 
+		}
+		else {
+			aircraft.packets++;
+		}
+		
+		// 90 first points per h3 is enough to trigger
+		// stationary, that basically means they haven't moved in 
+		// at least 90 seconds, but more like 90*5 seconds
+		const s = aircraft.h3s.size;
+		if( (aircraft.packets / s) > 90 ) {
+			packetStats.ignoredH3stationary++;
+			return;
+		}
 	}
 
 	// Look for signal strength and checksum - we will ignore any packet without a signal strength
 	// sometimes this happens to be missing and other times it happens because it is reported as 0.0
-	const rawStrength = (packet.comment.match(reExtractDb)||[0,0])[1];
-	const strength = Math.min(Math.round(parseFloat(rawStrength)*4),255);
+	const rawSignalStrength = (packet.comment.match(reExtractDb)||[0,0])[1];
+	const signal = Math.min(Math.round(parseFloat(rawSignalStrength)*4),255);
 
 	// crc may be absent, if it is then it's a 0
 	const crc = parseInt((packet.comment.match(reExtractCrc)||[0,0])[1]);
 
 	// If we have no signal strength then we'll ignore the packet... don't know where these
 	// come from or why they exist...
-	if( strength <= 0 ) {
+	if( signal <= 0 ) {
 		packetStats.ignoredSignal0++;
 		return;
 	}
@@ -551,36 +608,35 @@ async function processPacket( packet ) {
 	getElevationOffset( packet.latitude, packet.longitude,
 						async (gl) => {
 							const agl = Math.round(Math.max(altitude-gl,0));
-							packetCallback( sender, h3.geoToH3(packet.latitude, packet.longitude,  H3_STATION_CELL_LEVEL),
-											altitude, agl, crc, strength, gap, packet.timestamp );
+							
+							// Find the id for the station or allocate
+							const stationid = await getStationId( station );
+							
+							// Packet for station marks it for dumping next time round
+							stations[station].lastPacket = packet.timestamp;
+							
+							// Open the database, do this first as takes a bit of time
+							let stationDb = stationDbCache.get(stationid);
+							if( ! stationDb ) {
+								stationDbCache.set(stationid, stationDb = LevelUP(LevelDOWN(DB_PATH+'/stations/'+station)))
+								stationDb.ognInitialTS = Date.now();
+								stationDb.ognStationName = station;
+							}
+
+							// What hexagon are we working with
+							const h3id = h3.geoToH3(packet.latitude, packet.longitude, H3_STATION_CELL_LEVEL);
+							
+							// Merge into both the station db (0,0) and the global db with the stationid we allocated
+							// we don't pass stationid into the station specific db because there only ever is one
+							// it gets used to build the list of stations that can see the cell
+							mergeDataIntoDatabase( 0, stationid, stationDb, h3id,
+												   altitude, agl, crc, signal, gap );
+							
+							mergeDataIntoDatabase( stationid,  0, globalDb, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL),
+												   altitude, agl, crc, signal, gap );
 	});
 	
 	packetStats.count++;
-}
-
-//
-// Actually serialise the packet into the database after processing the data
-async function packetCallback( station, h3id, altitude, agl, crc, signal, gap, timestamp ) {
-
-	// Find the id for the station or allocate
-	const stationid = await getStationId( station );
-	
-	// Packet for station marks it for dumping next time round
-	stations[station].lastPacket = timestamp;
-	
-	// Open the database, do this first as takes a bit of time
-	let stationDb = stationDbCache.get(stationid);
-	if( ! stationDb ) {
-		stationDbCache.set(stationid, stationDb = LevelUP(LevelDOWN(DB_PATH+'/stations/'+station)))
-		stationDb.ognInitialTS = Date.now();
-		stationDb.ognStationName = station;
-	}
-
-	// Merge into both the station db (0,0) and the global db with the stationid we allocated
-	// we don't pass stationid into the station specific db because there only ever is one
-	// it gets used to build the list of stations that can see the cell
-	mergeDataIntoDatabase( 0,          stationid, stationDb, h3id, altitude, agl, crc, signal, gap );
-	mergeDataIntoDatabase( stationid,  0,         globalDb, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL), altitude, agl, crc, signal, gap );
 }
 
 //

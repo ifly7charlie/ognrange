@@ -216,8 +216,8 @@ NEXT_PUBLIC_DATA_URL=
 # so it will fill to MAX before anything happens. These tiles don't change so
 # if this is too low you'll just be hammering your mapbox account. Flip side
 # is the data will occupy ram or swap
-MAX_ELEVATION_TILES=10000
-ELEVATION_TILE_EXPIRY_HOURS=36
+MAX_ELEVATION_TILES=32000
+ELEVATION_TILE_EXPIRY_HOURS=84
 
 # control how precise the ground altitude is, difficult balance for mountains..
 # see https://docs.mapbox.com/help/glossary/zoom-level/,
