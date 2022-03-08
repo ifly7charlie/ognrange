@@ -408,7 +408,6 @@ async function setupPeriodicFunctions() {
 			const purgeH3sBefore = (Date.now()/1000) - 3600; // 1 hour
 			let total = allAircraft.size;
 			
-					aircraftSeen.delete(key);
 			allAircraft.forEach( (aircraft,key) => {
 				if( aircraft.seen < purgeBefore ) {
 					allAircraft.delete(key);
@@ -535,11 +534,13 @@ async function processPacket( packet ) {
 	let gap;
 	let first = false;
 	{
+		const gs = station + '/' + flarmId;
 		const seen = aircraft.seen;
 		const when = aircraftStation.get( gs );
 		gap = when ? Math.min(60,(packet.timestamp - when)) : (Math.min(60,Math.max(1,packet.timestamp - (seen||packet.timestamp))));
 		aircraftStation.set( gs, packet.timestamp );
-		aircraftSeen.set(flarmId, packet.timestamp );
+		if( aircraft.seen < packet.timestamp ) {
+			aircraft.seen = packet.timestamp;
 			first = true;
 		}
 	}
