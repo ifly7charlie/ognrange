@@ -246,7 +246,7 @@ export default function CombinePage( props ) {
 							  </div>
 							  <hr/>
 							  <div>	
-								  <AsyncSelect loadOptions={findStation} value={selectedStation} defaultOptions={defaultStationSelection} onChange={(v)=>setStation(v.value)}/><br/><br/>
+								  <AsyncSelect loadOptions={findStation} value={selectedStation} defaultOptions={defaultStationSelection} onChange={(v)=>setStation(v.value)} noOptionsMessage={()=>'Start typing to search'}/><br/><br/>
 								  <b>Select available time period to display:</b>
 								  <Select options={availableFiles} value={selectedFile} onChange={(v)=>setFile(v.value)}/>
 								  <Select options={visualisations} value={selectedVisualisation} onChange={(v)=>setVisualisation(v.value)}/>
