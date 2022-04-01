@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "NODE_OPTIONS='--inspect' next dev",
     "aprs": "bin/aprs.js",
+    "aprs:dev": "NODE_OPTIONS='--inspect-brk' bin/aprs.js",
     "build": "next build",
     "export": "next export",
     "start": "next start",
