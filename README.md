@@ -215,9 +215,9 @@ NEXT_PUBLIC_DATA_URL=
 # control the elevation tile cache, note tiles are not evicted on expiry 
 # so it will fill to MAX before anything happens. These tiles don't change so
 # if this is too low you'll just be hammering your mapbox account. Flip side
-# is the data will occupy ram or swap
+# is the data will occupy ram or swap, 0 means no expiry
 MAX_ELEVATION_TILES=32000
-ELEVATION_TILE_EXPIRY_HOURS=84
+ELEVATION_TILE_EXPIRY_HOURS=0
 
 # control how precise the ground altitude is, difficult balance for mountains..
 # see https://docs.mapbox.com/help/glossary/zoom-level/,
@@ -249,9 +249,9 @@ STATION_DB_EXPIRY_HOURS=4
 #   is in memory then it will be used rather than reading from the db.
 #   purges happen normally at flush period intervals (so 5 and 16 really it will
 #   be flushed at the flush run at 20min)
-H3_CACHE_FLUSH_PERIOD_MINUTES=5
+H3_CACHE_FLUSH_PERIOD_MINUTES=1
 H3_CACHE_MAXIMUM_DIRTY_PERIOD_MINUTES=30
-H3_CACHE_EXPIRY_TIME_MINUTES=16
+H3_CACHE_EXPIRY_TIME_MINUTES=4
 
 # how much detail to collect, bigger numbers = more cells! goes up fast see
 # https://h3geo.org/docs/core-library/restable for what the sizes mean
@@ -289,6 +289,13 @@ STATION_EXPIRY_TIME_DAYS=31
 # This ALSO controls how often to write output files. Updated display files
 # are produced during rollups - so at startup, at rollup period, and at exit
 ROLLUP_PERIOD_HOURS=2
+
+# how many databases we can process at once when doing a rollup, if
+# your system drops the APRS connection when it is busy then you should
+# set this number lower... I blame Node for having one thread and webworkers
+# for not allowing you to share DB handles even if underlying C++ code is
+# threadsafe
+MAX_SIMULTANEOUS_ROLLUPS=100
 
 # How often to check for change of accumulators - this is basically how long
 # it can take to notice the day has changed, could be solved better but this 
