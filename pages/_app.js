@@ -8,7 +8,7 @@ import { useState } from 'react';
 
 // This default export is required in a new `pages/_app.js` file.
 export default function MyApp({ Component, pageProps }) {
-    const [ options, setOptions ] = useState( { mapType: 3 } );
-    return <Component {...pageProps} options={options} setOptions={setOptions} />
+//    const [ options, setOptions ] = useState( { mapType: 3 } );
+    return <Component {...pageProps} />
 }
 			
