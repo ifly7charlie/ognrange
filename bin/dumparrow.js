@@ -28,7 +28,7 @@ for await (const batch of reader) {
         let out = '';
         const json = columns.toJSON();
 
-        json.h3 = json.h3hi.toString(16) + json.h3lo.toString(16);
+        json.h3 = json.h3hi.toString(16) + ',' + json.h3lo.toString(16);
         delete json.h3lo;
         delete json.h3hi;
         console.log(JSON.stringify(json));
