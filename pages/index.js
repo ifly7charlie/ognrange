@@ -17,7 +17,13 @@ import {CoverageDetails, stationMeta} from '../lib/react/deckgl';
 
 const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mod.CoverageMap), {
     ssr: false,
-    loading: () => <p>Loading map</p>
+    loading: () => (
+        <div style={{width: '100vw', marginTop: '20vh', position: 'absolute'}}>
+            <div style={{display: 'block', margin: 'auto', width: '100px'}}>
+                <img width="100" height="100" src="http://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />
+            </div>
+        </div>
+    )
 });
 
 import Router from 'next/router';
