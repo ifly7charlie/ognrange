@@ -92,7 +92,6 @@ export default function CombinePage(props) {
     });
 
     useEffect(() => {
-        console.log('ue', router.isReady);
         if (router.isReady && lat && lng) {
             setViewport({
                 ...viewport,
