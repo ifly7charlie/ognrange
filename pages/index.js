@@ -13,7 +13,8 @@ import AsyncSelect from 'react-select/async';
 import {Settings} from '../lib/react/settings';
 
 // And connect to websockets...
-import {CoverageDetails, stationMeta} from '../lib/react/deckgl';
+import {stationMeta} from '../lib/react/deckgl';
+import {CoverageDetails} from '../lib/react/CoverageDetails';
 
 const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mod.CoverageMap), {
     ssr: false,
