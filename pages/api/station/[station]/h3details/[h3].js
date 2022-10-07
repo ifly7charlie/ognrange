@@ -9,10 +9,13 @@ import lodash from 'lodash';
 
 import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../../../../../lib/bin/config.js';
 
+import {prefixWithZeros} from '../../../../../lib/bin/prefixwithzeros.js';
+
 export default async function getH3Details(req, res) {
     // Top level
     const pending = new Map();
     const subdir = req.query.station;
+    const selectedFile = req.query.file;
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
     const result = [];
     const now = new Date();
@@ -22,17 +25,30 @@ export default async function getH3Details(req, res) {
         res.status(404).json('no h3');
     }
 
+    // Get a Year/Month component from the file
+    let fileDateMatch = selectedFile?.match(/([0-9]{4}-[0-9]{2})(|-[0-9]{2})$/)?.[1];
+    if (!fileDateMatch) {
+        if (selectedFile == 'month' || selectedFile == 'day') {
+            fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth()))}`;
+        } else if (selectedFile == 'year') {
+            fileDateMatch = now.getUTCFullYear();
+        }
+    }
+    console.log(selectedFile, fileDateMatch);
+
     // One dir for each station
     try {
-        const files = readdirSync(OUTPUT_PATH + subdir).sort();
+        const files = readdirSync(OUTPUT_PATH + subdir)
+            .sort()
+            .filter((x) => x.match(fileDateMatch));
 
         for (const fileName of files) {
             const matched = fileName.match(/day\.([0-9-]+)\.arrow$/);
             if (matched) {
                 const fileDate = new Date(matched[1]);
-                if (now - fileDate > 60 * 24 * 3600 * 1000) {
-                    continue;
-                }
+                //                if (now - fileDate > 60 * 24 * 3600 * 1000) {
+                //                   continue;
+                //              }
 
                 pending.set(
                     fileName,

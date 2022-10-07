@@ -305,7 +305,13 @@ export default function CombinePage(props) {
                             <hr />
                             {expanded && (
                                 <>
-                                    <CoverageDetails details={details} station={station} highlightStations={highlightStations} setHighlightStations={setHighlightStations} />
+                                    <CoverageDetails //
+                                        details={details}
+                                        station={station}
+                                        highlightStations={highlightStations}
+                                        setHighlightStations={setHighlightStations}
+                                        file={file}
+                                    />
                                 </>
                             )}
                         </div>
