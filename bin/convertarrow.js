@@ -1,4 +1,4 @@
-import {existsSync, readFile, mkdirSync, readdirSync} from 'fs';
+import {existsSync, readFile, mkdirSync, readdirSync, copyFileSync} from 'fs';
 import {tableFromIPC, RecordBatchReader} from 'apache-arrow/Arrow.node';
 
 import {Utf8, Uint8, Uint16, Uint32, Uint64, makeBuilder, makeTable, RecordBatchWriter} from 'apache-arrow/Arrow.node';
@@ -11,7 +11,7 @@ import zlib from 'zlib';
 import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../lib/bin/config.js';
 import yargs from 'yargs';
 
-const NEW_PATH = OUTPUT_PATH + '../converted/';
+const NEW_PATH = OUTPUT_PATH + '../arrow/';
 const OVERWRITE = false;
 
 async function processAllFiles() {
@@ -78,6 +78,9 @@ function processFile(station, fileName, resolve) {
         const table = tableFromIPC([arrowFileContents]);
 
         if (!table.getChild('h3')) {
+            console.log('✅', fileName + '==>' + outputFileName );
+            copyFileSync( OUTPUT_PATH + fileName, outputFileName );
+            copyFileSync( OUTPUT_PATH + fileName + '.gz', outputFileName + '.gz');
             resolve();
             return;
         }
