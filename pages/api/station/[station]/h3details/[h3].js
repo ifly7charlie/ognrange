@@ -32,7 +32,7 @@ export default async function getH3Details(req, res) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
         } else {
-            fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth()))}`;
+            fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
     console.log(selectedFile, fileDateMatch, req.query.h3, h3SplitLong);
