@@ -140,8 +140,12 @@ function processFile(station, fileName, resolve) {
             let globalType = !!table.getChild('stations');
 
             if (globalType) {
+                let currentRow = 0;
                 for (const station of table.getChild('stations')) {
-                    numStations.append(Math.min(station?.split(',')?.length, 255));
+                    if (currentRow < numRows) {
+                        numStations.append(Math.min(station?.split(',')?.length, 255));
+                        currentRow++;
+                    }
                 }
             }
 
