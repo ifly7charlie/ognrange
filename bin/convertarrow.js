@@ -11,17 +11,27 @@ import zlib from 'zlib';
 import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../lib/bin/config.js';
 import yargs from 'yargs';
 
+const INPUT_PATH = OUTPUT_PATH + '../data/';
 const NEW_PATH = OUTPUT_PATH + '../arrow/';
-const OVERWRITE = false;
+
+const args = yargs(process.argv.slice(2)) //
+    .option('station', {alias: 's', type: 'string', description: 'Station'})
+    .option('file', {alias: 'f', type: 'string', description: 'Arrow file, requires station as well'})
+    .option('overwrite', {description: 'Overwrite destination', default: false})
+    .option('quiet', {description: 'Only log changes & Errors', default: true})
+    .help()
+    .alias('help', 'h').argv;
+
+console.log(args);
 
 async function processAllFiles() {
     // Top level
     const pending = new Map();
-    const subdirs = readdirSync(OUTPUT_PATH);
+    const subdirs = args.station ? [args.station] : readdirSync(INPUT_PATH);
     for (const subdir of subdirs) {
         // One dir for each station
         try {
-            const files = readdirSync(OUTPUT_PATH + subdir);
+            const files = readdirSync(INPUT_PATH + subdir);
 
             for (const file of files) {
                 let fileName = subdir + '/' + file;
@@ -42,7 +52,9 @@ async function processAllFiles() {
                     pending.delete(done);
                 }
             }
-        } catch (e) {}
+        } catch (e) {
+            console.log(e);
+        }
     }
     //
     console.log('All files in process, waiting for completion..');
@@ -50,13 +62,17 @@ async function processAllFiles() {
     console.log('done');
 }
 
-processAllFiles().then('done');
+if (args.file && args.station) {
+    await new Promise((resolve) => processFile(args.station, args.station + '/' + args.file, () => resolve(args.file)));
+} else {
+    processAllFiles().then('done');
+}
 
 function processFile(station, fileName, resolve) {
     const outputFileName = NEW_PATH + fileName;
 
     // Read file, decompress if needed
-    readFile(OUTPUT_PATH + fileName, null, (err, arrowFileContents) => {
+    readFile(INPUT_PATH + fileName, null, (err, arrowFileContents) => {
         if (err) {
             console.log(err);
             resolve();
@@ -69,8 +85,10 @@ function processFile(station, fileName, resolve) {
 
         mkdirSync(NEW_PATH + station, {recursive: true});
 
-        if (existsSync(outputFileName) && !OVERWRITE) {
-            //        console.log(fileName + '->' + outputFileName + ' * skipping as it exists');
+        if (existsSync(outputFileName) && !args.overwrite) {
+            if (!args.quiet) {
+                console.log('🟢', fileName + '->' + outputFileName + ' * skipping as it exists');
+            }
             resolve();
             return;
         }
@@ -78,9 +96,11 @@ function processFile(station, fileName, resolve) {
         const table = tableFromIPC([arrowFileContents]);
 
         if (!table.getChild('h3')) {
-            console.log('✅', fileName + '==>' + outputFileName );
-            copyFileSync( OUTPUT_PATH + fileName, outputFileName );
-            copyFileSync( OUTPUT_PATH + fileName + '.gz', outputFileName + '.gz');
+            copyFileSync(INPUT_PATH + fileName, outputFileName);
+            copyFileSync(INPUT_PATH + fileName + '.gz', outputFileName + '.gz');
+            if (!args.quiet) {
+                console.log('✅', fileName + '==>' + outputFileName);
+            }
             resolve();
             return;
         }
