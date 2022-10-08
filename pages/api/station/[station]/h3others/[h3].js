@@ -21,6 +21,7 @@ export default async function getH3Details(req, res) {
     // Top level
     const subdir = req.query.station;
     const selectedFile = req.query.file;
+    const lockedH3 = parseInt(req.query.lockedH3 || '0');
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
     const now = new Date();
     const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
