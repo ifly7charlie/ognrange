@@ -7,6 +7,7 @@ import yargs from 'yargs';
 import {prefixWithZeros} from '../lib/bin/prefixwithzeros.js';
 
 const args = yargs(process.argv.slice(2)) //
+    .option('stations')
     .option('station', {alias: 's', type: 'string', default: 'global', description: 'Arrow file'})
     .option('file', {alias: 'f', type: 'string', default: 'year.arrow', description: 'Arrow file'})
     .help()
@@ -14,7 +15,7 @@ const args = yargs(process.argv.slice(2)) //
 
 console.log(OUTPUT_PATH, {...args});
 import {open} from 'node:fs/promises';
-const fd = await open(OUTPUT_PATH + args.station + '/' + args.station + '.' + args.file);
+const fd = await open(args.stations ? OUTPUT_PATH + 'stations.arrow' : OUTPUT_PATH + args.station + '/' + args.station + '.' + args.file);
 
 const reader = await RecordBatchReader.from(fd.createReadStream());
 
