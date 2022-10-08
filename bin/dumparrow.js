@@ -4,6 +4,8 @@ import {tableFromIPC, RecordBatchReader} from 'apache-arrow/Arrow.node';
 import {DB_PATH, OUTPUT_PATH} from '../lib/bin/config.js';
 import yargs from 'yargs';
 
+import {prefixWithZeros} from '../lib/bin/prefixwithzeros.js';
+
 const args = yargs(process.argv.slice(2)) //
     .option('station', {alias: 's', type: 'string', default: 'global', description: 'Arrow file'})
     .option('file', {alias: 'f', type: 'string', default: 'year.arrow', description: 'Arrow file'})
@@ -28,7 +30,7 @@ for await (const batch of reader) {
         let out = '';
         const json = columns.toJSON();
 
-        json.h3 = json.h3hi.toString(16) + ',' + json.h3lo.toString(16);
+        json.h3 = prefixWithZeros(8, json.h3hi?.toString(16) || 'null') + prefixWithZeros(8, json.h3lo?.toString(16) || 'null');
         delete json.h3lo;
         delete json.h3hi;
         console.log(JSON.stringify(json));
