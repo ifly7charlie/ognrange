@@ -22,19 +22,20 @@ export default async function getH3Details(req, res) {
     const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
     if (!h3SplitLong) {
-        res.status(404).json('no h3');
+        res.status(200).json([]);
+        return;
     }
 
     // Get a Year/Month component from the file
     let fileDateMatch = selectedFile?.match(/([0-9]{4}-[0-9]{2})(|-[0-9]{2})$/)?.[1];
     if (!fileDateMatch) {
-        if (selectedFile == 'month' || selectedFile == 'day') {
-            fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth()))}`;
-        } else if (selectedFile == 'year') {
+        if (selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
+        } else {
+            fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth()))}`;
         }
     }
-    console.log(selectedFile, fileDateMatch);
+    console.log(selectedFile, fileDateMatch, req.query.h3, h3SplitLong);
 
     // One dir for each station
     try {
@@ -46,9 +47,6 @@ export default async function getH3Details(req, res) {
             const matched = fileName.match(/day\.([0-9-]+)\.arrow$/);
             if (matched) {
                 const fileDate = new Date(matched[1]);
-                //                if (now - fileDate > 60 * 24 * 3600 * 1000) {
-                //                   continue;
-                //              }
 
                 pending.set(
                     fileName,
@@ -97,7 +95,6 @@ function processFile(fileName, [h3lo, h3hi], resolve) {
 
             //
             const h3hiArray = table.getChild('h3hi')?.toArray();
-
             if (!h3hiArray) {
                 console.log(`file ${fileName} is not in the correct format`);
                 resolve();
@@ -116,13 +113,10 @@ function processFile(fileName, [h3lo, h3hi], resolve) {
             // We now know the range it could be in
             const lastIndex = lodash.sortedLastIndex(h3hiArray, h3hi);
 
-            //            console.log(fileName, 'index from ', index, lastIndex);
-
             const h3loArray = table.getChild('h3lo').toArray();
 
             // All the rows with h3hi
             const subset = h3loArray.subarray(index, lastIndex);
-            //            console.table(subset);
 
             // If one matches
             const subIndex = lodash.sortedIndexOf(subset, h3lo);
@@ -132,20 +126,18 @@ function processFile(fileName, [h3lo, h3hi], resolve) {
             }
 
             const json = table.get(subIndex + index).toJSON();
-            //            const h3found = json.h3hi.toString(16) + ',' + json.h3lo.toString(16);
-
             const output = {
                 avgGap: json.avgGap >> 2,
                 maxSig: json.maxSig / 4,
                 avgSig: json.avgSig / 4,
                 minAltSig: json.minAltSig / 4,
-                minAgl: json.minAgl
+                minAgl: json.minAgl,
+                count: json.count
             };
 
             if (json.expectedGap) {
                 output.expectedGap = json.expectedGap >> 2;
             }
-
             resolve(output);
             return;
         } catch (e) {
