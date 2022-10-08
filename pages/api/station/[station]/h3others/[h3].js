@@ -15,7 +15,7 @@ import {prefixWithZeros} from '../../../../../lib/bin/prefixwithzeros.js';
 
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
-import _sortBy from 'lodash.sortBy';
+import _sortBy from 'lodash.sortby';
 
 export default async function getH3Details(req, res) {
     // Top level
