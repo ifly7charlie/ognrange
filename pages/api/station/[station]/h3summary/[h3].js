@@ -49,7 +49,7 @@ export default async function getH3Details(req, res) {
         }
     }
 
-    console.log('h3summary', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
+    console.log(now.toISOString(), ' h3summary', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     // Find the enclosing global record
 
