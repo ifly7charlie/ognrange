@@ -29,7 +29,7 @@ export default async function getH3Details(req, res) {
     // Get a Year/Month component from the file
     let fileDateMatch = selectedFile?.match(/([0-9]{4}-[0-9]{2})(|-[0-9]{2})$/)?.[1];
     if (!fileDateMatch) {
-        if (selectedFile == 'year') {
+        if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth()))}`;
