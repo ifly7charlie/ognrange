@@ -40,8 +40,8 @@ export default async function getH3Details(req, res) {
     // One dir for each station
     try {
         const files = readdirSync(OUTPUT_PATH + subdir)
-            .sort()
-            .filter((x) => x.match(fileDateMatch));
+            .filter((x) => x.match(fileDateMatch) && x.match(/day\.([0-9-]+)\.arrow$/))
+            .sort();
 
         for (const fileName of files) {
             const matched = fileName.match(/day\.([0-9-]+)\.arrow$/);
