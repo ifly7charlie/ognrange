@@ -16,7 +16,6 @@ import lodash from 'lodash';
 import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../lib/bin/config.js';
 import yargs from 'yargs';
 
-const T_OUTPUT_PATH = OUTPUT_PATH + '../converted/';
 const OVERWRITE = true;
 
 const args = yargs(process.argv.slice(2)) //
@@ -37,9 +36,11 @@ async function processAllFiles() {
     const h3SplitLong = h3IndexToSplitLong(args.h3);
     const result = {};
 
+    console.log('h3s:', h3SplitLong);
+
     // One dir for each station
     try {
-        const files = readdirSync(T_OUTPUT_PATH + subdir);
+        const files = readdirSync(OUTPUT_PATH + subdir);
 
         for (const fileName of files) {
             const matched = fileName.match(/day\.([0-9-]+)\.arrow$/);
@@ -76,7 +77,7 @@ processAllFiles();
 
 function processFile(station, fileName, date, [h3lo, h3hi], resolve) {
     // Read file, decompress if needed
-    readFile(T_OUTPUT_PATH + station + '/' + fileName, null, (err, arrowFileContents) => {
+    readFile(OUTPUT_PATH + station + '/' + fileName, null, (err, arrowFileContents) => {
         if (err) {
             console.log(err);
             resolve();
