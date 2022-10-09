@@ -19,12 +19,11 @@ import _sortBy from 'lodash.sortby';
 
 export default async function getH3Details(req, res) {
     // Top level
-    const subdir = req.query.station;
+    const stationName = req.query.station;
     const selectedFile = req.query.file;
     const lockedH3 = parseInt(req.query.lockedH3 || '0');
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
     const now = new Date();
-    const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
     if (!h3SplitLong) {
         res.status(200).json([]);
@@ -32,14 +31,10 @@ export default async function getH3Details(req, res) {
     }
 
     // We only work on a specific station
-    if (subdir == 'global') {
+    if (stationName != 'global') {
         res.status(200).json([]);
         return;
     }
-
-    // Find in the global DB - this is so we can get a c
-    const parentH3 = h3ToParent(req.query.h3, H3_GLOBAL_CELL_LEVEL);
-    const parentH3SplitLong = h3IndexToSplitLong(parentH3);
 
     // Get a Year/Month component from the file
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
@@ -54,28 +49,35 @@ export default async function getH3Details(req, res) {
         }
     }
 
-    console.log(now.toISOString(), ' h3others', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
+    console.log(now.toISOString(), ' h3summary', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     // Find the enclosing global record
-    const globalRecord = await searchArrowFileInline(OUTPUT_PATH + 'global/global.' + selectedFile + '.arrow', parentH3SplitLong);
 
     const result = {};
+    const sids = {};
 
-    // Now we will go through the list of stations and get the stations that could match
-    for (const station of globalRecord.stations.split(',')) {
-        const sid = parseInt(station, 36) >> 4;
-        // get station name
-        const stationName = searchStationArrowFile(OUTPUT_PATH + 'stations.arrow', sid)?.name;
-
-        if (!stationName) {
-            console.log('station', sid, ' not found!');
-        } else {
-            await searchMatchingArrowFiles(OUTPUT_PATH, stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
-                result[date] = Object.assign(result[date] || {});
-                result[date][stationName] = row.count;
-            });
-        }
-    }
+    await searchMatchingArrowFiles(OUTPUT_PATH, stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
+        console.log(row);
+        result[date] = Object.assign(result[date] || {});
+        result[date] = _reduce(
+            row?.stations?.split(',') || [],
+            (acc, x) => {
+                const decoded = parseInt(x, 36);
+                const sid = decoded >> 4;
+                if (!sids[sid]) {
+                    sids[sid] = searchStationArrowFile(OUTPUT_PATH + 'stations.arrow', sid)?.name || 'unknown';
+                }
+                const sname = sids[sid];
+                const percentage = (decoded & 0x0f) * 10;
+                if (percentage) {
+                    console.log(sname, percentage);
+                    acc[sname] = percentage;
+                }
+                return acc;
+            },
+            {}
+        );
+    });
 
     // Sum up how many points
     let total = 0;
@@ -109,18 +111,22 @@ export default async function getH3Details(req, res) {
     ).slice(0, 5);
 
     const data = _map(result, (v, k) => {
+        if (Object.keys(v).length == 0) {
+            return {date: k};
+        }
         return _reduce(
             top5,
             (r, top5key) => {
-                r.Other -= v[top5key.s];
-                r[top5key.s] = v[top5key.s];
+                r.Other = r.Other - (v[top5key.s] || 0);
+                r[top5key.s] = v[top5key.s] || 0;
                 return r;
             },
-            {date: k, Other: _reduce(v, (r, count) => r + (count || 0), 0)}
+            {
+                date: k,
+                Other: 100
+            }
         );
     });
-
-    //    console.log(total);
 
     // Return the selected top 5 along with the number left over so we can
     // do a proper graph

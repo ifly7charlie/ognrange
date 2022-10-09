@@ -34,7 +34,7 @@ export default async function getH3Details(req, res) {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
-    console.log(selectedFile, fileDateMatch, req.query.h3, h3SplitLong, lockedH3, oldest);
+    console.log(now.toISOString(), ' h3details', selectedFile, fileDateMatch, req.query.h3, h3SplitLong, lockedH3, oldest);
 
     // One dir for each station
     await searchMatchingArrowFiles(OUTPUT_PATH, subdir, fileDateMatch, h3SplitLong, oldest, (json, date) => {
