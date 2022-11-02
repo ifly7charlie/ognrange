@@ -44,10 +44,12 @@ export default async function getH3Details(req, res) {
     // Get a Year/Month component from the file
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
     let fileDateMatch = fileDateMatches?.[1] + fileDateMatches?.[2] || '';
+    let globalFileName = selectedFile;
     let oldest = 0;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
+            globalFileName = `year.${fileDateMatch}`;
             oldest = !lockedH3 ? new Date(now - 2 * 30 * 24 * 3600 * 1000) : null;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
@@ -57,7 +59,13 @@ export default async function getH3Details(req, res) {
     console.log(now.toISOString(), ' h3others', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     // Find the enclosing global record
-    const globalRecord = await searchArrowFileInline(OUTPUT_PATH + 'global/global.' + selectedFile + '.arrow', parentH3SplitLong);
+    const globalRecord = await searchArrowFileInline(OUTPUT_PATH + 'global/global.' + globalFileName + '.arrow', parentH3SplitLong);
+
+    if (!globalRecord) {
+        console.log('no record in global file');
+        res.String(200).json([]);
+        return;
+    }
 
     const result = {};
 
