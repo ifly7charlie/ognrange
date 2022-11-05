@@ -1,6 +1,6 @@
 export default {
-	extensions: {
-		js: true,
-		ts: 'module'
-	}
+    extensions: {
+        js: true,
+        ts: 'module'
+    }
 };

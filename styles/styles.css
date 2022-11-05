@@ -1,98 +1,94 @@
-
 html,
 body {
-  padding: 0;
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen,
-    Ubuntu, Cantarell, Fira Sans, Droid Sans, Helvetica Neue, sans-serif;
+    padding: 0;
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen, Ubuntu, Cantarell, Fira Sans, Droid Sans, Helvetica Neue, sans-serif;
 }
 
 /* This stops display of the tooltip when it is outside of the map container, which means the
    screen doesn't constantly flicker  */
 #deckgl-wrapper {
-	overflow: hidden;
+    overflow: hidden;
 }
 
 .stationList {
-	width: 100%;
-	font-size: small;
+    width: 100%;
+    font-size: small;
 }
 
 a {
-  color: inherit;
-  text-decoration: none;
+    color: inherit;
+    text-decoration: none;
 }
 
 * {
-  box-sizing: border-box;
+    box-sizing: border-box;
 }
 
 .progress-bar {
-  position: absolute;
-  background: #444;
-  color: #fff;
-  text-align: center;
-  top: 40%;
-  left: 40%;
+    position: absolute;
+    background: #444;
+    color: #fff;
+    text-align: center;
+    top: 40%;
+    left: 40%;
 
-  width: 100px;
-  margin-left: -50px;
-  padding: 5px;
+    width: 100px;
+    margin-left: -50px;
+    padding: 5px;
 }
 
-# see lib/react/progressFetch for details and licence
-.loading .progress-bar {
-  opacity: 1;
+# see lib/react/progressFetch for details and licence .loading .progress-bar {
+    opacity: 1;
 }
 
 .loading-complete .progress-bar {
-  transition: opacity .2s .2s ease-out;
-  opacity: 0;
+    transition: opacity 0.2s 0.2s ease-out;
+    opacity: 0;
 }
 
 .progress-bar .progress {
-  background: #fff;
-  display: inline-block;
-  width: 100%;
-  height: 0.3em;
-  padding-top: -16px;
-  transform-origin: left;
-  transform: scaleX(0);
-  box-sizing: border-box;
-/*  height: 100%; */
-  box-shadow: 0 0 4px 1px #888;
+    background: #fff;
+    display: inline-block;
+    width: 100%;
+    height: 0.3em;
+    padding-top: -16px;
+    transform-origin: left;
+    transform: scaleX(0);
+    box-sizing: border-box;
+    /*  height: 100%; */
+    box-shadow: 0 0 4px 1px #888;
 }
 
 .loading .progress {
-  transition: transform 100ms linear;
+    transition: transform 100ms linear;
 }
-
 
 .daysHeader {
-  margin-top: '5px';
-  padding-top: '5px';
-  padding-left: '2%';
-  border-top: '1px solid #eee';
+    margin-top: '5px';
+    padding-top: '5px';
+    padding-left: '2%';
+    border-top: '1px solid #eee';
 }
 .daysHeaderItem {
-  color: '#999';
-  cursor: 'default';
-  font-size: '75%';
-  font-weight: 500;
-  display: 'inline-block';
-  width: '12%';
-  margin: '0 1%';
-  text-align: 'center';
+    color: '#999';
+    cursor: 'default';
+    font-size: '75%';
+    font-weight: 500;
+    display: 'inline-block';
+    width: '12%';
+    margin: '0 1%';
+    text-align: 'center';
 }
 .daysContainer {
-  padding-top: '5px';
-  padding-left: '2%';
+    padding-top: '5px';
+    padding-left: '2%';
 }
 
 .daysOptionStyles {
-	display: 'inline-block';
-	width: '12%';
-	margin: '0 1%';
-	text-align: 'center';
-	border-radius: '4px';
+    display: 'inline-block';
+    width: '12%';
+    margin: '0 1%';
+    text-align: 'center';
+    border-radius: '4px';
 }
