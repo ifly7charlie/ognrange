@@ -2,19 +2,16 @@
 
 You can see this project running at https://ognrange.onglide.com
 
-
 ## Getting Started
 
-
-````
+```
 yarn install
 yarn next build
 yarn next start
 yarn aprs
-````
+```
 
 ## Learn More
-
 
 ## Overview
 
@@ -51,52 +48,56 @@ sized.
 
 OGNRange collects the following per station:
 
-- H3 cellid
-- lowest AGL
-- lowest ALT
-- strongest signal at ALT
-- strongest signal
-- sum of signal strength (clamped at 64 db) [6bit]
-- sum of crc errors (max 10)
-- sum of pre-packet gap (max 60) [6bit]
-- count of packets
+-   H3 cellid
+-   lowest AGL
+-   lowest ALT
+-   strongest signal at ALT
+-   strongest signal
+-   sum of signal strength (clamped at 64 db) [6bit]
+-   sum of crc errors (max 10)
+-   sum of pre-packet gap (max 60) [6bit]
+-   count of packets
 
 The global cells collect this information per station as well as a sum.
 
 Not all of this information is accumulated to the browser. In particular the sums are converted
-to averages (sum/count). 
+to averages (sum/count).
 
 ### Interpreting displayed metrics
 
-*Lowest AGL* (meters) is the lowest height data above ground that data was received. 
-- agl varies across the cell and this is taken from the lat/long looked up on mapbox elevation tile
-- it's possible that lowest AGL point is actually above lowest ALT
+_Lowest AGL_ (meters) is the lowest height data above ground that data was received.
 
-*Lowest ALT* (meters) is the lowest height AMSL that data was received
+-   agl varies across the cell and this is taken from the lat/long looked up on mapbox elevation tile
+-   it's possible that lowest AGL point is actually above lowest ALT
 
-*Strongest Signal at ALT* is the strongest signal at *Lowest ALT*
+_Lowest ALT_ (meters) is the lowest height AMSL that data was received
 
-*Strongest Signal* is the strongest signal at any altitude
+_Strongest Signal at ALT_ is the strongest signal at _Lowest ALT_
 
-*Average Signal* is the average for all packets regardless of altitude
+_Strongest Signal_ is the strongest signal at any altitude
 
-*Average CRC* is the average number of CRC errors correct for all packets in the cell.
-- a high number here may indicate poor coverage
+_Average Signal_ is the average for all packets regardless of altitude
 
-*Average Gap* (seconds) is the average gap from the previous packet for a receiver
-- recorded on the cell that sees the aircraft. 
-- could indicate cell is on the edge of coverage and been missing points
-- edge cases exist, in particular the first time a plane is seen
-- clamped at 60, which effectively means 60 means not seen before
-- gap can vary for aircraft that aren't moving very much or are very
-  predictable because the APRS network reduces the reporting interval for these
+_Average CRC_ is the average number of CRC errors correct for all packets in the cell.
 
-*Expected Gap* is only available on global view and is the *Average Gap* divided by number
-of stations. 
-- This is more useful for looking at missing sections in the overall coverage as 
-  cells with coverage from multiple receivers should have a very low expected value
-  even if the coverage of some is poor
-  
+-   a high number here may indicate poor coverage
+
+_Average Gap_ (seconds) is the average gap from the previous packet for a receiver
+
+-   recorded on the cell that sees the aircraft.
+-   could indicate cell is on the edge of coverage and been missing points
+-   edge cases exist, in particular the first time a plane is seen
+-   clamped at 60, which effectively means 60 means not seen before
+-   gap can vary for aircraft that aren't moving very much or are very
+    predictable because the APRS network reduces the reporting interval for these
+
+_Expected Gap_ is only available on global view and is the _Average Gap_ divided by number
+of stations.
+
+-   This is more useful for looking at missing sections in the overall coverage as
+    cells with coverage from multiple receivers should have a very low expected value
+    even if the coverage of some is poor
+
 ## Datafiles
 
 There are two primary types of files - a collection of databases
@@ -108,17 +109,17 @@ All the databases are stored using leveldb and accessed directly from
 node with no database server. They are simple KeyValue stores and contain
 a string database key pointing to a binary CoverageRecord structure.
 
-*global/* is the global database, it contains all the h3s captured
+_global/_ is the global database, it contains all the h3s captured
 globally, at a lower resolution. Each record contains a rollup as well
 as a list of all stations (and received data that have been received
-in the cell). In the event that a station is retired it is removed from 
+in the cell). In the event that a station is retired it is removed from
 this list and the aggregator is updated
 
-*stations/.../* a subdirectory containing a database for each
+_stations/.../_ a subdirectory containing a database for each
 station. This database is more detailed than global but the format is
 basically the same, except the record is a simple CoverageRecord
 
-*status/* contains summary records for each station in JSON
+_status/_ contains summary records for each station in JSON
 
 ### Output files
 
@@ -126,14 +127,14 @@ These are in the OUTPUT_PATH directory. It contains a set of
 subdirectories one for each station and one for the global data.
 
 ```
-ognrange/output/global/global.day.15.arrow		
-ognrange/output/global/global.month.1.arrow		
+ognrange/output/global/global.day.15.arrow
+ognrange/output/global/global.month.1.arrow
 ognrange/output/global/global.year.2022.arrow
-ognrange/output/global/global.day.15.arrow.json		
-ognrange/output/global/global.month.1.arrow.json	
+ognrange/output/global/global.day.15.arrow.json
+ognrange/output/global/global.month.1.arrow.json
 ognrange/output/global/global.year.2022.arrow.json
-ognrange/output/global/global.day.arrow			
-ognrange/output/global/global.month.arrow		
+ognrange/output/global/global.day.arrow
+ognrange/output/global/global.month.arrow
 ognrange/output/global/global.year.arrow
 ```
 
@@ -152,11 +153,10 @@ that contains the latest accumulator data
 The .json file contains meta data with information about the file,
 when it was created and some diagnostic information
 
-```ognrange/output/stations.json```
+`ognrange/output/stations.json`
 
 This is the overall stations list used for displaying stations on the
 map and information about them
-
 
 ## Aggregation & accumulators
 
@@ -164,7 +164,7 @@ The current configuration is to have 4 levels of aggregation -
 'current', 'day', 'month', 'year'.
 
 Each aggregation is stored in an 'accumulator', this is a prefix to
-the h3id stored in the database.  The DBKEY uses a 16 bit hex number,
+the h3id stored in the database. The DBKEY uses a 16 bit hex number,
 first letter being the type, and last three being the bucket.
 
 As the database is keyed using this, so is the h3cache. Switching to a
@@ -175,9 +175,9 @@ the previous accumulator alone.
 When the aggregator buckets change a rollup is forced. The h3Cache is
 flushed to ensure that the disk database is up to date. The database
 is then iterated to merge all the accumulators using a O(n) process at
-the same time as the output files (.arrow) are produced. 
- 
-*current* is like working memory - it's accumulator type 0 and it is
+the same time as the output files (.arrow) are produced.
+
+_current_ is like working memory - it's accumulator type 0 and it is
 where all records are stored until they are rolled up into the real
 accumulators. It is not output for the browser and is deleted once it
 has been rolled up. The bucket for this is generated in the same way
@@ -194,7 +194,7 @@ operation. Once this has been done the data in it is removed.
 All databases containing H3 information is rolledup during a rollup
 operation. Up to 1/5 of the number configured in MAX_STATION_DBS or
 will be run at the same time. Although this isn't run in a thread
-there are a lot of advantages due to the large amount of IO wait time. 
+there are a lot of advantages due to the large amount of IO wait time.
 
 Actual time to complete a rollup operation is primarily dependent on
 the number of H3s in the database. This means the global database will
@@ -224,7 +224,7 @@ DB_PATH=/Users/melissa/ognrange/db/
 OUTPUT_PATH=/Users/melissa/ognrange/output/
 NEXT_PUBLIC_DATA_URL=
 
-# control the elevation tile cache, note tiles are not evicted on expiry 
+# control the elevation tile cache, note tiles are not evicted on expiry
 # so it will fill to MAX before anything happens. These tiles don't change so
 # if this is too low you'll just be hammering your mapbox account. Flip side
 # is the data will occupy ram or swap, 0 means no expiry
@@ -295,7 +295,7 @@ STATION_EXPIRY_TIME_DAYS=31
 # ROLLUP is when the current accumulators are merged with the daily/monthly/annual
 # accumulators. All are done at the same time and the accumulators are 'rolled'
 # over to prevent double counting. This is a fairly costly activity so if the
-# disk or cpu load goes too high during this process (it potentially reads and 
+# disk or cpu load goes too high during this process (it potentially reads and
 # writes EVERYTHING in every database) you should increase this number
 #
 # This ALSO controls how often to write output files. Updated display files
@@ -310,7 +310,7 @@ ROLLUP_PERIOD_HOURS=2
 MAX_SIMULTANEOUS_ROLLUPS=100
 
 # How often to check for change of accumulators - this is basically how long
-# it can take to notice the day has changed, could be solved better but this 
+# it can take to notice the day has changed, could be solved better but this
 # helps with testing
 ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_SECONDS=60
 
@@ -322,7 +322,7 @@ APRS_KEEPALIVE_PERIOD_SECONDS=45
 # uses standard APRS filters, this one basically means send me everything
 APRS_TRAFFIC_FILTER=t/spuoimnwt
 
-# Server and port to connect to 
+# Server and port to connect to
 APRS_SERVER=aprs.glidernet.org:14580
 
 ```
