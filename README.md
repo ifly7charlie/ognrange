@@ -1,3 +1,7 @@
+# Viewing Data
+
+You can see this project running at https://ognrange.onglide.com
+
 
 ## Getting Started
 
@@ -121,9 +125,17 @@ basically the same, except the record is a simple CoverageRecord
 These are in the OUTPUT_PATH directory. It contains a set of
 subdirectories one for each station and one for the global data.
 
-```ognrange/output/global/global.day.15.arrow		ognrange/output/global/global.month.1.arrow		ognrange/output/global/global.year.2022.arrow
-ognrange/output/global/global.day.15.arrow.json		ognrange/output/global/global.month.1.arrow.json	ognrange/output/global/global.year.2022.arrow.json
-ognrange/output/global/global.day.arrow			ognrange/output/global/global.month.arrow		ognrange/output/global/global.year.arrow```
+```
+ognrange/output/global/global.day.15.arrow		
+ognrange/output/global/global.month.1.arrow		
+ognrange/output/global/global.year.2022.arrow
+ognrange/output/global/global.day.15.arrow.json		
+ognrange/output/global/global.month.1.arrow.json	
+ognrange/output/global/global.year.2022.arrow.json
+ognrange/output/global/global.day.arrow			
+ognrange/output/global/global.month.arrow		
+ognrange/output/global/global.year.arrow
+```
 
 These files are produced during the aggregation process and contain
 information from the time period. Once the aggregation is done the
@@ -194,7 +206,7 @@ and global uses a lower resolution H3.
 config file is .env.local for aprs collector, for the front end it
 follows nextjs naming convention NEXT_PUBLIC_XX goes to browser!
 
-````
+```
 # url of website
 NEXT_PUBLIC_SITEURL=
 
@@ -313,5 +325,4 @@ APRS_TRAFFIC_FILTER=t/spuoimnwt
 # Server and port to connect to 
 APRS_SERVER=aprs.glidernet.org:14580
 
-````
-
+```
