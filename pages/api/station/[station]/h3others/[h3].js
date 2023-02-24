@@ -61,7 +61,7 @@ export default async function getH3Details(req, res) {
     // Find the enclosing global record
     const globalRecord = await searchArrowFileInline(OUTPUT_PATH + 'global/global.' + globalFileName + '.arrow', parentH3SplitLong);
 
-    if (!globalRecord) {
+    if (!globalRecord || !globalRecord.stations) {
         console.log('no record in global file');
         res.String(200).json([]);
         return;

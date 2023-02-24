@@ -38,7 +38,7 @@ export default async function getH3Details(req, res) {
 
     // Get a Year/Month component from the file
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
-    let fileDateMatch = fileDateMatches?.[1] + fileDateMatches?.[2] || '';
+    let fileDateMatch = fileDateMatches?.[1] + (fileDateMatches?.[2] || '');
     let oldest = 0;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
