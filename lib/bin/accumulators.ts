@@ -46,6 +46,10 @@ export function getAccumulatorForType(t) {
     }
 }
 
+export function getCurrentAccumulators() {
+    return currentAccumulator ? {currentAccumulator, accumulators} : null;
+}
+
 // Calculate the bucket and short circuit if it's not changed - we need to change
 // accumulator every time we dump but we need a unique name for it...
 //
@@ -80,6 +84,12 @@ export function whatAccumulators(now) {
         year: {bucket: now.getUTCFullYear(), file: `${n.y}`}
     };
     return {current: newAccumulatorBucket, accumulators: accumulators};
+}
+
+export function initialiseAccumulators() {
+    const {current: newAccumulatorBucket, accumulators: newAccumulators} = whatAccumulators(new Date());
+    currentAccumulator = ['current', newAccumulatorBucket];
+    accumulators = newAccumulators;
 }
 
 export async function updateAndProcessAccumulators() {

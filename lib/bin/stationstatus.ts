@@ -34,11 +34,16 @@ let statusDb: ClassicLevel<StationName, string> | undefined;
 const sabbuffer = new SharedArrayBuffer(2);
 const nextStation = new Uint16Array(sabbuffer);
 
+export function getNextStationId() {
+    return Number(nextStation);
+}
+
 // Load the status of the current stations
 export async function loadStationStatus() {
     console.log('loading station status');
     // Open the status database
     statusDb = new ClassicLevel<StationName, string>(DB_PATH + 'status');
+    await statusDb.open();
 
     // And now we read it
     //    const nowEpoch = Math.floor(Date.now() / 1000);
@@ -112,7 +117,11 @@ export function getStationName(stationId: StationId): StationName | undefined {
 
 // Check if we have moved too far ( a little wander is considered ok )
 export function checkStationMoved(stationName: StationName, latitude: Latitude, longitude: Longitude, timestamp: Epoch): void {
-    const details = stations[stationName];
+    let details = stations[stationName];
+    if (!details) {
+        getStationId(stationName);
+        details = stations[stationName];
+    }
     if (details.lat && details.lng) {
         const distance = h3.pointDist([details.lat, details.lng], [latitude, longitude], 'km');
         if (distance > STATION_MOVE_THRESHOLD_KM) {
@@ -129,7 +138,11 @@ export function checkStationMoved(stationName: StationName, latitude: Latitude, 
 
 // Capture the beacon for status purposes
 export function updateStationBeacon(stationName: StationName, body: string, timestamp: Epoch): void {
-    const details = stations[stationName];
+    let details = stations[stationName];
+    if (!details) {
+        getStationId(stationName);
+        details = stations[stationName];
+    }
     details.lastBeacon = timestamp;
     details.status = body;
     statusDb.put(stationName, JSON.stringify(details));
@@ -137,4 +150,8 @@ export function updateStationBeacon(stationName: StationName, body: string, time
 
 export function updateStationStatus(details: StationDetails): void {
     statusDb.put(details.station, JSON.stringify(details));
+}
+
+export function closeStatusDb(): void {
+    statusDb.close();
 }

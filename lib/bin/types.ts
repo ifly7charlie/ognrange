@@ -14,4 +14,6 @@ export type Latitude = number & As<'Latitude'>;
 export type StationId = number & As<'StationId'>;
 export type StationName = string & As<'StationName'>;
 
+export type H3 = string & As<'H3'>;
+
 export type TZ = string & As<'TZ'>;

@@ -12,17 +12,16 @@ import {mkdirSync} from 'fs';
 
 import {ignoreStation} from '../lib/bin/ignorestation.js';
 
-// DB
-import LevelUP from 'levelup';
-import LevelDOWN from 'leveldown';
-
 // DB Structure
 import {CoverageRecord, bufferTypes} from '../lib/bin/coveragerecord.js';
 import {CoverageHeader} from '../lib/bin/coverageheader.js';
 
 import {gitVersion} from '../lib/bin/gitversion.js';
 
-import {loadStationStatus, getStationId, checkStationMoved, updateStationBeacon} from '../lib/bin/stationstatus';
+import {loadStationStatus, getStationId, checkStationMoved, updateStationBeacon, closeStatusDb, getNextStationId, stationDetails} from '../lib/bin/stationstatus';
+import {closeAllStationDbs, initialiseStationDbCache, getStationDbCacheSize} from '../lib/bin/stationcache';
+
+import {Epoch, StationName, Longitude, Latitude} from '../lib/bin/types';
 
 // H3 hexagon cell library
 import h3 from 'h3-js';
@@ -34,11 +33,11 @@ let globalDb = undefined;
 // track any setInterval/setTimeout calls so we can stop them when asked to exit
 // also the async rollups we do during startup
 let intervals = [];
-let timeouts = {};
+let timeouts: Record<string, any> = {};
 let startupPromise = null;
 
 // APRS connection
-let connection = {};
+let connection: any = {};
 
 // Tracking aircraft so we can calculate gaps and double check for
 // planes that have GPS on but are stationary and have poor
@@ -74,18 +73,19 @@ import {
 } from '../lib/bin/config.js';
 
 // h3 cache functions
-import {cachedH3s, flushDirtyH3s, H3lock} from '../lib/bin/h3cache.js';
+import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from '../lib/bin/h3cache';
 
 // Rollup functions
-import {getAccumulator, rollupAll, updateAndProcessAccumulators, rollupStartup, rollupStats} from '../lib/bin/rollup.js';
+import {rollupAll, rollupStartupAll, rollupStats} from '../lib/bin/rollup';
+import {getAccumulator, getCurrentAccumulators, updateAndProcessAccumulators, initialiseAccumulators} from '../lib/bin/accumulators';
 
 // Get our git version
 const gv = gitVersion().trim();
 
-let packetStats = {ignoredStation: 0, ignoredTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0};
+let packetStats = {ignoredStation: 0, ignoredTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0, pps: '', rawPps: ''};
 
 // Run stuff magically
-main().then('exiting');
+main().then(() => console.log('exiting'));
 
 //
 // Primary configuration loading and start the aprs receiver
@@ -104,12 +104,14 @@ async function main() {
     } catch (e) {}
 
     // Open our databases
-    initialiseDbCache();
+    initialiseAccumulators();
+    await loadStationStatus();
+    initialiseStationDbCache();
 
     // Check and process unflushed accumulators at the start
     // then we can increment the current number for each accumulator merge
-    await (startupPromise = rollupStartup({globalDb, statusDb, stationDbCache, stations}));
-    await (startupPromise = updateAndProcessAccumulators({globalDb, statusDb, stationDbCache, stations}));
+    await (startupPromise = rollupStartupAll());
+    await (startupPromise = updateAndProcessAccumulators());
     startupPromise = null;
 
     // Start listening to APRS and setup the regular housekeeping functions
@@ -145,19 +147,18 @@ async function handleExit(signal) {
     }
 
     // Flush everything to disk
-    console.log(await flushDirtyH3s({globalDb, stationDbCache, stations, allUnwritten: true}));
-    if (getAccumulator()) {
-        await rollupAll({globalDb, statusDb, stationDbCache, stations});
+    console.log(await flushDirtyH3s({allUnwritten: true, lockForRead: true}));
+    if (getCurrentAccumulators()) {
+        const current = getCurrentAccumulators();
+        await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators, newAccumulatorFiles: false});
     } else {
         console.log(`unable to output a rollup as service still starting`);
     }
 
     // Close all the databases and cleanly exit
-    stationDbCache.forEach(async function (db, key) {
-        db.close();
-    });
-    globalDb.close();
-    statusDb.close();
+    closeAllStationDbs();
+    closeStatusDb();
+
     connection = null;
     console.log(`${signal}: done`);
 }
@@ -170,8 +171,11 @@ process.on('SIGINFO', displayStatus);
 // dump out? not good idea really better to exit and restart
 process.on('SIGUSR1', async function () {
     console.log('-- data dump requested --');
-    await flushDirtyH3s({globalDb, stationDbCache, stations, allUnwritten: true});
-    rollupAll({globalDb, statusDb, stationDbCache, stations});
+    await flushDirtyH3s({allUnwritten: true, lockForRead: true});
+    if (getCurrentAccumulators()) {
+        const current = getCurrentAccumulators();
+        await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators, newAccumulatorFiles: false});
+    }
 });
 
 //
@@ -193,7 +197,7 @@ async function startAprsListener() {
     }
 
     // Connect to the APRS server
-    connection = new ISSocket(APRSSERVER, parseInt(PORTNUMBER) || 14580, 'OGNRANGE', '', APRS_TRAFFIC_FILTER, `ognrange v${gv}`);
+    connection = new ISSocket(APRSSERVER, parseInt(PORTNUMBER) || 14580, 'OGNRANGE', 0, APRS_TRAFFIC_FILTER, `ognrange v${gv}`);
     let parser = new aprsParser();
 
     // Handle a connect
@@ -216,9 +220,9 @@ async function startAprsListener() {
             } else {
                 if ((packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && !ignoreStation(packet.sourceCallsign)) {
                     if (packet.type == 'location') {
-                        checkStationMoved(packet.sourceCallsign, packet.latitude, packet.longitude, packet.timestamp);
+                        checkStationMoved(packet.sourceCallsign as StationName, packet.latitude as Latitude, packet.longitude as Longitude, packet.timestamp as Epoch);
                     } else if (packet.type == 'status') {
-                        updateStationBeacon(packet.sourceCallsign, packet.body, packet.timestamp);
+                        updateStationBeacon(packet.sourceCallsign as StationName, packet.body, packet.timestamp as Epoch);
                     } else {
                         console.log(data, packet);
                     }
@@ -288,7 +292,7 @@ async function setupPeriodicFunctions() {
     intervals.push(
         setInterval(async function () {
             // Flush the cache
-            const flushStats = await flushDirtyH3s({globalDb, stationDbCache, stations, allUnwritten: false});
+            const flushStats = await flushDirtyH3s({allUnwritten: false});
 
             // Report some status on that
             const packets = packetStats.count - lastPacketCount;
@@ -300,7 +304,7 @@ async function setupPeriodicFunctions() {
             const h3expired = flushStats.expired;
             const h3written = flushStats.written;
             console.log(`elevation cache: ${getCacheSize()}, valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s`);
-            console.log(`total stations: ${nextStation - 1}, openDbs: ${stationDbCache.size + 2}/${MAX_STATION_DBS}`);
+            console.log(`total stations: ${getNextStationId() - 1}, openDbs: ${getStationDbCacheSize()}/${MAX_STATION_DBS}`);
             console.log(JSON.stringify(packetStats));
             console.log(JSON.stringify(rollupStats));
             console.log(`h3s: ${h3length} delta ${h3delta} (${((h3delta * 100) / h3length).toFixed(0)}%): `, ` expired ${h3expired} (${((h3expired * 100) / h3length).toFixed(0)}%), written ${h3written} (${((h3written * 100) / h3length).toFixed(0)}%)[${flushStats.databases} stations]`, ` ${((h3written * 100) / packets).toFixed(1)}% ${(h3written / (H3_CACHE_FLUSH_PERIOD_MS / 1000)).toFixed(1)}/s ${(packets / h3written).toFixed(0)}:1`);
@@ -343,7 +347,7 @@ async function setupPeriodicFunctions() {
                 console.log(`purged ${purged} aircraft from gap map, ${allAircraft.size} remaining`);
             }, 3600 * 1000)
         ); // every hour we do this
-    }, (FORGET_AIRCRAFT_AFTER_SEC + Math.random(300)) * 1000);
+    }, (FORGET_AIRCRAFT_AFTER_SEC + Math.random() * 300) * 1000);
 
     // Make sure our accumulator is correct, this will also
     // ensure we rollover and produce output files correctly
@@ -354,20 +358,20 @@ async function setupPeriodicFunctions() {
         delete timeouts['rollup'];
         intervals.push(
             setInterval(async function () {
-                updateAndProcessAccumulators({globalDb, statusDb, stationDbCache, stations});
+                updateAndProcessAccumulators();
                 console.log(`next rollup will be in ${ROLLUP_PERIOD_MINUTES} minutes at ` + `${new Date(Date.now() + ROLLUP_PERIOD_MINUTES * 60000 + 500).toISOString()}`);
             }, ROLLUP_PERIOD_MINUTES * 60 * 1000)
         );
         // this shouldn't drift because it's an interval...
-        updateAndProcessAccumulators({globalDb, statusDb, stationDbCache, stations}); // do the first one, then let the interval do them afterwards
+        updateAndProcessAccumulators(); // do the first one, then let the interval do them afterwards
     }, nextRollup * 60 * 1000 + 500);
     // how long till they roll over, delayed 1/2 a second + whatever remainder was left in getUTCSeconds()...
     // better a little late than too early as it won't rollover then and we will wait a whole period to pick it up
 }
 
 function displayStatus() {
-    console.log(`elevation cache: ${getCacheSize()}, h3cache: ${cachedH3s.size},  valid packets: ${packetStats.count} ${packetStats.pps}/s, all packets ${packetStats.rawCount} ${packetStats.rawPps}/s`);
-    console.log(`total stations: ${nextStation - 1}, openDbs: ${stationDbCache.size + 2}/${MAX_STATION_DBS}`);
+    console.log(`elevation cache: ${getCacheSize()}, h3cache: ${getH3CacheSize()},  valid packets: ${packetStats.count} ${packetStats.pps}/s, all packets ${packetStats.rawCount} ${packetStats.rawPps}/s`);
+    console.log(`total stations: ${getNextStationId() - 1}, openDbs: ${getStationDbCacheSize() + 2}/${MAX_STATION_DBS}`);
     console.log(JSON.stringify(packetStats));
 }
 
@@ -509,10 +513,7 @@ async function processPacket(packet) {
         const stationid = await getStationId(station);
 
         // Packet for station marks it for dumping next time round
-        stations[station].lastPacket = packet.timestamp;
-
-        // Open the database, do this first as takes a bit of time
-        let stationDb = stationDbCache.get(stationid);
+        stationDetails(station).lastPacket = packet.timestamp;
 
         // What hexagon are we working with
         const h3id = h3.geoToH3(packet.latitude, packet.longitude, H3_STATION_CELL_LEVEL);
@@ -521,9 +522,9 @@ async function processPacket(packet) {
         // We store the database records as binary bytes - in the format described in the mapping() above
         // this reduces the amount of storage we need and means we aren't constantly parsing text
         // and printing text.
-        async function mergeDataIntoDatabase(db, lockKeyStationId, h3) {
+        async function mergeDataIntoDatabase(db: StationName, lockKeyStationId, h3) {
             // Header details for our update
-            const h3k = new CoverageHeader(lockKeyStationId, ...getAccumulator(h3), h3);
+            const h3k = new CoverageHeader(lockKeyStationId, ...getAccumulator(), h3);
 
             // And tell the cache to fetch/update - this may block if it needs to read
             // and there is nothing yet available
@@ -533,8 +534,8 @@ async function processPacket(packet) {
         // Merge into both the station db (0,0) and the global db with the stationid we allocated
         // we don't pass stationid into the station specific db because there only ever is one
         // it gets used to build the list of stations that can see the cell
-        mergeDataIntoDatabase(stationDb, stationid, h3id);
+        mergeDataIntoDatabase(station, stationid, h3id);
 
-        mergeDataIntoDatabase(globalDb, 0, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL));
+        mergeDataIntoDatabase('global' as StationName, 0, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL));
     });
 }

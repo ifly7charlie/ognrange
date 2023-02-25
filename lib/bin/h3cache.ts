@@ -5,6 +5,8 @@ import {H3_CACHE_FLUSH_PERIOD_MS, H3_CACHE_EXPIRY_TIME_MS, DB_PATH, H3_CACHE_MAX
 
 import {getDb} from './stationcache';
 
+import {StationName} from './types';
+
 // h3cache locking
 import AsyncLock from 'async-lock';
 let lock = new AsyncLock();
@@ -18,6 +20,10 @@ let emptyCache = true;
 
 export function unlockH3sForReads() {
     blockWrites = false;
+}
+
+export function getH3CacheSize() {
+    return cachedH3s.size;
 }
 
 //
@@ -143,7 +149,7 @@ export async function flushDirtyH3s({allUnwritten = false, lockForRead = false})
     return stats;
 }
 
-export async function updateCachedH3(db, h3k, altitude, agl, crc, signal, gap, stationid) {
+export async function updateCachedH3(db: StationName, h3k, altitude, agl, crc, signal, gap, stationid) {
     // Because the DB is asynchronous we need to ensure that only
     // one transaction is active for a given h3 at a time, this will
     // block all the other ones until the first completes, it's per db
@@ -171,7 +177,8 @@ export async function updateCachedH3(db, h3k, altitude, agl, crc, signal, gap, s
             if (emptyCache) {
                 updateH3Entry();
             } else {
-                db.get(h3k.dbKey())
+                getDb(db)
+                    .get(h3k.dbKey())
                     .then(updateH3Entry) // gets called with buffer
                     .catch((err) => updateH3Entry()); // not found, make new entry
             }

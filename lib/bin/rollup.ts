@@ -13,9 +13,11 @@ import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
 import {Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
 
-import {rollupDatabase, purgeDatabase} from './rollupworker';
+import {rollupDatabase, purgeDatabase, rollupStartup} from './rollupworker';
 
 import {allStationsDetails, updateStationStatus} from './stationstatus';
+
+import {getCurrentAccumulators} from './accumulators';
 
 import {gzipSync, createGzip} from 'zlib';
 
@@ -169,6 +171,38 @@ export async function rollupAll({current, processAccumulators, newAccumulatorFil
     rollupStats.completed++;
     rollupStats.lastStart = new Date(rollupStats.lastStart).toISOString();
     console.log('rollup completed', JSON.stringify(rollupStats));
+}
+
+export async function rollupStartupAll() {
+    const current = getCurrentAccumulators();
+    const common = {current: current.currentAccumulator, processAccumulators: current.accumulators};
+
+    // Global is biggest and takes longest
+    let promises = [];
+    promises.push(
+        new Promise<void>(async function (resolve) {
+            await rollupStartup('global', common);
+            resolve();
+        })
+    );
+
+    // each of the stations, capped at 20% of db cache (or 30 tasks) to reduce risk of purging the whole cache
+    // mapAllCapped will not return till all have completed, but this doesn't block the processing
+    // of the global db or other actions.
+    // it is worth running them in parallel as there is a lot of IO which would block
+    promises.push(
+        mapAllCapped(
+            allStationsDetails(),
+            async (stationMeta) => {
+                console.log('startup', stationMeta.station);
+                const station = stationMeta.station;
+                await rollupStartup(station, common);
+            },
+            1 //MAX_SIMULTANEOUS_ROLLUPS
+        )
+    );
+    console.log('waiting for ', promises.length);
+    await Promise.allSettled(promises);
 }
 
 //

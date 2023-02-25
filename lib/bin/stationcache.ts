@@ -12,7 +12,7 @@ import {StationName, StationId, EpochMS} from './types';
 import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from './config';
 
 const options = {
-    max: MAX_STATION_DBS,
+    max: MAX_STATION_DBS + 1, // global is stored in the cache
     dispose: function (db, key, r) {
         try {
             db.close();
@@ -38,7 +38,9 @@ export interface DB extends ClassicLevel<string, Uint8Array> {
 }
 
 // Open the global database
-const global = getDb('global' as StationName, true);
+export function initialiseStationDbCache() {
+    //    getDb('global' as StationName, true);
+}
 
 //
 // Get a db from the cache, by name or number
@@ -59,8 +61,15 @@ export function getDb(station: StationName | StationId, open = true): DB | undef
         stationDb.ognInitialTS = Date.now() as EpochMS;
         stationDb.ognStationName = station;
         stationDb.global = station == 'global';
+
+        stationDb.open();
     }
     return stationDb;
+}
+
+// Size excluding global
+export function getStationDbCacheSize(): number {
+    return stationDbCache.size - 1;
 }
 
 //
@@ -75,6 +84,6 @@ export function closeDb(station: StationName | DB): void {
 
 //
 // Purge all entries - will call the dispose function thereby closing the database entry
-export function closeAllDbs(): void {
+export function closeAllStationDbs(): void {
     stationDbCache.clear();
 }
