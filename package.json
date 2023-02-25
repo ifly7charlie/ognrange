@@ -3,15 +3,17 @@
     "private": true,
     "scripts": {
         "dev": "NODE_OPTIONS='--inspect' next dev",
-        "aprs": "bin/aprs.js",
-        "aprs:dev": "NODE_OPTIONS='--inspect-brk' bin/aprs.js",
-        "build": "next build",
+        "aprs": "dist/bin/aprs.js",
+        "build": "aprs:build && next build",
+        "aprs:build": "tsc --project tsconfig-bin.json && next build",
         "export": "next export",
         "start": "next start",
         "lint": "next lint",
         "test": "ava --serial",
         "testcoverage": "c8 ava --serial",
-        "aprscoverage": "c8 bin/aprs.js"
+        "aprscoverage": "c8 bin/aprs.js",
+        "aprs:dev": "tsc-watch --project tsconfig-bin.json --onFailure \"echo Failed build\" --onSuccess \"node  --enable-source-maps --inspect --experimental-fetch dist/bin/aprs.js\"",
+        "aprs:devbrk": "tsc-watch --project tsconfig-bin.json --onFailure \"echo Failed build\" --onSuccess \"node  --enable-source-maps --inspect-brk --experimental-fetch dist/bin/aprs.js\""
     },
     "dependencies": {
         "@deck.gl/geo-layers": "^8.7.0",
@@ -20,6 +22,8 @@
         "@loaders.gl/json": "^2.0",
         "@mapbox/tilebelt": "^1.0.2",
         "apache-arrow": "^7.0.0",
+        "async-lock": "^1.2.0",
+        "classic-level": "^1.2.0",
         "deck.gl": ">8.5.2",
         "dotenv": "^16.0.0",
         "gl-matrix": "^3.4.3",
@@ -63,8 +67,11 @@
         "yargs": "^17.3.1"
     },
     "devDependencies": {
+        "@types/node": "^18.11.9",
         "ava": "^4.0.1",
         "c8": "^7.11.0",
-        "esm": "^3.2.25"
+        "esm": "^3.2.25",
+        "tsc-watch": "^5.0.3",
+        "typescript": "^4.8.4"
     }
 }

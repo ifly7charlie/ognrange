@@ -70,7 +70,7 @@ export default async function getH3Details(req, res) {
     const result = {};
 
     // Now we will go through the list of stations and get the stations that could match
-    for (const station of globalRecord.stations.split(',')) {
+    for (const station of globalRecord?.stations?.split(',') || []) {
         const sid = parseInt(station, 36) >> 4;
         // get station name
         const stationName = searchStationArrowFile(OUTPUT_PATH + 'stations.arrow', sid)?.name;

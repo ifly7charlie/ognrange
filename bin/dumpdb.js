@@ -17,7 +17,14 @@ main().then('exiting');
 //
 // Primary configuration loading and start the aprs receiver
 async function main() {
-    const args = yargs(process.argv.slice(2)).option('db', {alias: 'd', type: 'string', default: 'global', description: 'Choose Database'}).option('all', {alias: 'a', type: 'boolean', description: 'dump all records'}).option('match', {type: 'string', description: 'regex match of dbkey'}).option('size', {alias: 's', type: 'boolean', description: 'determine approximate size of each block of records'}).help().alias('help', 'h').argv;
+    const args = yargs(process.argv.slice(2)) //
+        .option('db', {alias: 'd', type: 'string', default: 'global', description: 'Choose Database'})
+        .option('all', {alias: 'a', type: 'boolean', description: 'dump all records'})
+        .option('match', {type: 'string', description: 'regex match of dbkey'})
+        .option('size', {alias: 's', type: 'boolean', description: 'determine approximate size of each block of records'})
+        .option('count', {alias: 'c', type: 'boolean', description: 'count number of records in each block'})
+        .help()
+        .alias('help', 'h').argv;
 
     // What file
     let dbPath = DB_PATH;
@@ -59,10 +66,18 @@ async function main() {
             } else {
                 if (accumulators[hr.accumulator]) {
                     accumulators[hr.accumulator].count++;
+                } else {
+                    accumulators[hr.accumulator] = {hr: hr, count: 1, size: 0};
                 }
 
+                if (accumulators[hr.accumulator].count == 1 && args.size) {
+                    db.db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
+                        accumulators[hr.accumulator].size = r;
+                    });
+                }
                 if (args.all) {
                     console.log(hr.dbKey(), JSON.stringify(new CoverageRecord(value).toObject()));
+                } else if (args.count) {
                 } else {
                     n.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
                 }

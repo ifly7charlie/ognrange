@@ -55,7 +55,23 @@ const reExtractCrc = / ([0-9])e /;
 const reExtractRot = / [+-]([0-9.]+)rot /;
 const reExtractVC = / [+-]([0-9]+)fpm /;
 
-import {ROLLUP_PERIOD_MINUTES, NEXT_PUBLIC_SITEURL, APRS_SERVER, APRS_TRAFFIC_FILTER, APRS_KEEPALIVE_PERIOD_MS, H3_CACHE_FLUSH_PERIOD_MS, FORGET_AIRCRAFT_AFTER_SEC, STATION_MOVE_THRESHOLD_KM, H3_STATION_CELL_LEVEL, H3_GLOBAL_CELL_LEVEL, DB_PATH, OUTPUT_PATH, STATION_EXPIRY_TIME_SECS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS} from '../lib/bin/config.js';
+import {
+    ROLLUP_PERIOD_MINUTES, //
+    NEXT_PUBLIC_SITEURL,
+    APRS_SERVER,
+    APRS_TRAFFIC_FILTER,
+    APRS_KEEPALIVE_PERIOD_MS,
+    H3_CACHE_FLUSH_PERIOD_MS,
+    FORGET_AIRCRAFT_AFTER_SEC,
+    STATION_MOVE_THRESHOLD_KM,
+    H3_STATION_CELL_LEVEL,
+    H3_GLOBAL_CELL_LEVEL,
+    DB_PATH,
+    OUTPUT_PATH,
+    STATION_EXPIRY_TIME_SECS,
+    MAX_STATION_DBS,
+    STATION_DB_EXPIRY_MS
+} from '../lib/bin/config.js';
 
 // h3 cache functions
 import {cachedH3s, flushDirtyH3s, H3lock} from '../lib/bin/h3cache.js';
@@ -72,30 +88,6 @@ const gv = gitVersion().trim();
 const sabbuffer = new SharedArrayBuffer(2);
 const nextStation = new Uint16Array(sabbuffer);
 let packetStats = {ignoredStation: 0, ignoredTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0};
-
-// Least Recently Used cache for Station Database connectiosn
-import LRU from 'lru-cache';
-const options = {
-        max: MAX_STATION_DBS,
-        dispose: function (db, key, r) {
-            try {
-                db.close();
-            } catch (e) {
-                console.log('ummm', e);
-            }
-            if (stationDbCache.getTtl(key) < H3_CACHE_FLUSH_PERIOD_MS / 1000) {
-                console.log(`Closing database ${key} while it's still needed. You should increase MAX_STATION_DBS in .env.local`);
-            }
-        },
-        updateAgeOnGet: true,
-        allowStale: true,
-        ttl: STATION_DB_EXPIRY_MS
-    },
-    stationDbCache = new LRU(options);
-
-stationDbCache.getTtl = (k) => {
-    return (typeof performance === 'object' && performance && typeof performance.now === 'function' ? performance : Date).now() - stationDbCache.starts[stationDbCache.keyMap.get(k)];
-};
 
 // Run stuff magically
 main().then('exiting');
@@ -117,8 +109,8 @@ async function main() {
     } catch (e) {}
 
     // Open our databases
-    globalDb = LevelUP(LevelDOWN(DB_PATH + 'global'));
     statusDb = LevelUP(LevelDOWN(DB_PATH + 'status'));
+    initialiseDbCache();
 
     // Load the status of the current stations
     async function loadStationStatus(statusdb) {
@@ -578,6 +570,8 @@ async function processPacket(packet) {
         return;
     }
 
+    packetStats.count++;
+
     // Enrich with elevation and send to everybody, this is async
     // and we don't need it's results to say we logged the packet
     getElevationOffset(packet.latitude, packet.longitude, async (gl) => {
@@ -591,61 +585,28 @@ async function processPacket(packet) {
 
         // Open the database, do this first as takes a bit of time
         let stationDb = stationDbCache.get(stationid);
-        if (!stationDb) {
-            stationDbCache.set(stationid, (stationDb = LevelUP(LevelDOWN(DB_PATH + '/stations/' + station))));
-            stationDb.ognInitialTS = Date.now();
-            stationDb.ognStationName = station;
-        }
 
         // What hexagon are we working with
         const h3id = h3.geoToH3(packet.latitude, packet.longitude, H3_STATION_CELL_LEVEL);
 
+        //
+        // We store the database records as binary bytes - in the format described in the mapping() above
+        // this reduces the amount of storage we need and means we aren't constantly parsing text
+        // and printing text.
+        async function mergeDataIntoDatabase(db, lockKeyStationId, h3) {
+            // Header details for our update
+            const h3k = new CoverageHeader(lockKeyStationId, ...getAccumulator(h3), h3);
+
+            // And tell the cache to fetch/update - this may block if it needs to read
+            // and there is nothing yet available
+            updateCachedH3(db, h3k, altitude, agl, crc, signal, gap, stationid);
+        }
+
         // Merge into both the station db (0,0) and the global db with the stationid we allocated
         // we don't pass stationid into the station specific db because there only ever is one
         // it gets used to build the list of stations that can see the cell
-        mergeDataIntoDatabase(0, stationid, stationDb, h3id, altitude, agl, crc, signal, gap);
+        mergeDataIntoDatabase(stationDb, stationid, h3id);
 
-        mergeDataIntoDatabase(stationid, 0, globalDb, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL), altitude, agl, crc, signal, gap);
-    });
-
-    packetStats.count++;
-}
-
-//
-// We store the database records as binary bytes - in the format described in the mapping() above
-// this reduces the amount of storage we need and means we aren't constantly parsing text
-// and printing text.
-async function mergeDataIntoDatabase(stationid, dbStationId, db, h3, altitude, agl, crc, signal, gap) {
-    // Because the DB is asynchronous we need to ensure that only
-    // one transaction is active for a given h3 at a time, this will
-    // block all the other ones until the first completes, it's per db
-    // no issues updating h3s in different dbs at the same time
-    const h3k = new CoverageHeader(dbStationId, ...getAccumulator(h3), h3);
-    H3lock(h3k.lockKey, function (release) {
-        // If we have some cached changes for this h3 then we will simply
-        // use the entry in the 'dirty' table. This table gets flushed
-        // on a periodic basis and saves us hitting the disk for very
-        // busy h3s
-        const cachedH3 = cachedH3s.get(h3k.lockKey);
-        if (cachedH3) {
-            cachedH3.dirty = true;
-            cachedH3.lastAccess = Date.now();
-            cachedH3.br.update(altitude, agl, crc, signal, gap, stationid);
-            release()();
-        } else {
-            db.get(h3k.dbKey())
-                .then((value) => {
-                    const buffer = new CoverageRecord(value);
-                    cachedH3s.set(h3k.lockKey, {br: buffer, dirty: true, lastAccess: Date.now(), lastWrite: Date.now()});
-                    buffer.update(altitude, agl, crc, signal, gap, stationid);
-                    release()();
-                })
-                .catch((err) => {
-                    const buffer = new CoverageRecord(stationid ? bufferTypes.global : bufferTypes.station);
-                    cachedH3s.set(h3k.lockKey, {br: buffer, dirty: true, lastAccess: Date.now(), lastWrite: Date.now()});
-                    buffer.update(altitude, agl, crc, signal, gap, stationid);
-                    release()();
-                });
-        }
+        mergeDataIntoDatabase(globalDb, 0, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL));
     });
 }

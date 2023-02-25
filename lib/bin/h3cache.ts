@@ -6,19 +6,25 @@ import LevelUP from 'levelup';
 import LevelDOWN from 'leveldown';
 
 // h3cache locking
-import {Lock} from 'lock';
-export let H3lock = Lock();
+import AsyncLock from 'async-lock';
+let lock = new AsyncLock();
 
 import _find from 'lodash.find';
 
 // Cache so we aren't constantly reading/writing from the db
-export let cachedH3s = new Map();
+const cachedH3s = new Map();
+let blockWrites = false;
+let emptyCache = true;
+
+export function unlockH3sForReads() {
+    blockWrites = false;
+}
 
 //
 // This function writes the H3 buffers to the disk if they are dirty, and
 // clears the records if it has expired. It is actually a synchronous function
 // as it will not return before everything has been written
-export async function flushDirtyH3s({globalDb, stationDbCache, stations, allUnwritten = false}) {
+export async function flushDirtyH3s({stations, allUnwritten = false, lockForRead = false}) {
     // When do we write and when do we expire
     const now = Date.now();
     const flushTime = Math.max(0, now - H3_CACHE_FLUSH_PERIOD_MS);
@@ -32,6 +38,23 @@ export async function flushDirtyH3s({globalDb, stationDbCache, stations, allUnwr
         databases: 0
     };
 
+    // If we are currently doing other work then don't write out here
+    if (blockWrites) {
+        console.log(`Not flushing H3s as currently blocked for writes`);
+        return stats;
+    }
+
+    // And if we want to lock then we MUST flush everything
+    // NOTE, locking should only be used when changing current accumulator
+    if (lockForRead) {
+        if (allUnwritten) {
+            blockWrites = lockForRead;
+        } else {
+            console.error('Lock requested but not all changes requested to be flushed');
+            allUnwritten = true;
+        }
+    }
+
     // We will keep track of all the async actions to make sure we
     // don't get out of order during the lock() or return before everything
     // has been serialised
@@ -43,12 +66,12 @@ export async function flushDirtyH3s({globalDb, stationDbCache, stations, allUnwr
     // since last time we flushed
     for (const [h3klockkey, v] of cachedH3s) {
         promises.push(
-            new Promise((resolve) => {
+            new Promise<void>((resolvePromise) => {
                 // Because the DB is asynchronous we need to ensure that only
                 // one transaction is active for a given h3 at a time, this will
                 // block all the other ones until the first completes, it's per db
                 // no issues updating h3s in different dbs at the same time
-                H3lock(h3klockkey, function (release) {
+                lock.acquire(h3klockkey, function (releaseLock) {
                     // If we are dirty all we can do is write it out
                     if (v.dirty) {
                         // either periodic flush (eg before rollup) or flushTime elapsed
@@ -67,7 +90,8 @@ export async function flushDirtyH3s({globalDb, stationDbCache, stations, allUnwr
                             v.dirty = false;
                         }
                     }
-                    // If we are clean then we can be deleted
+                    // If we are clean then we can be deleted, don't purge if we are locked
+                    // for read (v.dirty will not be set to false)
                     else if (v.lastAccess < expiryTime) {
                         cachedH3s.delete(h3klockkey);
                         stats.expired++;
@@ -77,15 +101,15 @@ export async function flushDirtyH3s({globalDb, stationDbCache, stations, allUnwr
                     // disk above, or it was written earlier and has simply expired, it's not possible
                     // to expire and write (expiry is period after last write)... ie it's still
                     // in cache after write till expiry so only cache lock required for integrity
-                    release()();
-                    resolve();
+                    releaseLock();
+                    resolvePromise();
                 });
             })
         );
     }
 
     // We need to wait for all promises to complete before we can do the next part
-    await Promise.all(promises);
+    await Promise.allSettled(promises);
     promises = [];
 
     // So we know where to start writing
@@ -96,7 +120,7 @@ export async function flushDirtyH3s({globalDb, stationDbCache, stations, allUnwr
         promises.push(
             new Promise((resolve) => {
                 //
-                let db = dbid != 0 ? stationDbCache.get(dbid) : globalDb;
+                let db = stationDbCache.get(dbid);
 
                 // Open DB if needed
                 if (!db) {
@@ -122,6 +146,44 @@ export async function flushDirtyH3s({globalDb, stationDbCache, stations, allUnwr
             })
         );
     }
-    await Promise.all(promises);
+    await Promise.allSettled(promises);
+    emptyCache = lockForRead;
+
     return stats;
+}
+
+export async function updateCachedH3(db, h3k, altitude, agl, crc, signal, gap, stationid) {
+    // Because the DB is asynchronous we need to ensure that only
+    // one transaction is active for a given h3 at a time, this will
+    // block all the other ones until the first completes, it's per db
+    // no issues updating h3s in different dbs at the same time
+    await lock.acquire(h3k.lockKey, function (release) {
+        // If we have some cached changes for this h3 then we will simply
+        // use the entry in the 'dirty' table. This table gets flushed
+        // on a periodic basis and saves us hitting the disk for very
+        // busy h3s
+        const cachedH3 = cachedH3s.get(h3k.lockKey);
+        if (cachedH3) {
+            cachedH3.dirty = true;
+            cachedH3.lastAccess = Date.now();
+            cachedH3.br.update(altitude, agl, crc, signal, gap, stationid);
+            release()();
+        } else {
+            const updateH3Entry = (value) => {
+                const buffer = new CoverageRecord(value ? value : h3k.dbid ? bufferTypes.station : bufferTypes.global);
+                cachedH3s.set(h3k.lockKey, {br: buffer, dirty: true, lastAccess: Date.now(), lastWrite: Date.now()});
+                buffer.update(altitude, agl, crc, signal, gap, stationid);
+                release();
+            };
+
+            // If we haven't allowed any writes yet then we can just make an empty one
+            if (emptyCache) {
+                updateH3Entry();
+            } else {
+                db.get(h3k.dbKey())
+                    .then(updateH3Entry) // gets called with buffer
+                    .catch((err) => updateH3Entry()); // not found, make new entry
+            }
+        }
+    });
 }
