@@ -1,9 +1,9 @@
-import {CoverageHeader} from './coverageheader.js';
+import {CoverageHeader} from './coverageheader';
+import {CoverageRecord, bufferTypes} from './coveragerecord';
 
 import {H3_CACHE_FLUSH_PERIOD_MS, H3_CACHE_EXPIRY_TIME_MS, DB_PATH, H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS} from './config.js';
 
-import LevelUP from 'levelup';
-import LevelDOWN from 'leveldown';
+import {getDb} from './stationcache';
 
 // h3cache locking
 import AsyncLock from 'async-lock';
@@ -24,7 +24,7 @@ export function unlockH3sForReads() {
 // This function writes the H3 buffers to the disk if they are dirty, and
 // clears the records if it has expired. It is actually a synchronous function
 // as it will not return before everything has been written
-export async function flushDirtyH3s({stations, allUnwritten = false, lockForRead = false}) {
+export async function flushDirtyH3s({allUnwritten = false, lockForRead = false}) {
     // When do we write and when do we expire
     const now = Date.now();
     const flushTime = Math.max(0, now - H3_CACHE_FLUSH_PERIOD_MS);
@@ -118,31 +118,22 @@ export async function flushDirtyH3s({stations, allUnwritten = false, lockForRead
     // Now push these to the database
     for (const [dbid, v] of dbOps) {
         promises.push(
-            new Promise((resolve) => {
+            new Promise<void>((resolve) => {
                 //
-                let db = stationDbCache.get(dbid);
+                let db = getDb(dbid);
 
                 // Open DB if needed
                 if (!db) {
-                    console.log(`weirdly opening db to write for cache ${dbid}, your stationDbCache is too small for active set`);
-                    const stationDetails = _find(stations, {id: dbid});
-                    const stationName = stationDetails?.station;
-                    if (!stationName) {
-                        throw 'Unable to find station name for id ${dbid}... this is obviously not ideal, probably data corruption ;)';
-                    }
-                    console.log(` Station is ${stationName || 'unknown'}, details are ${JSON.stringify(stationDetails || {})}`);
-                    console.log(` there are ${stats.databases} stations in this flush set, cache fits ${stationDbCache.size}`);
-                    stationDbCache.set(dbid, (db = LevelUP(LevelDOWN(DB_PATH + '/stations/' + stationName))));
-                    db.ognInitialTS = Date.now();
-                    db.ognStationName = stationName;
-                }
-
-                // Execute all changes as a batch
-                db.batch(v, (e) => {
-                    // log errors
-                    if (e) console.error('error flushing db operations for station id', dbid, e);
+                    console.error(`unable to find station for id ${dbid}`);
                     resolve();
-                });
+                } else {
+                    // Execute all changes as a batch
+                    db.batch(v, (e) => {
+                        // log errors
+                        if (e) console.error('error flushing db operations for station id', dbid, e);
+                        resolve();
+                    });
+                }
             })
         );
     }
@@ -169,7 +160,7 @@ export async function updateCachedH3(db, h3k, altitude, agl, crc, signal, gap, s
             cachedH3.br.update(altitude, agl, crc, signal, gap, stationid);
             release()();
         } else {
-            const updateH3Entry = (value) => {
+            const updateH3Entry = (value?: Uint8Array) => {
                 const buffer = new CoverageRecord(value ? value : h3k.dbid ? bufferTypes.station : bufferTypes.global);
                 cachedH3s.set(h3k.lockKey, {br: buffer, dirty: true, lastAccess: Date.now(), lastWrite: Date.now()});
                 buffer.update(altitude, agl, crc, signal, gap, stationid);

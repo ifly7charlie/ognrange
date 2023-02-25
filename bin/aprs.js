@@ -22,14 +22,14 @@ import {CoverageHeader} from '../lib/bin/coverageheader.js';
 
 import {gitVersion} from '../lib/bin/gitversion.js';
 
+import {loadStationStatus, getStationId, checkStationMoved, updateStationBeacon} from '../lib/bin/stationstatus';
+
 // H3 hexagon cell library
 import h3 from 'h3-js';
 
 import _reduce from 'lodash.reduce';
 
-let stations = {};
 let globalDb = undefined;
-let statusDb = undefined;
 
 // track any setInterval/setTimeout calls so we can stop them when asked to exit
 // also the async rollups we do during startup
@@ -82,11 +82,6 @@ import {getAccumulator, rollupAll, updateAndProcessAccumulators, rollupStartup, 
 // Get our git version
 const gv = gitVersion().trim();
 
-// We need to use a protected data structure to generate ids
-// for the station ID. This allows us to use atomics, will also
-// support clustering if we need it
-const sabbuffer = new SharedArrayBuffer(2);
-const nextStation = new Uint16Array(sabbuffer);
 let packetStats = {ignoredStation: 0, ignoredTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0};
 
 // Run stuff magically
@@ -109,33 +104,7 @@ async function main() {
     } catch (e) {}
 
     // Open our databases
-    statusDb = LevelUP(LevelDOWN(DB_PATH + 'status'));
     initialiseDbCache();
-
-    // Load the status of the current stations
-    async function loadStationStatus(statusdb) {
-        const nowEpoch = Math.floor(Date.now() / 1000);
-        const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
-        try {
-            for await (const [key, value] of statusdb.iterator()) {
-                stations[key] = JSON.parse(String(value));
-            }
-        } catch (e) {
-            console.log('Unable to loadStationStatus', e);
-        }
-        const nextid =
-            (_reduce(
-                stations,
-                (highest, i) => {
-                    return highest < (i.id || 0) ? i.id : highest;
-                },
-                0
-            ) || 0) + 1;
-        console.log('next station id', nextid);
-        return nextid;
-    }
-    console.log('loading station status');
-    Atomics.store(nextStation, 0, (await loadStationStatus(statusDb)) || 1);
 
     // Check and process unflushed accumulators at the start
     // then we can increment the current number for each accumulator merge
@@ -247,27 +216,9 @@ async function startAprsListener() {
             } else {
                 if ((packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && !ignoreStation(packet.sourceCallsign)) {
                     if (packet.type == 'location') {
-                        const stationid = getStationId(packet.sourceCallsign, true);
-
-                        // Check if we have moved too far ( a little wander is considered ok )
-                        const details = stations[packet.sourceCallsign];
-                        if (details.lat && details.lng) {
-                            const distance = h3.pointDist([details.lat, details.lng], [packet.latitude, packet.longitude], 'km');
-                            if (distance > STATION_MOVE_THRESHOLD_KM) {
-                                details.notice = `${Math.round(distance)}km move detected ${new Date(packet.timestamp * 1000).toISOString()} resetting history`;
-                                details.moved = true; // we need to persist this
-                                console.log(`station ${packet.sourceCallsign} has moved location from ${details.lat},${details.lng} to ${packet.latitude},${packet.longitude} which is ${distance.toFixed(1)}km`);
-                                statusDb.put(packet.sourceCallsign, JSON.stringify(details));
-                            }
-                        }
-                        details.lat = packet.latitude;
-                        details.lng = packet.longitude;
-                        details.lastLocation = packet.timestamp;
+                        checkStationMoved(packet.sourceCallsign, packet.latitude, packet.longitude, packet.timestamp);
                     } else if (packet.type == 'status') {
-                        const stationid = getStationId(packet.sourceCallsign, false); // don't write as we do it in next line
-                        const details = stations[packet.sourceCallsign];
-                        details.lastBeacon = packet.timestamp;
-                        statusDb.put(packet.sourceCallsign, JSON.stringify({...details, status: packet.body}));
+                        updateStationBeacon(packet.sourceCallsign, packet.body, packet.timestamp);
                     } else {
                         console.log(data, packet);
                     }
@@ -418,29 +369,6 @@ function displayStatus() {
     console.log(`elevation cache: ${getCacheSize()}, h3cache: ${cachedH3s.size},  valid packets: ${packetStats.count} ${packetStats.pps}/s, all packets ${packetStats.rawCount} ${packetStats.rawPps}/s`);
     console.log(`total stations: ${nextStation - 1}, openDbs: ${stationDbCache.size + 2}/${MAX_STATION_DBS}`);
     console.log(JSON.stringify(packetStats));
-}
-
-function getStationId(station, serialise = true) {
-    // Figure out which station we are - this is synchronous though don't really
-    // understand why the put can't happen in the background
-    let stationid = undefined;
-    if (station) {
-        if (!stations[station]) {
-            stations[station] = {station: station};
-        }
-
-        if ('id' in stations[station]) {
-            stationid = stations[station].id;
-        } else {
-            stationid = stations[station].id = Atomics.add(nextStation, 0, 1);
-            console.log(`allocated id ${stationid} to ${station}, ${Object.keys(stations).length} in hash`);
-
-            if (serialise) {
-                statusDb.put(station, JSON.stringify(stations[station]));
-            }
-        }
-    }
-    return stationid;
 }
 
 //

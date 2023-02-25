@@ -8,12 +8,14 @@ import _sortby from 'lodash.sortby';
 import _filter from 'lodash.filter';
 import _uniq from 'lodash.uniq';
 
-import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync} from 'fs';
+import {writeFileSync, unlinkSync, symlinkSync} from 'fs';
 import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
-import {Utf8, Uint32, Float32, makeBuilder, Table, makeTable, RecordBatchWriter} from 'apache-arrow/Arrow.node';
+import {Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
 
 import {rollupDatabase, purgeDatabase} from './rollupworker';
+
+import {allStationsDetails, updateStationStatus} from './stationstatus';
 
 import {gzipSync, createGzip} from 'zlib';
 
@@ -45,7 +47,7 @@ export let rollupStats: {
 //
 // This iterates through all open databases and rolls them up.
 // ***HMMMM OPEN DATABASE - so if DBs are not staying open we have a problem
-export async function rollupAll({current = currentAccumulator, processAccumulators = accumulators, globalDb, statusDb, stationDbCache, stations, newAccumulatorFiles = false}) {
+export async function rollupAll({current, processAccumulators, newAccumulatorFiles = false}) {
     //
     // Make sure we have updated validStations
     const nowDate = new Date();
@@ -55,7 +57,7 @@ export async function rollupAll({current = currentAccumulator, processAccumulato
     let needValidPurge = false;
     let invalidStations = 0;
     rollupStats.movedStations = 0;
-    for (const station of Object.values(stations) as any) {
+    for (const station of allStationsDetails({includeGlobal: false})) {
         const wasStationValid = station.valid;
 
         if (station.moved) {
@@ -63,20 +65,16 @@ export async function rollupAll({current = currentAccumulator, processAccumulato
             station.valid = false;
             rollupStats.movedStations++;
             console.log(`purging moved station ${station.station}`);
-            if (statusDb) {
-                statusDb.put(station.station, JSON.stringify(station)); // perhaps always write?
-            }
+            updateStationStatus(station);
         } else if ((station.lastPacket || station.lastBeacon || nowEpoch) > expiryEpoch) {
             validStations.add(Number(station.id));
             station.valid = true;
         } else {
             station.valid = false;
-            if (statusDb) {
-                statusDb.put(station.station, JSON.stringify(station)); // perhaps always write?
-            }
         }
 
-        if (!station.valid && wasStationValid != station.valid) {
+        if (!station.valid && wasStationValid) {
+            updateStationStatus(station);
             needValidPurge = true;
             invalidStations++;
             console.log(`purging invalid station ${station.station}`);
@@ -94,7 +92,7 @@ export async function rollupAll({current = currentAccumulator, processAccumulato
         needValidPurge
     };
 
-    console.log(`performing rollup and output of ${validStations.size} stations + global, removing ${Object.keys(stations).length - validStations.size} stations `);
+    console.log(`performing rollup and output of ${validStations.size} stations + global, removing ${invalidStations} stations `);
 
     rollupStats = {
         ...rollupStats, //
@@ -126,7 +124,7 @@ export async function rollupAll({current = currentAccumulator, processAccumulato
     // it is worth running them in parallel as there is a lot of IO which would block
     promises.push(
         mapAllCapped(
-            Object.values(stations),
+            allStationsDetails(),
             async function (stationMeta) {
                 const station = stationMeta.station;
 
@@ -160,7 +158,7 @@ export async function rollupAll({current = currentAccumulator, processAccumulato
     );
 
     // And the global json
-    produceStationFile(stations);
+    produceStationFile();
 
     // Wait for all to be done
     await Promise.allSettled(promises);
@@ -177,9 +175,10 @@ export async function rollupAll({current = currentAccumulator, processAccumulato
 // Dump the meta data for all the stations, we take from our in memory copy
 // it will have been primed on start from the db and then we update and flush
 // back to the disk
-function produceStationFile(stations) {
+function produceStationFile() {
+    const stationDetailsArray = allStationsDetails();
     // Form a list of hashes
-    let statusOutput = _filter(stations, (v) => {
+    let statusOutput = _filter(stationDetailsArray, (v) => {
         return v.valid && v.lastPacket;
     });
 
@@ -241,7 +240,7 @@ function produceStationFile(stations) {
 
     // Write this to the stations.json file
     try {
-        const output = JSON.stringify(stations);
+        const output = JSON.stringify(stationDetailsArray);
         writeFileSync(OUTPUT_PATH + 'stations-complete.json', output);
         writeFileSync(OUTPUT_PATH + 'stations-complete.json.gz', gzipSync(output));
     } catch (err) {

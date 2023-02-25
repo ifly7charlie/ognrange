@@ -11,8 +11,10 @@ import _uniq from 'lodash.uniq';
 
 import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync} from 'fs';
 
-import {getDb, closeDb, closeAllDbs} from './stationcache';
+import {getDb, closeDb, DB, closeAllDbs} from './stationcache';
+import {stationDetails, StationDetails} from './stationstatus';
 
+import {Epoch} from './types';
 //
 // What accumulators we are operating on these are internal
 let currentAccumulator = undefined;
@@ -139,14 +141,14 @@ export async function rollupDatabaseStartup(db, {now, whatAccumulators}) {
 
         // accumulator not configured on this machine - dump and purge
         else if (!expectedAccumulators[hr.typeName]) {
-            accumulatorsToPurge[hr.accumulator] = {accumulator: hr.accumulator, meta: meta, typeName: hr.typeName, t: hr.type, b: hr.bucket, file: hr.file};
+            accumulatorsToPurge[hr.accumulator] = {accumulator: hr.accumulator, meta: meta, typeName: hr.typeName, t: hr.type, b: hr.bucket};
         }
         // new bucket for the accumulators - we should dump this
         // and purge as adding new data to it will cause grief
         // note the META will indicate the last active accumulator
         // and we should merge that if we find it
         else if (expectedAccumulators[hr.typeName].bucket != hr.bucket) {
-            accumulatorsToPurge[hr.accumulator] = {accumulator: hr.accumulator, meta: meta, typeName: hr.typeName, t: hr.type, b: hr.bucket, file: hr.file};
+            accumulatorsToPurge[hr.accumulator] = {accumulator: hr.accumulator, meta: meta, typeName: hr.typeName, t: hr.type, b: hr.bucket};
         } else {
             console.log(`${hr.typeName}: resuming accumulator ${hr.accumulator} (${hr.bucket}) as still valid  [started at: ${meta.startUtc}]`);
         }
@@ -265,12 +267,12 @@ async function purgeDatabaseInternal(db) {
 // we do this by iterating through each database looking for things in default
 // aggregator (which is always just the raw h3id)
 //
-async function rollupDatabaseInternal(db, {validStations, now, current, processAccumulators, needValidPurge}) {
+async function rollupDatabaseInternal(db: DB, {validStations, now, current, processAccumulators, needValidPurge}) {
     //
 
     //
-    const nowEpoch = Math.floor(now / 1000);
-    const name = db.station;
+    const nowEpoch = Math.floor(now / 1000) as Epoch;
+    const name = db.ognStationName;
     let currentMeta = {};
 
     //
@@ -304,7 +306,7 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
                 h3extra: 0
             },
             iterator: db.iterator(CoverageHeader.getDbSearchRangeForAccumulator(r, processAccumulators[r].bucket)),
-            arrow: CoverageRecord.initArrow(db.station == 'global' ? bufferTypes.global : bufferTypes.station)
+            arrow: CoverageRecord.initArrow(db.global ? bufferTypes.global : bufferTypes.station)
         };
     });
 
@@ -318,9 +320,9 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
                     db.get(ch.dbKey())
                         .then((value) => {
                             if (r.type == current[0] && r.bucket == current[1]) {
-                                currentMeta = JSON.parse(value);
+                                currentMeta = JSON.parse(value.toString());
                             } else {
-                                r.meta = JSON.parse(String(value) || '{}');
+                                r.meta = JSON.parse(value?.toString() || '{}');
                             }
                             resolve();
                         })
@@ -386,7 +388,7 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
                 const h3kr = r.h3kr; //.fromDbKey(prefixedh3r);
                 if (h3kr.isMeta) {
                     // skip meta
-                    console.log(`unexpected meta information processing ${db.station}, ${r.type} at ${h3kr.dbKey()}, ignoring`);
+                    console.log(`unexpected meta information processing ${db.ognStationName}, ${r.type} at ${h3kr.dbKey()}, ignoring`);
                     advancePrimary = false; // we need more
                     continue;
                 }
@@ -512,8 +514,6 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
         }
     }
 
-    stationMeta.accumulators = [];
-
     // Write everything out
     for (const r of rollupData) {
         // We are going to write out our accumulators this saves us writing it
@@ -529,7 +529,7 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
         r.stats.h3source = h3source;
         r.meta.rollups.push({source: currentMeta, stats: r.stats, file: accumulatorName});
 
-        stationMeta.accumulators[r.type] = r.stats;
+        //        stationMeta.accumulators[r.type] = r.stats;
 
         if (r.stats.h3source != r.stats.h3missing + r.stats.h3updated) {
             console.error("********* stats don't add up ", r.type, r.bucket.toString(16), JSON.stringify({m: r.meta, s: r.stats}));
@@ -548,7 +548,7 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
         }
 
         // Fix directory index
-        let index = {};
+        let index: any = {};
         try {
             const data = readFileSync(OUTPUT_PATH + `${name}/${name}.index.json`, 'utf8');
             index = JSON.parse(data);
@@ -576,6 +576,11 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
         symlink(`${name}.${r.type}.${processAccumulators[r.type].file}.json`, OUTPUT_PATH + `${name}/${name}.${r.type}.json`);
     }
 
+    // More details than in normal object
+    interface ExtendedMeta extends StationDetails {
+        lastOutputFile?: Epoch;
+    }
+    const stationMeta: ExtendedMeta = stationDetails(name);
     stationMeta.lastOutputFile = nowEpoch;
 
     // record when we wrote for the whole station
@@ -585,8 +590,8 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
         console.log('stationmeta write error', err);
     }
 
-    if (!db.global && db.station != '!test') {
-        delete stationMeta.accumulators; // don't persist this it's not important
+    if (!db.global && db.ognStationName != '!test') {
+        accumulators = undefined; // don't persist this it's not important
     }
 
     // If we have a new accumulator then we need to purge the old meta data records - we
@@ -614,7 +619,7 @@ async function rollupDatabaseInternal(db, {validStations, now, current, processA
     // Save the meta data - no big deal having this for stations as well so we won't differentiate
     await new Promise<void>((resolve) => saveAccumulatorMetadata(db, allAccumulators, resolve));
 
-    return {elapsed: Date.now() - now, operations: dbOps.length, accumulators: stationMeta.accumulators};
+    return {elapsed: Date.now() - now, operations: dbOps.length, accumulators};
 }
 
 function saveAccumulatorMetadata(db, allAccumulators, resolve) {

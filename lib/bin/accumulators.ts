@@ -82,7 +82,7 @@ export function whatAccumulators(now) {
     return {current: newAccumulatorBucket, accumulators: accumulators};
 }
 
-export async function updateAndProcessAccumulators({globalDb, statusDb, stationDbCache, stations}) {
+export async function updateAndProcessAccumulators() {
     const now = new Date();
 
     // Make a copy
@@ -109,9 +109,9 @@ export async function updateAndProcessAccumulators({globalDb, statusDb, stationD
         // Now we need to make sure we have flushed our H3 cache and everything
         // inflight has finished before doing this. we could purge cache
         // but that doesn't ensure that all the inflight has happened
-        const s = await flushDirtyH3s({globalDb, stationDbCache, stations, allUnwritten: true, lockForRead: true});
+        const s = await flushDirtyH3s({allUnwritten: true, lockForRead: true});
         console.log(`accumulator rotation happening`, s);
-        await rollupAll({current: oldAccumulator, processAccumulators: oldAccumulators, globalDb, statusDb, stationDbCache, stations, newAccumulatorFiles: !_isequal(accumulators, oldAccumulators)});
+        await rollupAll({current: oldAccumulator, processAccumulators: oldAccumulators, newAccumulatorFiles: !_isequal(accumulators, oldAccumulators)});
         unlockH3sForReads();
     }
 }
