@@ -188,37 +188,31 @@ export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators}) {
     // this makes it easier to check what needs to be done?
     {
         const dbkey = CoverageHeader.getAccumulatorMeta(...expectedCurrentAccumulator).dbKey();
-        console.log('dbkey', dbkey);
-        try {
-            const value = await db.get(dbkey);
 
-            const meta = JSON.parse(String(value));
-            meta.oldStarts = [...(meta?.oldStarts || []), {start: meta.start, startUtc: meta.startUtc}];
+        // Get existing and add it to the history
+        try {
+            const meta = await db
+                .get(dbkey)
+                .then((value) => {
+                    const meta = JSON.parse(String(value));
+                    meta.oldStarts = [...(meta?.oldStarts || []), {start: meta.start, startUtc: meta.startUtc}];
+                    return meta;
+                })
+                .catch((e) => {
+                    if (e.code != 'LEVEL_NOT_FOUND') {
+                        console.warn(`error fetching existing metadata ${db.ognStationName} - error ${e.code}, db status ${db.status}`, e);
+                        return {
+                            start: Math.floor(now / 1000),
+                            startUtc: new Date(now).toISOString()
+                        };
+                    }
+                    throw e;
+                });
             meta.start = Math.floor(now / 1000);
             meta.startUtc = new Date(now).toISOString();
-            try {
-                await db.put(dbkey, Buffer.from(JSON.stringify(meta)));
-            } catch (e) {
-                console.log('HMMM 217: ', e);
-            }
+            await db.put(dbkey, Buffer.from(JSON.stringify(meta)));
         } catch (e) {
-            if (e.code != 'LEVEL_NOT_FOUND') {
-                console.log(db.ognStationName, db.status, 'failed updating metadata', e);
-            } else {
-                try {
-                    await db.put(
-                        dbkey,
-                        Buffer.from(
-                            JSON.stringify({
-                                start: Math.floor(now / 1000),
-                                startUtc: new Date(now).toISOString()
-                            })
-                        )
-                    );
-                } catch (e) {
-                    console.log('hmmm', db.ognStationName, db.status, e);
-                }
-            }
+            console.error(`unable to save metadata for ${db.ognStationName} - error ${e.code}, db status ${db.status}`, e);
         }
 
         // make sure we have an up to date header for each accumulator
@@ -226,16 +220,20 @@ export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators}) {
         for (const type in expectedAccumulators) {
             const dbkey = CoverageHeader.getAccumulatorMeta(type, expectedAccumulators[type].bucket).dbKey();
             try {
-                const value = await db.get(dbkey);
-                const meta = JSON.parse(String(value));
+                const meta = await db
+                    .get(dbkey)
+                    .then((value) => JSON.parse(String(value)))
+                    .catch((e) => {
+                        if (e.code != 'LEVEL_NOT_FOUND') {
+                            console.warn(`error fetching existing metadata ${db.ognStationName} - error ${e.code}, db status ${db.status}`, e);
+                            return {start: Math.floor(now / 1000), startUtc: new Date(now).toISOString(), currentAccumulator: currentAccumulatorHeader.bucket};
+                        }
+                        throw e;
+                    });
 
-                try {
-                    await db.put(dbkey, Buffer.from(JSON.stringify({...meta, currentAccumulator: currentAccumulatorHeader.bucket})));
-                } catch (e) {
-                    console.log('HMMM 217: ', e);
-                }
+                await db.put(dbkey, Buffer.from(JSON.stringify(meta)));
             } catch (e) {
-                await db.put(dbkey, Buffer.from(JSON.stringify({start: Math.floor(now / 1000), startUtc: new Date(now).toISOString(), currentAccumulator: currentAccumulatorHeader.bucket})));
+                console.error(`unable to save metadata for ${db.ognStationName}/${type} - error ${e.code}, db status ${db.status}`, e);
             }
         }
     }
@@ -420,7 +418,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
                     // We need to cleanup when we are done
                     if (r.n) {
                         r.current = null;
-                        r.iterator.end();
+                        r.iterator.close();
                         r.n = null;
                     }
                     continue;
@@ -551,7 +549,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
             }
 
             r.n = null;
-            r.iterator.end();
+            r.iterator.close();
         }
     }
 
