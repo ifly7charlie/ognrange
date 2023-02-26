@@ -168,8 +168,8 @@ export async function updateCachedH3(db: StationName, h3k, altitude, agl, crc, s
         } else {
             const updateH3Entry = (value?: Uint8Array) => {
                 const buffer = new CoverageRecord(value ? value : h3k.dbid ? bufferTypes.station : bufferTypes.global);
-                cachedH3s.set(h3k.lockKey, {br: buffer, dirty: true, lastAccess: Date.now(), lastWrite: Date.now()});
                 buffer.update(altitude, agl, crc, signal, gap, stationid);
+                cachedH3s.set(h3k.lockKey, {br: buffer, dirty: true, lastAccess: Date.now(), lastWrite: Date.now()});
                 release();
             };
 

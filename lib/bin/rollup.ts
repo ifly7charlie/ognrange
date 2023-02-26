@@ -194,14 +194,12 @@ export async function rollupStartupAll() {
         mapAllCapped(
             allStationsDetails(),
             async (stationMeta) => {
-                console.log('startup', stationMeta.station);
                 const station = stationMeta.station;
                 await rollupStartup(station, common);
             },
             1 //MAX_SIMULTANEOUS_ROLLUPS
         )
     );
-    console.log('waiting for ', promises.length);
     await Promise.allSettled(promises);
 }
 

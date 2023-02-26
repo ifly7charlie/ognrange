@@ -14,11 +14,9 @@ import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH
 const options = {
     max: MAX_STATION_DBS + 1, // global is stored in the cache
     dispose: function (db, key, r) {
-        try {
-            db.close();
-        } catch (e) {
-            console.log('ummm', e);
-        }
+        db.close((e) => {
+            console.log('closed', db.ognStationName, e);
+        });
         if (stationDbCache.getRemainingTTL(key) < H3_CACHE_FLUSH_PERIOD_MS / 1000) {
             console.log(`Closing database ${key} while it's still needed. You should increase MAX_STATION_DBS in .env.local`);
         }
@@ -61,8 +59,6 @@ export function getDb(station: StationName | StationId, open = true): DB | undef
         stationDb.ognInitialTS = Date.now() as EpochMS;
         stationDb.ognStationName = station;
         stationDb.global = station == 'global';
-
-        stationDb.open();
     }
     return stationDb;
 }
