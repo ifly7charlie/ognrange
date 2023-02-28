@@ -13,8 +13,9 @@ import {
 
 import {flushDirtyH3s, unlockH3sForReads} from './h3cache';
 import {rollupAll} from './rollup';
+import {closeAllStationDbs} from './stationcache';
 
-import {CoverageHeader} from './coverageheader';
+//import {CoverageHeader} from './coverageheader';
 
 //
 // What accumulators we are operating on these are internal
@@ -121,6 +122,7 @@ export async function updateAndProcessAccumulators() {
         // but that doesn't ensure that all the inflight has happened
         const s = await flushDirtyH3s({allUnwritten: true, lockForRead: true});
         console.log(`accumulator rotation happening`, s);
+        await closeAllStationDbs();
         await rollupAll({current: oldAccumulator, processAccumulators: oldAccumulators, newAccumulatorFiles: !_isequal(accumulators, oldAccumulators)});
         unlockH3sForReads();
     }

@@ -4,8 +4,9 @@ import {CoverageRecord, bufferTypes} from './coveragerecord';
 import {H3_CACHE_FLUSH_PERIOD_MS, H3_CACHE_EXPIRY_TIME_MS, DB_PATH, H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS} from './config.js';
 
 import {getDb} from './stationcache';
+import {getStationName} from './stationstatus';
 
-import {StationName} from './types';
+import {StationName, StationId} from './types';
 
 // h3cache locking
 import AsyncLock from 'async-lock';
@@ -13,10 +14,11 @@ let lock = new AsyncLock();
 
 import _find from 'lodash.find';
 
+import {setTimeout} from 'timers/promises';
+
 // Cache so we aren't constantly reading/writing from the db
-const cachedH3s = new Map();
+let cachedH3s = new Map();
 let blockWrites = false;
-let emptyCache = true;
 
 export function unlockH3sForReads() {
     blockWrites = false;
@@ -30,7 +32,15 @@ export function getH3CacheSize() {
 // This function writes the H3 buffers to the disk if they are dirty, and
 // clears the records if it has expired. It is actually a synchronous function
 // as it will not return before everything has been written
-export async function flushDirtyH3s({allUnwritten = false, lockForRead = false}) {
+export async function flushDirtyH3s({allUnwritten = false, lockForRead = false}): Promise<any> {
+    return lock.acquire('flushDirtyH3s', function (done) {
+        internalFlushDirtyH3s({allUnwritten, lockForRead})
+            .then((r) => done(null, r))
+            .catch((e) => done(e, null));
+    });
+}
+
+async function internalFlushDirtyH3s({allUnwritten = false, lockForRead = false}) {
     // When do we write and when do we expire
     const now = Date.now();
     const flushTime = Math.max(0, now - H3_CACHE_FLUSH_PERIOD_MS);
@@ -50,14 +60,26 @@ export async function flushDirtyH3s({allUnwritten = false, lockForRead = false})
         return stats;
     }
 
+    const h3sToFlush = cachedH3s;
+
     // And if we want to lock then we MUST flush everything
     // NOTE, locking should only be used when changing current accumulator
     if (lockForRead) {
         if (allUnwritten) {
             blockWrites = lockForRead;
+            cachedH3s = new Map(); // reset the cache to empty
         } else {
             console.error('Lock requested but not all changes requested to be flushed');
             allUnwritten = true;
+        }
+    }
+
+    if (blockWrites) {
+        let pendingLocks: string[] = Object.keys(lock.queues);
+        while (pendingLocks.length != 1) {
+            console.log('pendinglocks', pendingLocks.join(','));
+            await setTimeout(100);
+            pendingLocks = Object.keys(lock.queues);
         }
     }
 
@@ -66,11 +88,11 @@ export async function flushDirtyH3s({allUnwritten = false, lockForRead = false})
     // has been serialised
     let promises = [];
 
-    const dbOps = new Map(); //[station]=>list of db ops
+    const dbOps = new Map<StationId, any>(); //[station]=>list of db ops
 
     // Go through all H3s in memory and write them out if they were updated
     // since last time we flushed
-    for (const [h3klockkey, v] of cachedH3s) {
+    for (const [h3klockkey, v] of h3sToFlush) {
         promises.push(
             new Promise<void>((resolvePromise) => {
                 // Because the DB is asynchronous we need to ensure that only
@@ -126,26 +148,25 @@ export async function flushDirtyH3s({allUnwritten = false, lockForRead = false})
         promises.push(
             new Promise<void>((resolve) => {
                 //
-                let db = getDb(dbid);
-
-                // Open DB if needed
-                if (!db) {
-                    console.error(`unable to find station for id ${dbid}`);
-                    resolve();
-                } else {
-                    // Execute all changes as a batch
-                    db.batch(v, (e) => {
-                        // log errors
-                        if (e) console.error('error flushing db operations for station id', dbid, e);
-                        resolve();
-                    });
-                }
+                getDb(dbid, {cache: true, open: true})
+                    .then((db) => {
+                        if (!db) {
+                            console.error(`unable to find db for id ${dbid}/${getStationName(dbid)}`);
+                            resolve();
+                        } else {
+                            // Execute all changes as a batch
+                            db.batch(v, (e) => {
+                                // log errors
+                                if (e) console.error(`error flushing ${v.length} db operations for station ${db.ognStationName}`, e);
+                                resolve();
+                            });
+                        }
+                    })
+                    .catch(resolve);
             })
         );
     }
     await Promise.allSettled(promises);
-    emptyCache = lockForRead;
-
     return stats;
 }
 
@@ -174,13 +195,16 @@ export async function updateCachedH3(db: StationName, h3k, altitude, agl, crc, s
             };
 
             // If we haven't allowed any writes yet then we can just make an empty one
-            if (emptyCache) {
+            if (blockWrites) {
                 updateH3Entry();
             } else {
-                getDb(db)
-                    .get(h3k.dbKey())
-                    .then(updateH3Entry) // gets called with buffer
-                    .catch((err) => updateH3Entry()); // not found, make new entry
+                getDb(db, {throw: true, open: true, cache: true})
+                    .then((db) => {
+                        db.get(h3k.dbKey())
+                            .then(updateH3Entry) // gets called with buffer
+                            .catch((_) => updateH3Entry()); // not found, make new entry
+                    })
+                    .catch((_) => updateH3Entry()); // if db can't be opened
             }
         }
     });

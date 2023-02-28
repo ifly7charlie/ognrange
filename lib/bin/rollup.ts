@@ -13,13 +13,15 @@ import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
 import {Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
 
-import {rollupDatabase, purgeDatabase, rollupStartup} from './rollupworker';
+import {rollupDatabase, purgeDatabase, rollupStartup, RollupCommonArguments} from './rollupworker';
 
-import {allStationsDetails, updateStationStatus} from './stationstatus';
+import {allStationsDetails, updateStationStatus, stationDetails} from './stationstatus';
 
 import {getCurrentAccumulators} from './accumulators';
 
 import {gzipSync, createGzip} from 'zlib';
+
+import {StationName, StationId} from './types';
 
 import {
     MAX_SIMULTANEOUS_ROLLUPS, //
@@ -28,9 +30,7 @@ import {
     UNCOMPRESSED_ARROW_FILES
 } from './config.js';
 
-//
-// Information about last rollup
-export let rollupStats: {
+export interface RollupStats {
     completed: number;
     elapsed: number;
     movedStations?: number;
@@ -44,18 +44,20 @@ export let rollupStats: {
         databases: number;
         skippedStations: number;
     };
-} = {completed: 0, elapsed: 0};
+}
+//
+// Information about last rollup
+export let rollupStats: RollupStats = {completed: 0, elapsed: 0};
 
 //
 // This iterates through all open databases and rolls them up.
-// ***HMMMM OPEN DATABASE - so if DBs are not staying open we have a problem
-export async function rollupAll({current, processAccumulators, newAccumulatorFiles = false}) {
+export async function rollupAll({current, processAccumulators, newAccumulatorFiles = false}): Promise<RollupStats> {
     //
     // Make sure we have updated validStations
     const nowDate = new Date();
     const nowEpoch = Math.floor(Date.now() / 1000);
     const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
-    const validStations = new Set();
+    const validStations = new Set<StationId>();
     let needValidPurge = false;
     let invalidStations = 0;
     rollupStats.movedStations = 0;
@@ -69,7 +71,7 @@ export async function rollupAll({current, processAccumulators, newAccumulatorFil
             console.log(`purging moved station ${station.station}`);
             updateStationStatus(station);
         } else if ((station.lastPacket || station.lastBeacon || nowEpoch) > expiryEpoch) {
-            validStations.add(Number(station.id));
+            validStations.add(Number(station.id) as StationId);
             station.valid = true;
         } else {
             station.valid = false;
@@ -86,12 +88,13 @@ export async function rollupAll({current, processAccumulators, newAccumulatorFil
     rollupStats.validStations = validStations.size;
     rollupStats.invalidStations = invalidStations;
 
-    let commonArgs = {
+    let commonArgs: RollupCommonArguments = {
         validStations,
         current,
         processAccumulators,
         newAccumulatorFiles,
-        needValidPurge
+        needValidPurge,
+        stationMeta: undefined
     };
 
     console.log(`performing rollup and output of ${validStations.size} stations + global, removing ${invalidStations} stations `);
@@ -112,7 +115,7 @@ export async function rollupAll({current, processAccumulators, newAccumulatorFil
     let promises = [];
     promises.push(
         new Promise<void>(async function (resolve) {
-            const r = await rollupDatabase('global', {...commonArgs});
+            const r = await rollupDatabase('global' as StationName, {...commonArgs, stationMeta: {}});
             rollupStats.last.sumElapsed += r.elapsed;
             rollupStats.last.operations += r.operations;
             rollupStats.last.databases++;
@@ -169,8 +172,10 @@ export async function rollupAll({current, processAccumulators, newAccumulatorFil
     rollupStats.lastElapsed = Date.now() - nowDate.valueOf();
     rollupStats.elapsed += rollupStats.lastElapsed;
     rollupStats.completed++;
-    rollupStats.lastStart = new Date(rollupStats.lastStart).toISOString();
+    rollupStats.lastStart = nowDate.toISOString();
     console.log('rollup completed', JSON.stringify(rollupStats));
+
+    return rollupStats;
 }
 
 export async function rollupStartupAll() {
@@ -181,7 +186,7 @@ export async function rollupStartupAll() {
     let promises = [];
     promises.push(
         new Promise<void>(async function (resolve) {
-            await rollupStartup('global', common);
+            await rollupStartup('global' as StationName, common, {});
             resolve();
         })
     );
@@ -195,9 +200,9 @@ export async function rollupStartupAll() {
             allStationsDetails(),
             async (stationMeta) => {
                 const station = stationMeta.station;
-                await rollupStartup(station, common);
+                await rollupStartup(station, common, stationMeta);
             },
-            1 //MAX_SIMULTANEOUS_ROLLUPS
+            MAX_SIMULTANEOUS_ROLLUPS
         )
     );
     await Promise.allSettled(promises);

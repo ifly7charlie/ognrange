@@ -148,10 +148,10 @@ export function updateStationBeacon(stationName: StationName, body: string, time
     statusDb.put(stationName, JSON.stringify(details));
 }
 
-export function updateStationStatus(details: StationDetails): void {
-    statusDb.put(details.station, JSON.stringify(details));
+export function updateStationStatus(details: StationDetails): Promise<void> {
+    return statusDb.put(details.station, JSON.stringify(details));
 }
 
-export function closeStatusDb(): void {
-    statusDb.close();
+export async function closeStatusDb(): Promise<void> {
+    return statusDb.close();
 }

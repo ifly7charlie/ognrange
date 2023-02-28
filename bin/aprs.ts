@@ -73,7 +73,7 @@ import {
 } from '../lib/bin/config.js';
 
 // h3 cache functions
-import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from '../lib/bin/h3cache';
+import {flushDirtyH3s, updateCachedH3, getH3CacheSize, unlockH3sForReads} from '../lib/bin/h3cache';
 
 // Rollup functions
 import {rollupAll, rollupStartupAll, rollupStats} from '../lib/bin/rollup';
@@ -85,7 +85,7 @@ const gv = gitVersion().trim();
 let packetStats = {ignoredStation: 0, ignoredTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0, pps: '', rawPps: ''};
 
 // Run stuff magically
-main().then(() => console.log('exiting'));
+main().then(() => console.log('initialised'));
 
 //
 // Primary configuration loading and start the aprs receiver
@@ -119,12 +119,17 @@ async function main() {
     setupPeriodicFunctions();
 }
 
+let alreadyExiting = false;
 //
 // Tidily exit if the user requests it
 // we need to stop receiving,
 // output the current data, close any databases,
 // and then kill of any timers
 async function handleExit(signal) {
+    if (alreadyExiting) {
+        return;
+    }
+    alreadyExiting = true;
     console.log(`${signal}: flushing data`);
     if (connection) {
         connection.exiting = true;
@@ -148,6 +153,7 @@ async function handleExit(signal) {
 
     // Flush everything to disk
     console.log(await flushDirtyH3s({allUnwritten: true, lockForRead: true}));
+    await closeAllStationDbs();
     if (getCurrentAccumulators()) {
         const current = getCurrentAccumulators();
         await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators, newAccumulatorFiles: false});
@@ -156,11 +162,12 @@ async function handleExit(signal) {
     }
 
     // Close all the databases and cleanly exit
-    closeAllStationDbs();
-    closeStatusDb();
+    await closeStatusDb();
 
     connection = null;
+    alreadyExiting = false;
     console.log(`${signal}: done`);
+    process.exit();
 }
 process.on('SIGINT', handleExit);
 process.on('SIGQUIT', handleExit);
@@ -172,10 +179,12 @@ process.on('SIGINFO', displayStatus);
 process.on('SIGUSR1', async function () {
     console.log('-- data dump requested --');
     await flushDirtyH3s({allUnwritten: true, lockForRead: true});
+    await closeAllStationDbs();
     if (getCurrentAccumulators()) {
         const current = getCurrentAccumulators();
         await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators, newAccumulatorFiles: false});
     }
+    unlockH3sForReads();
 });
 
 //
@@ -292,6 +301,7 @@ async function setupPeriodicFunctions() {
     intervals.push(
         setInterval(async function () {
             // Flush the cache
+            console.log('>>>FLUSH H3');
             const flushStats = await flushDirtyH3s({allUnwritten: false});
 
             // Report some status on that
@@ -321,6 +331,7 @@ async function setupPeriodicFunctions() {
             lastPacketCount = packetStats.count;
             lastRawPacketCount = packetStats.rawCount;
             lastH3length = h3length;
+            console.log('<<<FLUSH H3');
         }, H3_CACHE_FLUSH_PERIOD_MS)
     );
 
@@ -358,8 +369,10 @@ async function setupPeriodicFunctions() {
         delete timeouts['rollup'];
         intervals.push(
             setInterval(async function () {
-                updateAndProcessAccumulators();
-                console.log(`next rollup will be in ${ROLLUP_PERIOD_MINUTES} minutes at ` + `${new Date(Date.now() + ROLLUP_PERIOD_MINUTES * 60000 + 500).toISOString()}`);
+                console.log('>>> ROLLUP');
+                console.log(`next rollup will be in ${ROLLUP_PERIOD_MINUTES} minutes at ` + `${new Date(Date.now() + ROLLUP_PERIOD_MINUTES * 60000).toISOString()}`);
+                await updateAndProcessAccumulators();
+                console.log('<<< ROLLUP');
             }, ROLLUP_PERIOD_MINUTES * 60 * 1000)
         );
         // this shouldn't drift because it's an interval...

@@ -3,7 +3,7 @@
     "private": true,
     "scripts": {
         "dev": "NODE_OPTIONS='--inspect' next dev",
-        "aprs": "dist/bin/aprs.js",
+        "aprs": "node dist/bin/aprs.js",
         "build": "aprs:build && next build",
         "aprs:build": "tsc --project tsconfig-bin.json",
         "export": "next export",
