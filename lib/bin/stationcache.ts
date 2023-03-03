@@ -12,7 +12,7 @@ import {getStationName} from './stationstatus';
 
 import {StationName, StationId, EpochMS} from './types';
 
-import {isMainThread} from 'node:worker_threads';
+import {saveAccumulatorMetadata} from './rollup';
 
 import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from './config';
 
@@ -57,7 +57,7 @@ export function initialiseStationDbCache() {
 
 //
 // Get a db from the cache, by name or number
-export async function getDb(station: StationName | StationId, options: {cache?: boolean; open?: boolean; existingOnly?: boolean; throw?: boolean} = {cache: true, open: true}): Promise<DB | undefined> {
+export async function getDb(station: StationName | StationId, options: {cache?: boolean; open?: boolean; existingOnly?: boolean; throw?: boolean; noMeta?: boolean} = {cache: true, open: true}): Promise<DB | undefined> {
     // If it's a number we need a name
     let stationName: StationName | undefined = typeof station === 'number' ? getStationName(station) : station;
     if (!stationName) {
@@ -72,7 +72,6 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
     // Prevent re-entrancy
     const openDb = async () => {
         let stationDb = stationDbCache.get(stationName) as DB;
-        //        if (isMainThread) console.log('+', stationName, CurrentlyOpen.has(stationName), stationDb?.status, 'open:', options.open);
         if (!stationDb && !options.existingOnly) {
             // You can get either global or specific station, they are stored in slightly different places
             const path = stationName == 'global' ? DB_PATH + stationName : DB_PATH + '/stations/' + stationName;
@@ -104,7 +103,13 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
                 stationDbCache.set(stationName, stationDb);
                 stationDb.cached = true;
             }
-            //            if (isMainThread) console.log(' ', stationName, CurrentlyOpen.has(stationName), stationDb?.status);
+
+            // If we are opening and haven't been told to skip the meta data then we will write the current meta
+            // data into the file. Only reason to open without skipping is because we have a record to save in the
+            // file
+            if (!options.noMeta) {
+                await saveAccumulatorMetadata(stationDb);
+            }
         }
 
         if (stationDb && !(stationDb.status == 'open' || stationDb.status == 'opening')) {

@@ -8,7 +8,7 @@ import {aprsParser} from 'js-aprs-fap';
 //import geo from './lib/getelevationoffset.js';
 import {getCacheSize, getElevationOffset} from '../lib/bin/getelevationoffset.js';
 
-import {mkdirSync} from 'fs';
+import {mkdirSync, existsSync} from 'fs';
 
 import {ignoreStation} from '../lib/bin/ignorestation.js';
 
@@ -81,6 +81,13 @@ import {getAccumulator, getCurrentAccumulators, updateAndProcessAccumulators, in
 
 // Get our git version
 const gv = gitVersion().trim();
+
+// Check if the file system ignores case
+const caseInsensitive = existsSync('PACKAGE.JSON') && existsSync('package.json');
+if (!existsSync('package.json')) {
+    console.log('please run from the correct directory');
+    process.exit();
+}
 
 let packetStats = {ignoredStation: 0, ignoredTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0, pps: '', rawPps: ''};
 
@@ -156,7 +163,7 @@ async function handleExit(signal) {
     await closeAllStationDbs();
     if (getCurrentAccumulators()) {
         const current = getCurrentAccumulators();
-        await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators, newAccumulatorFiles: false});
+        await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators});
     } else {
         console.log(`unable to output a rollup as service still starting`);
     }
@@ -182,7 +189,7 @@ process.on('SIGUSR1', async function () {
     await closeAllStationDbs();
     if (getCurrentAccumulators()) {
         const current = getCurrentAccumulators();
-        await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators, newAccumulatorFiles: false});
+        await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators});
     }
     unlockH3sForReads();
 });
@@ -227,11 +234,12 @@ async function startAprsListener() {
             if ('latitude' in packet && 'longitude' in packet && 'comment' in packet && packet.comment?.substr(0, 2) == 'id') {
                 processPacket(packet);
             } else {
-                if ((packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && !ignoreStation(packet.sourceCallsign)) {
+                const station: StationName = normaliseCase(packet.sourceCallsign) as StationName;
+                if ((packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && !ignoreStation(station)) {
                     if (packet.type == 'location') {
-                        checkStationMoved(packet.sourceCallsign as StationName, packet.latitude as Latitude, packet.longitude as Longitude, packet.timestamp as Epoch);
+                        checkStationMoved(station, packet.latitude as Latitude, packet.longitude as Longitude, packet.timestamp as Epoch);
                     } else if (packet.type == 'status') {
-                        updateStationBeacon(packet.sourceCallsign as StationName, packet.body, packet.timestamp as Epoch);
+                        updateStationBeacon(station, packet.body, packet.timestamp as Epoch);
                     } else {
                         console.log(data, packet);
                     }
@@ -399,7 +407,7 @@ async function processPacket(packet) {
     const pawTracker = packet.sourceCallsign.slice(0, 3) == 'PAW';
 
     // Lookup the altitude adjustment for the
-    const station = packet.digipeaters?.pop()?.callsign || 'unknown';
+    const station = normaliseCase(packet.digipeaters?.pop()?.callsign || 'unknown') as StationName;
 
     // Obvious reasons to ignore stations
     if (ignoreStation(station)) {
@@ -551,4 +559,9 @@ async function processPacket(packet) {
 
         mergeDataIntoDatabase('global' as StationName, 0, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL));
     });
+}
+
+function normaliseCase(a: string): string {
+    return a;
+    //    return caseInsensitive ? a.toUpperCase() : a;
 }

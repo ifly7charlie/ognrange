@@ -123,7 +123,7 @@ export async function updateAndProcessAccumulators() {
         const s = await flushDirtyH3s({allUnwritten: true, lockForRead: true});
         console.log(`accumulator rotation happening`, s);
         await closeAllStationDbs();
-        await rollupAll({current: oldAccumulator, processAccumulators: oldAccumulators, newAccumulatorFiles: !_isequal(accumulators, oldAccumulators)});
+        await rollupAll({current: oldAccumulator, processAccumulators: oldAccumulators});
         unlockH3sForReads();
     }
 }

@@ -1,5 +1,4 @@
-import LevelUP from 'levelup';
-import LevelDOWN from 'leveldown';
+import {ClassicLevel} from 'classic-level';
 
 import dotenv from 'dotenv';
 
@@ -37,11 +36,11 @@ async function main() {
     let db = null;
 
     try {
-        db = LevelUP(LevelDOWN(dbPath, {createIfMissing: false}));
+        db = new ClassicLevel(dbPath, {valueEncoding: 'view', createIfMissing: false});
+        await db.open();
     } catch (e) {
         console.error(e);
     }
-
     console.log('---', dbPath, '---');
 
     let n = db.iterator();
@@ -56,7 +55,7 @@ async function main() {
         if (!args.match || hr.dbKey().match(args.match)) {
             if (hr.isMeta) {
                 accumulators[hr.accumulator] = {hr: hr, meta: JSON.parse(String(value)), count: 0, size: 0};
-                console.log(hr.toString(), String(value));
+                console.log(hr.dbKey(), String(value));
 
                 if (args.size) {
                     db.db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {

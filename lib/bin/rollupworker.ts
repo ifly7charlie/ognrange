@@ -1,5 +1,5 @@
 import {CoverageRecord, bufferTypes} from './coveragerecord.js';
-import {CoverageHeader, accumulatorTypes} from './coverageheader.js';
+import {CoverageHeader} from './coverageheader.js';
 
 import _clonedeep from 'lodash.clonedeep';
 import _isequal from 'lodash.isequal';
@@ -15,9 +15,9 @@ import {getDb, closeDb, DB, allOpenDbs} from './stationcache';
 
 import {Epoch, StationName, StationId} from './types';
 
-import {OUTPUT_PATH} from './config.js';
+import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from './config.js';
 
-import {Worker, parentPort, isMainThread, SHARE_ENV, workerData} from 'node:worker_threads';
+import {Worker, parentPort, isMainThread, SHARE_ENV} from 'node:worker_threads';
 
 interface RollupResult {
     elapsed: number;
@@ -68,7 +68,7 @@ if (!isMainThread) {
         let out: any = {success: false};
         let db: DB | null = null;
         try {
-            db = await getDb(task.station, {cache: false, open: true});
+            db = await getDb(task.station, {cache: false, open: true, noMeta: true});
 
             if (db) {
                 switch (task.action) {
@@ -94,11 +94,7 @@ if (!isMainThread) {
         }
         parentPort.postMessage({action: task.action, station: task.station, ...out});
     });
-
-    setInterval(() => allOpenDbs('rollupthread'), 60 * 1000);
 }
-
-//            const {current: expectedCurrentAccumulatorBucket, accumulators: expectedAccumulators} = whatAccumulators(now);
 
 //
 // Response from the thread will finish the promise created when the message is called
@@ -113,6 +109,24 @@ else {
             console.error(`missing resolve function for ${data.station} ${data.action}`);
         }
     });
+}
+
+// Clear data from the db
+async function purge(db: DB, hr: CoverageHeader) {
+    // See if there are actually data entries
+    const first100KeyCount = (await db.keys({...CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, false), limit: 100}).all()).length;
+
+    // Now clear and compact
+    await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
+    await db.compactRange(
+        CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, true), //
+        CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket)
+    );
+
+    // And provide a status update
+    if (first100KeyCount) {
+        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.dbKey()} purged [${first100KeyCount > 99 ? '>99' : first100KeyCount}] entries successfully`);
+    }
 }
 
 //
@@ -157,11 +171,8 @@ export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators, stat
         if (hr.typeName == 'current') {
             if (hr.bucket != expectedCurrentAccumulatorBucket) {
                 hangingCurrents[hr.dbKey()] = meta;
-                console.log(`${db.ognStationName}: current: hanging accumulator ${hr.accumulator} (${hr.bucket}) [started at: ${meta.startUtc}]`);
-            } else {
-                if (db.global) {
-                    console.log(`${db.ognStationName}: current: resuming accumulator ${hr.accumulator} (${hr.bucket}) as still valid [stated at: ${meta.startUtc}]`);
-                }
+            } else if (db.global) {
+                console.log(`${db.ognStationName}: current: resuming accumulator ${hr.accumulator} (${hr.bucket}) as still valid [stated at: ${meta.startUtc}]`);
             }
         }
 
@@ -175,10 +186,8 @@ export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators, stat
         // and we should merge that if we find it
         else if (expectedAccumulators[hr.typeName].bucket != hr.bucket) {
             accumulatorsToPurge[hr.accumulator] = {accumulator: hr.accumulator, meta: meta, typeName: hr.typeName, t: hr.type, b: hr.bucket};
-        } else {
-            if (db.global) {
-                console.log(`${db.ognStationName}: ${hr.typeName}: resuming accumulator ${hr.accumulator} (${hr.bucket}) as still valid  [started at: ${meta.startUtc}]`);
-            }
+        } else if (db.global) {
+            console.log(`${db.ognStationName}: ${hr.typeName}: resuming accumulator ${hr.accumulator} (${hr.bucket}) as still valid  [started at: ${meta.startUtc}]`);
         }
 
         // Done with this one lets skip forward
@@ -242,16 +251,6 @@ export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators, stat
         }
     }
 
-    // Clear data from the db
-    async function purge(hr /*:CoverageHeader*/) {
-        await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
-        await db.compactRange(
-            CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, true), //
-            CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket)
-        );
-        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.lockKey} purge completed successfully`);
-    }
-
     // This is more interesting, this is a current that could be rolled into one of the other
     // existing accumulators...
     if (hangingCurrents) {
@@ -276,20 +275,19 @@ export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators, stat
             }
 
             if (Object.keys(rollupAccumulators).length) {
-                console.log(`${db.ognStationName}: rolling up hanging current accumulator ${hangingHeader.accumulator} into ${JSON.stringify(rollupAccumulators)}`);
-                await rollupDatabaseInternal(db, {current: [hangingHeader.type, hangingHeader.bucket], processAccumulators: rollupAccumulators, now, needValidPurge: false, validStations: false, stationMeta});
+                const rollupResult = await rollupDatabaseInternal(db, {current: [hangingHeader.type, hangingHeader.bucket], processAccumulators: rollupAccumulators, now, needValidPurge: false, validStations: false, stationMeta});
+                console.log(`${db.ognStationName}: rolled up hanging current accumulator ${hangingHeader.accumulator} into ${JSON.stringify(rollupAccumulators)}: ${JSON.stringify(rollupResult)}`);
             } else {
-                console.log(`${db.ognStationName}: purging hanging current accumulator ${JSON.stringify(hangingHeader)} and associated sub accumulators`);
+                //                console.log(`${db.ognStationName}: purging hanging current accumulator ${JSON.stringify(hangingHeader)} and associated sub accumulators`);
+                // now we clear it
+                await purge(db, hangingHeader);
             }
-
-            // now we clear it
-            await purge(hangingHeader);
         }
     }
 
     // These are old accumulators we purge them because we aren't sure what else can be done
     for (const key in accumulatorsToPurge) {
-        await purge(new CoverageHeader(key));
+        await purge(db, new CoverageHeader(key));
     }
 
     return {success: true};
@@ -307,9 +305,8 @@ async function purgeDatabaseInternal(db: DB) {
 // we do this by iterating through each database looking for things in default
 // aggregator (which is always just the raw h3id)
 //
-async function rollupDatabaseInternal(db: DB, {validStations, now, current, processAccumulators, needValidPurge, stationMeta}) {
+async function rollupDatabaseInternal(db: DB, {validStations, now, current, processAccumulators, needValidPurge, stationMeta}): Promise<RollupResult> {
     //
-
     //
     const nowEpoch = Math.floor(now / 1000) as Epoch;
     const name = db.ognStationName;
@@ -388,7 +385,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
         }
 
         const currentBr = new CoverageRecord(value);
-        let advancePrimary;
+        let advancePrimary: boolean;
         const seth3k = (r, t) => {
             t && t[0] && r.h3kr.fromDbKey(t[0]);
             return t;
@@ -612,7 +609,9 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
 
         // link it all up for latest
         symlink(`${name}.${r.type}.${processAccumulators[r.type].file}.arrow.gz`, OUTPUT_PATH + `${name}/${name}.${r.type}.arrow.gz`);
-        symlink(`${name}.${r.type}.${processAccumulators[r.type].file}.arrow`, OUTPUT_PATH + `${name}/${name}.${r.type}.arrow`);
+        if (UNCOMPRESSED_ARROW_FILES) {
+            symlink(`${name}.${r.type}.${processAccumulators[r.type].file}.arrow`, OUTPUT_PATH + `${name}/${name}.${r.type}.arrow`);
+        }
         symlink(`${name}.${r.type}.${processAccumulators[r.type].file}.json`, OUTPUT_PATH + `${name}/${name}.${r.type}.json`);
     }
 
@@ -633,7 +632,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
     // have already purged the data above
     dbOps.push({type: 'del', key: CoverageHeader.getAccumulatorMeta(...current).dbKey()});
     if (db.global) {
-        console.log(`rollup: current bucket ${[...current]} completed, removing`);
+        console.log(`rollup: current bucket ${[...current]} completed, removing ${CoverageHeader.getAccumulatorMeta(...current).dbKey()}`);
     }
 
     // Is this actually beneficial? - feed operations to the database in key type sorted order
@@ -651,51 +650,11 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
         });
     });
 
-    // Save the meta data - no big deal having this for stations as well so we won't differentiate
-    await saveAccumulatorMetadata(db, current, allAccumulators);
+    // Purge everything from the current accumulator, this should just do a compact as we
+    // have already deleted in the batch above
+    await purge(db, CoverageHeader.getAccumulatorMeta(...current));
 
-    return {elapsed: Date.now() - now, operations: dbOps.length, allAccumulators, stationMeta};
-}
-
-async function saveAccumulatorMetadata(db: DB, currentAccumulator: any[2], allAccumulators: Record<string, any>): Promise<void> {
-    const dbkey = CoverageHeader.getAccumulatorMeta(...currentAccumulator).dbKey();
-    const now = new Date();
-    const nowEpoch = Math.trunc(now.valueOf() / 1000);
-    await db
-        .get(dbkey)
-        .then((value) => {
-            const meta = JSON.parse(String(value));
-            meta.oldStarts = [...meta?.oldStarts, {start: meta.start, startUtc: meta.startUtc}];
-            meta.accumulators = allAccumulators;
-            meta.start = nowEpoch;
-            meta.startUtc = now.toISOString();
-            db.put(dbkey, Uint8FromObject(meta));
-        })
-        .catch((e) => {
-            db.put(
-                dbkey,
-                Uint8FromObject({
-                    accumulators: allAccumulators,
-                    oldStarts: [],
-                    start: nowEpoch,
-                    startUtc: now.toISOString()
-                })
-            );
-        });
-    // make sure we have an up to date header for each accumulator
-    for (const type in allAccumulators) {
-        const currentHeader = CoverageHeader.getAccumulatorMeta(type, allAccumulators[type].bucket);
-        const dbkey = currentHeader.dbKey();
-        await db
-            .get(dbkey)
-            .then((value) => {
-                const meta = JSON.parse(String(value));
-                db.put(dbkey, Uint8FromObject({...meta, accumulators: allAccumulators, currentAccumulator: currentAccumulator[1]}));
-            })
-            .catch((e) => {
-                db.put(dbkey, Uint8FromObject({start: nowEpoch, startUtc: now.toISOString(), accumulators: allAccumulators, currentAccumulator: currentAccumulator[1]}));
-            });
-    }
+    return {elapsed: Date.now() - now, operations: dbOps.length};
 }
 
 function symlink(src, dest) {
