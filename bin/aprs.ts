@@ -309,7 +309,6 @@ async function setupPeriodicFunctions() {
     intervals.push(
         setInterval(async function () {
             // Flush the cache
-            console.log('>>>FLUSH H3');
             const flushStats = await flushDirtyH3s({allUnwritten: false});
 
             // Report some status on that
@@ -339,7 +338,6 @@ async function setupPeriodicFunctions() {
             lastPacketCount = packetStats.count;
             lastRawPacketCount = packetStats.rawCount;
             lastH3length = h3length;
-            console.log('<<<FLUSH H3');
         }, H3_CACHE_FLUSH_PERIOD_MS)
     );
 
@@ -377,10 +375,8 @@ async function setupPeriodicFunctions() {
         delete timeouts['rollup'];
         intervals.push(
             setInterval(async function () {
-                console.log('>>> ROLLUP');
                 console.log(`next rollup will be in ${ROLLUP_PERIOD_MINUTES} minutes at ` + `${new Date(Date.now() + ROLLUP_PERIOD_MINUTES * 60000).toISOString()}`);
                 await updateAndProcessAccumulators();
-                console.log('<<< ROLLUP');
             }, ROLLUP_PERIOD_MINUTES * 60 * 1000)
         );
         // this shouldn't drift because it's an interval...

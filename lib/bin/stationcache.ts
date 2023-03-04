@@ -143,8 +143,6 @@ export async function closeDb(db: DB): Promise<void> {
 //
 // Purge all entries - will call the dispose function thereby closing the database entry
 export async function closeAllStationDbs(): Promise<void> {
-    allOpenDbs('~closeAllStationDbs');
-
     // Temp copy and clear as non-interruptable operation
     const dbs = stationDbCache.rvalues();
     CurrentlyOpen.clear();
@@ -157,19 +155,9 @@ export async function closeAllStationDbs(): Promise<void> {
                 v.close((r) => done(null, r));
             })
         );
-        //            promises.push(v.close());
     }
     await Promise.allSettled(promises);
     stationDbCache.clear();
-    //    }
-
-    /*    return lock.acquire(stationName, (done) => {
-        closeDbs()
-            .then((r) => done(null, r))
-            .catch((e) => done(e, null));
-    });
-    */
-    console.log('~closeAllStationDbs: size:', stationDbCache.size);
 }
 
 export function allOpenDbs(header) {

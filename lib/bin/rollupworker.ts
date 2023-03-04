@@ -309,6 +309,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
     //
     //
     const nowEpoch = Math.floor(now / 1000) as Epoch;
+    const startTime = Date.now();
     const name = db.ognStationName;
     let currentMeta = {};
 
@@ -654,7 +655,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
     // have already deleted in the batch above
     await purge(db, CoverageHeader.getAccumulatorMeta(...current));
 
-    return {elapsed: Date.now() - now, operations: dbOps.length};
+    return {elapsed: Date.now() - startTime, operations: dbOps.length};
 }
 
 function symlink(src, dest) {
