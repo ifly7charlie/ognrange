@@ -12,5 +12,5 @@ if (caseInsensitive) {
 }
 
 export function normaliseCase(a: string): string {
-    return caseInsensitive ? a.toUpperCase() : a;
+    return caseInsensitive && a != 'global' ? a.toUpperCase() : a;
 }
