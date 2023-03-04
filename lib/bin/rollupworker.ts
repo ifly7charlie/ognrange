@@ -19,18 +19,26 @@ import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from './config.js';
 
 import {Worker, parentPort, isMainThread, SHARE_ENV} from 'node:worker_threads';
 
+import {CurrentAccumulator, Accumulators} from './accumulators';
+import {StationDetails} from './stationstatus';
+
 interface RollupResult {
     elapsed: number;
     operations: number;
 }
 
-export interface RollupCommonArguments {
-    validStations?: Set<Number | StationId>;
-    current: Number[];
-    processAccumulators: Record<string, any>;
-    newAccumulatorFiles?: boolean;
-    needValidPurge?: boolean;
-    stationMeta: any;
+export interface RollupDatabaseArgs {
+    validStations?: Set<StationId>;
+    now: number;
+    current: CurrentAccumulator;
+    processAccumulators: Accumulators;
+    needValidPurge: boolean;
+    stationMeta: StationDetails;
+}
+
+interface RollupStartupAccumulators {
+    current: CurrentAccumulator;
+    processAccumulators: Accumulators;
 }
 
 //
@@ -41,13 +49,13 @@ const promises: Record<string, {resolve: Function}> = {};
 // Start the worker thread
 const worker = isMainThread ? new Worker(__filename, {env: SHARE_ENV}) : null;
 
-export function rollupStartup(station: StationName, whatAccumulators, stationMeta) {
+export function rollupStartup(station: StationName, whatAccumulators: RollupStartupAccumulators, stationMeta?: StationDetails) {
     return new Promise((resolve) => {
         promises[station + '_startup'] = {resolve};
         worker.postMessage({station, action: 'startup', now: Date.now(), whatAccumulators, stationMeta});
     });
 }
-export function rollupDatabase(station: StationName, commonArgs: RollupCommonArguments): Promise<RollupResult> {
+export function rollupDatabase(station: StationName, commonArgs: RollupDatabaseArgs): Promise<RollupResult> {
     return new Promise((resolve) => {
         promises[station + '_rollup'] = {resolve};
         worker.postMessage({station, action: 'rollup', ...commonArgs});
@@ -134,7 +142,7 @@ async function purge(db: DB, hr: CoverageHeader) {
 // We need to make sure we know what rollups the DB has, and process pending rollup data
 // when the process starts. If we don't do this all sorts of weird may happen
 // (only used for global but could theoretically be used everywhere)
-export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators, stationMeta}) {
+export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators, stationMeta}: {now: number; whatAccumulators: {current: CurrentAccumulator; processAccumulators: Accumulators}; stationMeta: any}) {
     let accumulatorsToPurge = {};
     let hangingCurrents = [];
 
@@ -276,7 +284,7 @@ export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators, stat
             }
 
             if (Object.keys(rollupAccumulators).length) {
-                const rollupResult = await rollupDatabaseInternal(db, {current: [hangingHeader.type, hangingHeader.bucket], processAccumulators: rollupAccumulators, now, needValidPurge: false, validStations: false, stationMeta});
+                const rollupResult = await rollupDatabaseInternal(db, {current: [hangingHeader.typeName, hangingHeader.bucket], processAccumulators: rollupAccumulators, now, needValidPurge: false, stationMeta});
                 console.log(`${db.ognStationName}: rolled up hanging current accumulator ${hangingHeader.accumulator} into ${JSON.stringify(rollupAccumulators)}: ${JSON.stringify(rollupResult)}`);
             } else {
                 //                console.log(`${db.ognStationName}: purging hanging current accumulator ${JSON.stringify(hangingHeader)} and associated sub accumulators`);
@@ -306,7 +314,7 @@ async function purgeDatabaseInternal(db: DB) {
 // we do this by iterating through each database looking for things in default
 // aggregator (which is always just the raw h3id)
 //
-async function rollupDatabaseInternal(db: DB, {validStations, now, current, processAccumulators, needValidPurge, stationMeta}): Promise<RollupResult> {
+async function rollupDatabaseInternal(db: DB, {validStations, now, current, processAccumulators, needValidPurge, stationMeta}: RollupDatabaseArgs): Promise<RollupResult> {
     //
     //
     const nowEpoch = Math.floor(now / 1000) as Epoch;
@@ -568,8 +576,6 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
         r.stats.h3source = h3source;
         r.meta.rollups.push({source: currentMeta, stats: r.stats, file: accumulatorName});
 
-        //        stationMeta.accumulators[r.type] = r.stats;
-
         if (r.stats.h3source != r.stats.h3missing + r.stats.h3updated) {
             console.error("********* stats don't add up ", r.type, r.bucket.toString(16), JSON.stringify({m: r.meta, s: r.stats}));
         }
@@ -617,18 +623,17 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
         symlink(`${name}.${r.type}.${processAccumulators[r.type].file}.json`, OUTPUT_PATH + `${name}/${name}.${r.type}.json`);
     }
 
-    stationMeta.lastOutputFile = nowEpoch;
+    // Only output if we have some meta
+    if (stationMeta) {
+        stationMeta.lastOutputFile = nowEpoch;
 
-    // record when we wrote for the whole station
-    try {
-        writeFileSync(OUTPUT_PATH + `${name}/${name}.json`, JSON.stringify(stationMeta, null, 2));
-    } catch (err) {
-        console.log(`${OUTPUT_PATH}${name}/${name}.json stationmeta write error`, err);
+        // record when we wrote for the whole station
+        try {
+            writeFileSync(OUTPUT_PATH + `${name}/${name}.json`, JSON.stringify(stationMeta, null, 2));
+        } catch (err) {
+            console.log(`${OUTPUT_PATH}${name}/${name}.json stationmeta write error`, err);
+        }
     }
-
-    //    if (!db.global && db.ognStationName != '!test') {
-    //        accumulators = undefined; // don't persist this it's not important
-    //    }
 
     // If we have a new accumulator then we need to purge the old meta data records - we
     // have already purged the data above

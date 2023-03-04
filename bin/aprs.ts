@@ -483,7 +483,7 @@ async function processPacket(packet) {
     // afterwards.
     //
     if (first) {
-        aircraft.h3s.add(h3.geoToH3(packet.latitude, packet.longitude, 10));
+        aircraft.h3s.add(h3.latLngToCell(packet.latitude, packet.longitude, 10));
         if (aircraft.h3s.size > 4) {
             // remove oldest (first in set is always the earliest added)
             // also reset count as there has been a change to h3s so may
@@ -533,7 +533,7 @@ async function processPacket(packet) {
         stationDetails(station).lastPacket = packet.timestamp;
 
         // What hexagon are we working with
-        const h3id = h3.geoToH3(packet.latitude, packet.longitude, H3_STATION_CELL_LEVEL);
+        const h3id = h3.latLngToCell(packet.latitude, packet.longitude, H3_STATION_CELL_LEVEL);
 
         //
         // We store the database records as binary bytes - in the format described in the mapping() above
@@ -553,6 +553,6 @@ async function processPacket(packet) {
         // it gets used to build the list of stations that can see the cell
         mergeDataIntoDatabase(station, stationid, h3id);
 
-        mergeDataIntoDatabase('global' as StationName, 0, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL));
+        mergeDataIntoDatabase('global' as StationName, 0, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL));
     });
 }

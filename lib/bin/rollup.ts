@@ -13,7 +13,7 @@ import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
 import {Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
 
-import {rollupDatabase, purgeDatabase, rollupStartup, RollupCommonArguments} from './rollupworker';
+import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from './rollupworker';
 
 import {allStationsDetails, updateStationStatus, stationDetails} from './stationstatus';
 
@@ -91,8 +91,9 @@ export async function rollupAll({current, processAccumulators}): Promise<RollupS
     rollupStats.validStations = validStations.size;
     rollupStats.invalidStations = invalidStations;
 
-    let commonArgs: RollupCommonArguments = {
+    let commonArgs: RollupDatabaseArgs = {
         current,
+        now: nowEpoch,
         processAccumulators,
         needValidPurge,
         stationMeta: undefined
@@ -116,7 +117,7 @@ export async function rollupAll({current, processAccumulators}): Promise<RollupS
     let promises = [];
     promises.push(
         new Promise<void>(async function (resolve) {
-            const r = await rollupDatabase('global' as StationName, {...commonArgs, validStations, stationMeta: {}});
+            const r = await rollupDatabase('global' as StationName, {...commonArgs, validStations});
             rollupStats.last.sumElapsed += r.elapsed;
             rollupStats.last.operations += r.operations;
             rollupStats.last.databases++;
@@ -187,7 +188,7 @@ export async function rollupStartupAll() {
     let promises = [];
     promises.push(
         new Promise<void>(async function (resolve) {
-            await rollupStartup('global' as StationName, common, {});
+            await rollupStartup('global' as StationName, common);
             resolve();
         })
     );

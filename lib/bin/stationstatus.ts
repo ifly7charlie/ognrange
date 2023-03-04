@@ -17,6 +17,7 @@ export interface StationDetails {
     lng?: number;
     lastPacket?: Epoch; //epoch
     lastLocation?: Epoch; // epoch
+    lastOutputFile?: Epoch;
     lastBeacon?: Epoch; // epoch
     status?: string;
     notice?: string;
@@ -123,7 +124,7 @@ export function checkStationMoved(stationName: StationName, latitude: Latitude, 
         details = stations[stationName];
     }
     if (details.lat && details.lng) {
-        const distance = h3.pointDist([details.lat, details.lng], [latitude, longitude], 'km');
+        const distance = h3.greatCircleDistance([details.lat, details.lng], [latitude, longitude], 'km');
         if (distance > STATION_MOVE_THRESHOLD_KM) {
             details.notice = `${Math.round(distance)}km move detected ${new Date(timestamp * 1000).toISOString()} resetting history`;
             details.moved = true; // we need to persist this

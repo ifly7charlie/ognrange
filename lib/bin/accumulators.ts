@@ -17,9 +17,11 @@ import {closeAllStationDbs} from './stationcache';
 
 //import {CoverageHeader} from './coverageheader';
 
+export type CurrentAccumulator = [string, number];
+
 //
 // What accumulators we are operating on these are internal
-let currentAccumulator = undefined;
+let currentAccumulator: CurrentAccumulator | undefined = undefined;
 
 export type Accumulators =
     | Record<
@@ -36,18 +38,20 @@ let accumulators: Accumulators = {};
 //
 // Helper for getting current accumulator used as  ...getAccumulator() in
 // calls to CoverageHeader
-export function getAccumulator() {
+export function getAccumulator(): CurrentAccumulator {
     return currentAccumulator;
 }
-export function getAccumulatorForType(t) {
+/*
+export function getAccumulatorForType(t) : currentAccumulatorHeader {
     if (t == 'current') {
         return currentAccumulator;
     } else {
         return [t, accumulators[t].bucket];
     }
 }
+*/
 
-export function getCurrentAccumulators() {
+export function getCurrentAccumulators(): null | {currentAccumulator: CurrentAccumulator; accumulators: Accumulators} {
     return currentAccumulator ? {currentAccumulator, accumulators} : null;
 }
 
