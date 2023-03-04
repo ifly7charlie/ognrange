@@ -23,7 +23,7 @@ import {closeAllStationDbs, initialiseStationDbCache, getStationDbCacheSize} fro
 
 import {Epoch, StationName, Longitude, Latitude} from '../lib/bin/types';
 
-import {normaliseCase} from '../lib/bin/caseinsensitive.ts';
+import {normaliseCase} from '../lib/bin/caseinsensitive';
 
 // H3 hexagon cell library
 import h3 from 'h3-js';

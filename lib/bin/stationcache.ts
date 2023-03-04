@@ -63,7 +63,7 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
     //
     // If it's a number we need a name, and we want to make sure it matches the file system case sensitivity
     // or we'll end up with correct databases.
-    let stationName: StationName | undefined = normaliseCase(typeof station === 'number' ? getStationName(station) : station);
+    let stationName: StationName | undefined = normaliseCase(typeof station === 'number' ? getStationName(station) : station) as StationName;
     if (!stationName) {
         console.error(`Unable to getDb, ${station} unknown`);
         if (options.throw) {
