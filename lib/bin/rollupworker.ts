@@ -104,6 +104,7 @@ else {
         const resolver = promises[data.station + '_' + data.action]?.resolve;
         delete promises[data.station + '_' + data.action];
         if (resolver) {
+            console.log(JSON.stringify(data, null, 0));
             resolver(data);
         } else {
             console.error(`missing resolve function for ${data.station} ${data.action}`);

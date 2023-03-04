@@ -174,7 +174,7 @@ export async function rollupAll({current, processAccumulators}): Promise<RollupS
     rollupStats.elapsed += rollupStats.lastElapsed;
     rollupStats.completed++;
     rollupStats.lastStart = nowDate.toISOString();
-    console.log('rollup completed', JSON.stringify(rollupStats));
+    console.log(`rollup of ${current.join('/')} completed`, JSON.stringify(rollupStats));
 
     return rollupStats;
 }
