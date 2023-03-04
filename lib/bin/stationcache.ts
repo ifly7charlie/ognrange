@@ -14,6 +14,8 @@ import {StationName, StationId, EpochMS} from './types';
 
 import {saveAccumulatorMetadata} from './rollup';
 
+import {normaliseCase} from './caseinsensitive';
+
 import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from './config';
 
 const options = {
@@ -58,8 +60,10 @@ export function initialiseStationDbCache() {
 //
 // Get a db from the cache, by name or number
 export async function getDb(station: StationName | StationId, options: {cache?: boolean; open?: boolean; existingOnly?: boolean; throw?: boolean; noMeta?: boolean} = {cache: true, open: true}): Promise<DB | undefined> {
-    // If it's a number we need a name
-    let stationName: StationName | undefined = typeof station === 'number' ? getStationName(station) : station;
+    //
+    // If it's a number we need a name, and we want to make sure it matches the file system case sensitivity
+    // or we'll end up with correct databases.
+    let stationName: StationName | undefined = normaliseCase(typeof station === 'number' ? getStationName(station) : station);
     if (!stationName) {
         console.error(`Unable to getDb, ${station} unknown`);
         if (options.throw) {
@@ -67,7 +71,6 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
         }
         return undefined;
     }
-    const stack = new Error('stack');
 
     // Prevent re-entrancy
     const openDb = async () => {
@@ -89,7 +92,7 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
                     await stationDb.open();
                 } catch (e) {
                     CurrentlyOpen.delete(stationName);
-                    console.log(`${stationName}: Failed to open: ${stationDb.status}: ${e.cause?.code || e.code}`, stack);
+                    console.log(`${stationName}: Failed to open: ${stationDb.status}: ${e.cause?.code || e.code}`);
                     stationDb.close();
                     stationDb = undefined;
                     if (options.throw) {

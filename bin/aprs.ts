@@ -23,6 +23,8 @@ import {closeAllStationDbs, initialiseStationDbCache, getStationDbCacheSize} fro
 
 import {Epoch, StationName, Longitude, Latitude} from '../lib/bin/types';
 
+import {normaliseCase} from '../lib/bin/caseinsensitive.ts';
+
 // H3 hexagon cell library
 import h3 from 'h3-js';
 
@@ -82,8 +84,6 @@ import {getAccumulator, getCurrentAccumulators, updateAndProcessAccumulators, in
 // Get our git version
 const gv = gitVersion().trim();
 
-// Check if the file system ignores case
-const caseInsensitive = existsSync('PACKAGE.JSON') && existsSync('package.json');
 if (!existsSync('package.json')) {
     console.log('please run from the correct directory');
     process.exit();
@@ -233,7 +233,7 @@ async function startAprsListener() {
             const packet = parser.parseaprs(data);
             if ('latitude' in packet && 'longitude' in packet && 'comment' in packet && packet.comment?.substr(0, 2) == 'id') {
                 processPacket(packet);
-            } else {
+            } else if (packet.sourceCallsign) {
                 const station: StationName = normaliseCase(packet.sourceCallsign) as StationName;
                 if ((packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && !ignoreStation(station)) {
                     if (packet.type == 'location') {
@@ -555,9 +555,4 @@ async function processPacket(packet) {
 
         mergeDataIntoDatabase('global' as StationName, 0, h3.h3ToParent(h3id, H3_GLOBAL_CELL_LEVEL));
     });
-}
-
-function normaliseCase(a: string): string {
-    return a;
-    //    return caseInsensitive ? a.toUpperCase() : a;
 }
