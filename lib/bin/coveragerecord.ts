@@ -3,16 +3,19 @@
 // as they are stored in ram and also ON DISK
 //
 
-import {Utf8, Uint8, Uint16, Uint32, Uint64, makeBuilder, makeTable, RecordBatchWriter} from 'apache-arrow/Arrow.node';
+import {Utf8, Uint8, Uint16, Uint32, makeBuilder, makeTable, RecordBatchWriter, Uint8Builder, Utf8Builder, Uint16Builder, Uint32Builder} from 'apache-arrow/Arrow.node';
+import {TypedArray} from 'apache-arrow/interfaces';
 
 import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
 
-import zlib from 'zlib';
+import {createGzip} from 'node:zlib';
 
 import _sortby from 'lodash.sortby';
 
 import {UNCOMPRESSED_ARROW_FILES} from './config.js';
+
+import {StationId} from './types';
 
 // Global mapping structure
 //   HEADER
@@ -84,12 +87,31 @@ const bufferVersion = {
     2: globalNestedStation // must be referred to on the containing global!
 };
 
-export const bufferTypes = {
-    station: 0,
-    global: 1
-};
+export enum bufferTypes {
+    station = 0,
+    global = 1
+}
+
+interface ArrowType {
+    h3lo: Uint32Builder;
+    h3hi: Uint32Builder;
+    minAgl: Uint16Builder;
+    minAlt: Uint16Builder;
+    minAltSig: Uint8Builder;
+    maxSig: Uint8Builder;
+    avgSig: Uint8Builder;
+    avgCrc: Uint8Builder;
+    count: Uint32Builder;
+    avgGap: Uint8Builder;
+    stations?: Utf8Builder;
+    expectedGap?: Uint8Builder;
+    numStations?: Uint8Builder;
+}
 
 class ExtensionAllocationOptions {
+    type: bufferTypes;
+    length: number;
+
     constructor(type, length) {
         this.type = type;
         this.length = length;
@@ -97,6 +119,13 @@ class ExtensionAllocationOptions {
 }
 
 export class CoverageRecord {
+    _sh: typeof globalHeader; // | typeof station;
+    _ish: typeof globalNestedStation;
+    _u32: Uint32Array;
+    _u16: Uint16Array;
+    _u8: Uint8Array;
+    _buffer: Uint8Array;
+
     // Create a structure to work with existing data that is stored in buffer
     // we are using TypedArrays which means we are making a view not a copy
     constructor(i) {
@@ -116,7 +145,7 @@ export class CoverageRecord {
     update(altitude, agl, crc, signal, gap, stationid) {
         this._update(0, 0, 0, this._sh, altitude, agl, crc, signal, gap);
 
-        if (this._sh.nestedVersion) {
+        if (this._sh?.nestedVersion) {
             this._updateStationList(stationid, altitude, agl, crc, signal, gap);
         }
 
@@ -133,7 +162,7 @@ export class CoverageRecord {
             let i = this._u8[this._sh.u8oHead];
 
             // Iterate through the list, note we have mapped
-            while (i != 0 && sid != 0) {
+            while (i != 0) {
                 // Calculate bytes from start for this item
                 const startOffset = this._calcOffset(i);
                 const o8 = startOffset,
@@ -181,15 +210,15 @@ export class CoverageRecord {
         }
         if (sh.nestedVersion) {
             let i = this._u8[sh.u8oHead];
-            output.stations = [];
+            output['stations'] = [];
 
             // Iterate through the list, note we have mapped
             while (i != 0) {
                 const o8 = this._calcOffset(i);
-                output.stations.push(this.toObject(o8));
+                output['stations'].push(this.toObject(o8));
                 i = this._u8[o8 + this._ish.u8oNext];
             }
-            output.NumStations = output.stations.length;
+            output['NumStations'] = output['stations'].length;
         }
         return output;
     }
@@ -197,7 +226,7 @@ export class CoverageRecord {
     //
     // Create an arrow that can support specified format
     static initArrow(type) {
-        let arrow = {
+        let arrow: ArrowType = {
             h3lo: makeBuilder({type: new Uint32()}),
             h3hi: makeBuilder({type: new Uint32()}),
             minAgl: makeBuilder({type: new Uint16()}),
@@ -219,11 +248,12 @@ export class CoverageRecord {
 
     //
     // Called to convert the in progress buffers to finished vectors ready for streaming
-    static finalizeArrow(arrow, fileName) {
+    static finalizeArrow(arrow: ArrowType, fileName: string) {
+        const output: Record<string, TypedArray> = {};
         for (const k in arrow) {
-            arrow[k] = arrow[k].finish().toVector();
+            output[k] = arrow[k].finish().toVector();
         }
-        const outputTable = makeTable(arrow);
+        const outputTable = makeTable(output);
 
         if (UNCOMPRESSED_ARROW_FILES) {
             const pt = new PassThrough({objectMode: true});
@@ -236,7 +266,7 @@ export class CoverageRecord {
             const pt = new PassThrough({objectMode: true});
             const result = pt
                 .pipe(RecordBatchWriter.throughNode())
-                .pipe(zlib.createGzip())
+                .pipe(createGzip())
                 .pipe(createWriteStream(fileName + '.gz'));
             pt.write(outputTable);
             pt.end();
@@ -251,7 +281,7 @@ export class CoverageRecord {
     // (because the key pointing to the row does)
     // we need to emit it for the browser so it can render data in the
     // correct place.
-    appendToArrow(h3, arrow) {
+    appendToArrow(h3, arrow: ArrowType) {
         const count = this._u32[this._sh.u32oCount];
         const sl = h3.h3splitlong;
         arrow.h3lo.append(sl[0]);
@@ -454,7 +484,7 @@ export class CoverageRecord {
     //
     // Adjust station linked list to put us in the right place and
     // update our values at the same time
-    _updateStationList(stationid, altitude, agl, crc, signal, gap) {
+    _updateStationList(stationid: StationId, altitude, agl, crc, signal, gap) {
         // So we can calculate offsets etc
         let firstEmpty = 0;
         let pCount = 0;
@@ -696,7 +726,7 @@ export class CoverageRecord {
 
     //
     // We need to be able to add new records to the end of the record
-    _allocationExtension(length) {
+    _allocationExtension(length?: number) {
         // Allocate bigger buffer
         const n = new Uint8Array(this._buffer.byteLength + (length || this._sh.nestedAllocation));
         n.set(this._buffer);
