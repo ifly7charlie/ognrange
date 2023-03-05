@@ -5,7 +5,7 @@
 
 import {readdirSync} from 'fs';
 
-import {splitLongToh3Index, h3IndexToSplitLong, h3ToParent} from 'h3-js';
+import {h3IndexToSplitLong} from 'h3-js';
 
 import {searchArrowFile, searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
 

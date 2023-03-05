@@ -1,4 +1,4 @@
-import {splitLongToh3Index, h3IndexToSplitLong} from 'h3-js';
+import {h3IndexToSplitLong} from 'h3-js';
 
 import {searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
 

@@ -5,7 +5,7 @@
 
 import {readdirSync} from 'fs';
 
-import {splitLongToh3Index, h3IndexToSplitLong, h3ToParent} from 'h3-js';
+import {h3IndexToSplitLong, cellToParent} from 'h3-js';
 
 import {searchArrowFile, searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
 
@@ -38,7 +38,7 @@ export default async function getH3Details(req, res) {
     }
 
     // Find in the global DB - this is so we can get a c
-    const parentH3 = h3ToParent(req.query.h3, H3_GLOBAL_CELL_LEVEL);
+    const parentH3 = cellToParent(req.query.h3, H3_GLOBAL_CELL_LEVEL);
     const parentH3SplitLong = h3IndexToSplitLong(parentH3);
 
     // Get a Year/Month component from the file
