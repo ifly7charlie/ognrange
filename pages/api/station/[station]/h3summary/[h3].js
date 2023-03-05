@@ -49,9 +49,7 @@ export default async function getH3Details(req, res) {
         }
     }
 
-    console.log(now.toISOString(), ' h3summary', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
-
-    // Find the enclosing global record
+    console.log(now.toISOString(), ' h3summary', stationName, selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     const result = {};
     const sids = {};

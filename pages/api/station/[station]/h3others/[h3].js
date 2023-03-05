@@ -56,7 +56,7 @@ export default async function getH3Details(req, res) {
         }
     }
 
-    console.log(now.toISOString(), ' h3others', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
+    console.log(now.toISOString(), ' h3others', subdir, selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     // Find the enclosing global record
     const globalRecord = await searchArrowFileInline(OUTPUT_PATH + 'global/global.' + globalFileName + '.arrow', parentH3SplitLong);
