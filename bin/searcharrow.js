@@ -13,7 +13,7 @@ import {splitLongToh3Index, h3IndexToSplitLong} from 'h3-js';
 import lodash from 'lodash';
 //import {sortedLastIndex} from 'lodash';
 
-import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../lib/common/config.js';
 import yargs from 'yargs';
 
 const OVERWRITE = true;

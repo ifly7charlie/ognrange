@@ -7,7 +7,7 @@ import {ignoreStation} from '../lib/bin/ignorestation.js';
 import {CoverageRecord, bufferTypes} from '../lib/bin/coveragerecord.js';
 import {CoverageHeader, accumulatorTypes} from '../lib/bin/coverageheader.js';
 
-import {DB_PATH, OUTPUT_PATH} from '../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH} from '../lib/common/config.js';
 
 import yargs from 'yargs';
 

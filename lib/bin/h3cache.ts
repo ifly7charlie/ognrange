@@ -1,7 +1,7 @@
 import {CoverageHeader} from './coverageheader';
 import {CoverageRecord, bufferTypes} from './coveragerecord';
 
-import {H3_CACHE_FLUSH_PERIOD_MS, H3_CACHE_EXPIRY_TIME_MS, DB_PATH, H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS} from './config.js';
+import {H3_CACHE_FLUSH_PERIOD_MS, H3_CACHE_EXPIRY_TIME_MS, DB_PATH, H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS} from '../common/config';
 
 import {getDb} from './stationcache';
 import {getStationName} from './stationstatus';

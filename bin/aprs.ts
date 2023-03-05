@@ -72,7 +72,7 @@ import {
     STATION_EXPIRY_TIME_SECS,
     MAX_STATION_DBS,
     STATION_DB_EXPIRY_MS
-} from '../lib/bin/config.js';
+} from '../lib/common/config.js';
 
 // h3 cache functions
 import {flushDirtyH3s, updateCachedH3, getH3CacheSize, unlockH3sForReads} from '../lib/bin/h3cache';

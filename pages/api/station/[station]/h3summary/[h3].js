@@ -9,9 +9,9 @@ import {splitLongToh3Index, h3IndexToSplitLong, h3ToParent} from 'h3-js';
 
 import {searchArrowFile, searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
 
-import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES, H3_GLOBAL_CELL_LEVEL} from '../../../../../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES, H3_GLOBAL_CELL_LEVEL} from '../../../../../lib/common/config.js';
 
-import {prefixWithZeros} from '../../../../../lib/bin/prefixwithzeros.js';
+import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros.js';
 
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';

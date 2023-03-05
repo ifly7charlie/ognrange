@@ -15,7 +15,7 @@ import {getDb, closeDb, DB, allOpenDbs} from './stationcache';
 
 import {Epoch, StationName, StationId} from './types';
 
-import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from './config.js';
+import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
 import {Worker, parentPort, isMainThread, SHARE_ENV} from 'node:worker_threads';
 

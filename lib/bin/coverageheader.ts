@@ -6,7 +6,7 @@
 //
 
 import {H3Index} from 'h3-js';
-import {prefixWithZeros} from './prefixwithzeros.js';
+import {prefixWithZeros} from '../common/prefixwithzeros';
 
 import {StationId} from './types';
 

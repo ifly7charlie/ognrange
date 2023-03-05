@@ -2,9 +2,9 @@ import {splitLongToh3Index, h3IndexToSplitLong} from 'h3-js';
 
 import {searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
 
-import {OUTPUT_PATH} from '../../../../../lib/bin/config.js';
+import {OUTPUT_PATH} from '../../../../../lib/common/config.js';
 
-import {prefixWithZeros} from '../../../../../lib/bin/prefixwithzeros.js';
+import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros.js';
 
 export default async function getH3Details(req, res) {
     // Top level

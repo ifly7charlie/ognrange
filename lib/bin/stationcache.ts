@@ -16,7 +16,7 @@ import {saveAccumulatorMetadata} from './rollup';
 
 import {normaliseCase} from './caseinsensitive';
 
-import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from './config';
+import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from '../common/config';
 
 const options = {
     max: MAX_STATION_DBS + 1, // global is stored in the cache

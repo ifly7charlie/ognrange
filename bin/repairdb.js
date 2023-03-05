@@ -2,7 +2,7 @@ import {ClassicLevel} from 'classic-level';
 
 import dotenv from 'dotenv';
 
-import {DB_PATH, OUTPUT_PATH} from '../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH} from '../lib/common/config.js';
 
 import yargs from 'yargs';
 

@@ -13,7 +13,7 @@ import {createGzip} from 'node:zlib';
 
 import _sortby from 'lodash.sortby';
 
-import {UNCOMPRESSED_ARROW_FILES} from './config.js';
+import {UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
 import {StationId} from './types';
 

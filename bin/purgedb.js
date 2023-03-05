@@ -10,7 +10,7 @@ import {CoverageHeader, accumulatorTypes} from '../lib/bin/coverageheader.js';
 
 import {whatAccumulators, purgeOldAccumulators} from '../lib/bin/rollup.js';
 
-import {DB_PATH, OUTPUT_PATH} from '../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH} from '../lib/common/config.js';
 
 import yargs from 'yargs';
 

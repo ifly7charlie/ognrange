@@ -31,7 +31,7 @@ import {
     STATION_EXPIRY_TIME_SECS,
     OUTPUT_PATH,
     UNCOMPRESSED_ARROW_FILES
-} from './config.js';
+} from '../common/config';
 
 export interface RollupStats {
     completed: number;

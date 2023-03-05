@@ -1,6 +1,6 @@
 import {writeFileSync} from 'fs';
 
-import {prefixWithZeros} from './prefixwithzeros';
+import {prefixWithZeros} from '../common/prefixwithzeros';
 
 import _clonedeep from 'lodash.clonedeep';
 import _isequal from 'lodash.isequal';
@@ -9,7 +9,7 @@ import _reduce from 'lodash.reduce';
 import {
     ROLLUP_PERIOD_MINUTES, //
     OUTPUT_PATH
-} from './config.js';
+} from '../common/config';
 
 import {flushDirtyH3s, unlockH3sForReads} from './h3cache';
 import {rollupAll} from './rollup';

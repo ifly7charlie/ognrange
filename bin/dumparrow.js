@@ -1,7 +1,7 @@
 import {readFileSync} from 'fs';
 import {tableFromIPC, RecordBatchReader} from 'apache-arrow/Arrow.node';
 
-import {DB_PATH, OUTPUT_PATH} from '../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH} from '../lib/common/config.js';
 import yargs from 'yargs';
 
 import {prefixWithZeros} from '../lib/bin/prefixwithzeros.js';

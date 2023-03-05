@@ -6,7 +6,7 @@ import {Epoch, StationName, StationId, Latitude, Longitude} from './types';
 import * as h3 from 'h3-js';
 
 // Configuration
-import {STATION_MOVE_THRESHOLD_KM, DB_PATH} from './config.js';
+import {STATION_MOVE_THRESHOLD_KM, DB_PATH} from '../common/config';
 
 import _reduce from 'lodash.reduce';
 
