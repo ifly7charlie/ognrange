@@ -4,9 +4,59 @@ You can see this project running at https://ognrange.onglide.com
 
 ## Getting Started
 
+### Using docker
+
+Check the configuration file is correct - for docker it is located in `./conf/.env.local`
+
+```
+docker compose build --build-arg 'NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=<>'
+docker compose up -d
+```
+
+### Locally without docker, perhaps testing etc.
+
+Copy the .env.local file from ./conf/.env.local to the current directory and update to suit
+
+For development you need to install the packages `yarn install`
+
+Then in different windows you'll want: `yarn next dev` and `yarn aprs:dev` or `yarn aprs:devbrk`
+
+If yarn aprs `SIGSEGVs` as soon as it starts try using `npm_config_build_from_source=true yarn install`.
+
+There are some complexities - in particular the .arrow files need to be served to the browser
+somehow. Easiest for development is to use `yarn next dev` and output the arrow files into `./public/data`
+You will need to configure `.env.local` to point to this in `NEXT_PUBLIC_DATA_URL` and `OUTPUT_PATH`. For serving
+in production see `conf/docker-httpd.conf` for the sections you need to handle this encoding. It's much quicker
+and uses less disk space saving and serving as .gz, otherwise your webserver will always be compressing
+a file that never changes.
+
+Assuming you have checked out in the directory `~ognrange` this could look like:
+
+```
+# You need to configure your access token if you don't pass on the command line
+#NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=<my token>
+
+# replace with fully qualified domain name, this is reported to aprs servers
+NEXT_PUBLIC_SITEURL=<ognrange.mydomain>
+
+# either relative to the site or full URL (https)
+NEXT_PUBLIC_DATA_URL=/data/arrow/
+
+# Path to files, these are in the container volumes
+DB_PATH=~ognrange/data/db/
+OUTPUT_PATH=~ognrange/public/data/arrow/
+
+# for serving locally you need to have the .arrow files not the .gz ones
+# as normally the webserver serves .gz using 'content-encoding gzip'
+UNCOMPRESSED_ARROW_FILES=1
+```
+
+To build & run - note that this is a summary not a set of command lines ;)
+
 ```
 yarn install
 yarn next build
+yarn aprs:build
 yarn next start
 yarn aprs
 ```
@@ -55,7 +105,7 @@ OGNRange collects the following per station:
 -   strongest signal
 -   sum of signal strength (clamped at 64 db) [6bit]
 -   sum of crc errors (max 10)
--   sum of pre-packet gap (max 60) [6bit]
+-   sum of between-packet gap (max 60) [6bit]
 -   count of packets
 
 The global cells collect this information per station as well as a sum.
@@ -127,15 +177,15 @@ These are in the OUTPUT_PATH directory. It contains a set of
 subdirectories one for each station and one for the global data.
 
 ```
-ognrange/output/global/global.day.15.arrow
-ognrange/output/global/global.month.1.arrow
-ognrange/output/global/global.year.2022.arrow
-ognrange/output/global/global.day.15.arrow.json
-ognrange/output/global/global.month.1.arrow.json
-ognrange/output/global/global.year.2022.arrow.json
-ognrange/output/global/global.day.arrow
-ognrange/output/global/global.month.arrow
-ognrange/output/global/global.year.arrow
+ognrange/output/global/global.day.15.arrow.gz
+ognrange/output/global/global.month.1.arrow.gz
+ognrange/output/global/global.year.2022.arrow.gz
+ognrange/output/global/global.day.15.arrow.json.gz
+ognrange/output/global/global.month.1.arrow.json.gz
+ognrange/output/global/global.year.2022.arrow.json.gz
+ognrange/output/global/global.day.arrow.gz
+ognrange/output/global/global.month.arrow.gz
+ognrange/output/global/global.year.arrow.gz
 ```
 
 These files are produced during the aggregation process and contain
@@ -186,15 +236,25 @@ run for a month or two.
 
 note: current accumulators are deleted if they are no longer active on
 server startup. This could be changed to roll them into the
-aggregators they were related to if they are still active (TODO?)
+aggregators they were related to if they are still active
 
 current is rolled into ALL of the other active aggregators in one
 operation. Once this has been done the data in it is removed.
 
 All databases containing H3 information is rolledup during a rollup
 operation. Up to 1/5 of the number configured in MAX_STATION_DBS or
-will be run at the same time. Although this isn't run in a thread
-there are a lot of advantages due to the large amount of IO wait time.
+will be run at the same time. This executes in a different thread. As
+the classic-level database can't share the handles the main thread
+flushes all data and closes all databases before starting the rollup.
+
+During the rollup no cell updates are written to the DB, and any changes
+will be kept in memory until it completes. This can mean a lot more H3s
+in memory compared to normal operation. Once the rollup completes these
+will be flushed as normal.
+
+(As a new accumulator was started prior to commencing the rollup
+there will be nothing in the DB for that accumulator so the main thread
+doesn't need to read records as long as all dirty H3s are still in memory)
 
 Actual time to complete a rollup operation is primarily dependent on
 the number of H3s in the database. This means the global database will
@@ -205,6 +265,9 @@ and global uses a lower resolution H3.
 
 config file is .env.local for aprs collector, for the front end it
 follows nextjs naming convention NEXT_PUBLIC_XX goes to browser!
+
+See `lib/common/config.js` for the latest values and documentation of
+configuration variables
 
 ```
 # url of website
