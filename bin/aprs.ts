@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+// Load the configuration from a file
+import dotenv from 'dotenv';
+dotenv.config({path: '.env.local', override: true});
+
 // Import the APRS server
 import {ISSocket} from 'js-aprs-is';
 import {aprsParser} from 'js-aprs-fap';
