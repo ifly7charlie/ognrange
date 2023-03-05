@@ -1,10 +1,10 @@
-import {splitLongToh3Index, h3IndexToSplitLong} from 'h3-js';
+import {h3IndexToSplitLong} from 'h3-js';
 
 import {searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
 
-import {OUTPUT_PATH} from '../../../../../lib/bin/config.js';
+import {OUTPUT_PATH, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config.js';
 
-import {prefixWithZeros} from '../../../../../lib/bin/prefixwithzeros.js';
+import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros.js';
 
 export default async function getH3Details(req, res) {
     // Top level
@@ -24,17 +24,17 @@ export default async function getH3Details(req, res) {
 
     // Get a Year/Month component from the file
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
-    let fileDateMatch = fileDateMatches?.[1] + (fileDateMatches?.[2] || '');
+    let fileDateMatch = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let oldest = 0;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
-            oldest = !lockedH3 ? new Date(now - 2 * 30 * 24 * 3600 * 1000) : 0;
+            oldest = !lockedH3 ? new Date(now - MAXIMUM_GRAPH_AGE_MSEC) : 0;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
-    console.log(now.toISOString(), ' h3details', selectedFile, fileDateMatch, req.query.h3, h3SplitLong, lockedH3, oldest);
+    console.log(now.toISOString(), 'h3details', subdir, selectedFile, fileDateMatch, req.query.h3, h3SplitLong, lockedH3, oldest, OUTPUT_PATH);
 
     // One dir for each station
     await searchMatchingArrowFiles(OUTPUT_PATH, subdir, fileDateMatch, h3SplitLong, oldest, (json, date) => {

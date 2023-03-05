@@ -8,7 +8,7 @@ import {PassThrough} from 'stream';
 
 import zlib from 'zlib';
 
-import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../lib/common/config.js';
 import yargs from 'yargs';
 
 const INPUT_PATH = OUTPUT_PATH + '../data/';

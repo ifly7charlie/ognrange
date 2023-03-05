@@ -5,13 +5,13 @@
 
 import {readdirSync} from 'fs';
 
-import {splitLongToh3Index, h3IndexToSplitLong, h3ToParent} from 'h3-js';
+import {h3IndexToSplitLong} from 'h3-js';
 
 import {searchArrowFile, searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
 
-import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES, H3_GLOBAL_CELL_LEVEL} from '../../../../../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES, H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config.js';
 
-import {prefixWithZeros} from '../../../../../lib/bin/prefixwithzeros.js';
+import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros.js';
 
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
@@ -38,20 +38,18 @@ export default async function getH3Details(req, res) {
 
     // Get a Year/Month component from the file
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
-    let fileDateMatch = fileDateMatches?.[1] + (fileDateMatches?.[2] || '');
+    let fileDateMatch = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let oldest = 0;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
-            oldest = !lockedH3 ? new Date(now - 2 * 30 * 24 * 3600 * 1000) : null;
+            oldest = !lockedH3 ? new Date(now - MAXIMUM_GRAPH_AGE_MSEC) : null;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
 
-    console.log(now.toISOString(), ' h3summary', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
-
-    // Find the enclosing global record
+    console.log(now.toISOString(), ' h3summary', stationName, selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     const result = {};
     const sids = {};

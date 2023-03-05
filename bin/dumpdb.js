@@ -1,5 +1,4 @@
-import LevelUP from 'levelup';
-import LevelDOWN from 'leveldown';
+import {ClassicLevel} from 'classic-level';
 
 import dotenv from 'dotenv';
 
@@ -8,7 +7,7 @@ import {ignoreStation} from '../lib/bin/ignorestation.js';
 import {CoverageRecord, bufferTypes} from '../lib/bin/coveragerecord.js';
 import {CoverageHeader, accumulatorTypes} from '../lib/bin/coverageheader.js';
 
-import {DB_PATH, OUTPUT_PATH} from '../lib/bin/config.js';
+import {DB_PATH, OUTPUT_PATH} from '../lib/common/config.js';
 
 import yargs from 'yargs';
 
@@ -17,7 +16,14 @@ main().then('exiting');
 //
 // Primary configuration loading and start the aprs receiver
 async function main() {
-    const args = yargs(process.argv.slice(2)).option('db', {alias: 'd', type: 'string', default: 'global', description: 'Choose Database'}).option('all', {alias: 'a', type: 'boolean', description: 'dump all records'}).option('match', {type: 'string', description: 'regex match of dbkey'}).option('size', {alias: 's', type: 'boolean', description: 'determine approximate size of each block of records'}).help().alias('help', 'h').argv;
+    const args = yargs(process.argv.slice(2)) //
+        .option('db', {alias: 'd', type: 'string', default: 'global', description: 'Choose Database'})
+        .option('all', {alias: 'a', type: 'boolean', description: 'dump all records'})
+        .option('match', {type: 'string', description: 'regex match of dbkey'})
+        .option('size', {alias: 's', type: 'boolean', description: 'determine approximate size of each block of records'})
+        .option('count', {alias: 'c', type: 'boolean', description: 'count number of records in each block'})
+        .help()
+        .alias('help', 'h').argv;
 
     // What file
     let dbPath = DB_PATH;
@@ -30,11 +36,11 @@ async function main() {
     let db = null;
 
     try {
-        db = LevelUP(LevelDOWN(dbPath, {createIfMissing: false}));
+        db = new ClassicLevel(dbPath, {valueEncoding: 'view', createIfMissing: false});
+        await db.open();
     } catch (e) {
         console.error(e);
     }
-
     console.log('---', dbPath, '---');
 
     let n = db.iterator();
@@ -49,7 +55,7 @@ async function main() {
         if (!args.match || hr.dbKey().match(args.match)) {
             if (hr.isMeta) {
                 accumulators[hr.accumulator] = {hr: hr, meta: JSON.parse(String(value)), count: 0, size: 0};
-                console.log(hr.toString(), String(value));
+                console.log(hr.dbKey(), String(value));
 
                 if (args.size) {
                     db.db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
@@ -59,10 +65,18 @@ async function main() {
             } else {
                 if (accumulators[hr.accumulator]) {
                     accumulators[hr.accumulator].count++;
+                } else {
+                    accumulators[hr.accumulator] = {hr: hr, count: 1, size: 0};
                 }
 
+                if (accumulators[hr.accumulator].count == 1 && args.size) {
+                    db.db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
+                        accumulators[hr.accumulator].size = r;
+                    });
+                }
                 if (args.all) {
                     console.log(hr.dbKey(), JSON.stringify(new CoverageRecord(value).toObject()));
+                } else if (args.count) {
                 } else {
                     n.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
                 }

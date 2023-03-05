@@ -5,50 +5,46 @@
 
 //
 
-import {splitLongToh3Index, h3IndexToSplitLong} from 'h3-js';
-import {prefixWithZeros} from './prefixwithzeros.js';
+import {H3Index} from 'h3-js';
+import {prefixWithZeros} from '../common/prefixwithzeros';
 
-// Global mapping structure
-//   HEADER
+import {StationId} from './types';
 
-const sU32 = 4;
-const sU16 = 2;
-const sU8 = 1;
+export type AccumulatorBucket = number;
 
-// field to sized offset, so u32oCount is number of u32s to Count
-const header = {
-    u8oAccumulator: 0, // converted base36 (so 36 types available)
-    u16oAccumulatorBucket: 1,
+export enum AccumulatorType {
+    current = 0,
+    day = 1,
+    week = 2,
+    month = 3,
+    year = 4
+}
 
-    // where the h3 is stored
-    u32oH3lo: 1,
-    u32oH3hi: 2,
-
-    // How long are we in bytes (multiple of 32!)
-    length: 3 * sU32,
-    version: 0
-};
-
-export const accumulatorTypes = {
-    current: 0,
-    day: 1,
-    week: 2,
-    month: 3,
-    year: 4
+export const accumulatorTypes: Record<string, AccumulatorType> = {
+    current: AccumulatorType.current,
+    day: AccumulatorType.day,
+    week: AccumulatorType.week,
+    month: AccumulatorType.month,
+    year: AccumulatorType.year
 };
 
 export const accumulatorNames = ['current', 'day', 'week', 'month', 'year'];
 
 export class CoverageHeader {
+    _h3: H3Index;
+    _tb: number;
+    _dbid: StationId;
+    _lockKey: string;
+
     // Create a structure to work with existing data that is stored in buffer
     // we are using TypedArrays which means we are making a view not a copy
     // accepts either a buffer (for read from db)
     // or accumulatorType (string from accumulatorTypes), accumulatorBucket (16bit), h3key (hexstring)
-    constructor(sid, t, b, h) {
+    constructor(sid?: StationId | string | Buffer, t?: string | AccumulatorType, b?: AccumulatorBucket, h?: H3Index) {
         if (h) {
             this._init(sid, t, b, h);
         } else {
-            this._initFromLockKey(sid);
+            this._initFromLockKey(sid as string | Buffer);
         }
     }
 
@@ -112,17 +108,17 @@ export class CoverageHeader {
     }
     // Return the levelup query structure for iterating over an aggregation block
     static getAccumulatorEnd(t, b) {
-        const h = new CoverageHeader(0, t, b, '9000000000000000'); // everything, will always be 8
+        const h = new CoverageHeader(0 as StationId, t, b, '9000000000000000'); // everything, will always be 8
         return h.dbKey();
     }
     // Return the levelup query structure for iterating over an aggregation block
     static getAccumulatorBegin(t, b, includeMeta = false) {
-        const h = new CoverageHeader(0, t, b, includeMeta ? '00_' : '8000000000000000'); // everything, will always be 8
+        const h = new CoverageHeader(0 as StationId, t, b, includeMeta ? '00_' : '8000000000000000'); // everything, will always be 8
         return h.dbKey();
     }
 
-    static getAccumulatorMeta(t, b) {
-        const h = new CoverageHeader(0, t, b, '00_meta'); // should be out of the begin/end search range for accumulator
+    static getAccumulatorMeta(t: string | AccumulatorType, b: AccumulatorBucket) {
+        const h = new CoverageHeader(0 as StationId, t, b, '00_meta'); // should be out of the begin/end search range for accumulator
         return h;
     }
 
@@ -139,31 +135,31 @@ export class CoverageHeader {
         return this._lockKey;
     }
 
-    _initFromLockKey(k) {
+    _initFromLockKey(k: string | Buffer) {
         const s = k.toString('latin1');
         if ((s.length || 30) <= 20) {
-            this._dbid = 0;
+            this._dbid = 0 as StationId;
             this._tb = parseInt(s.slice(0, 4), 16);
             this._h3 = s.slice(5);
             this._lockKey = '0/' + s;
         } else {
             this._lockKey = s;
-            this._dbid = parseInt(this._lockKey.slice(0, -21), 36);
+            this._dbid = parseInt(this._lockKey.slice(0, -21), 36) as StationId;
             this._tb = parseInt(this._lockKey.slice(-20, -16), 16);
             this._h3 = this._lockKey.slice(-15);
         }
     }
 
-    fromDbKey(k) {
+    fromDbKey(k: string | Buffer) {
         const s = k.toString('latin1');
-        this._dbid = 0;
+        this._dbid = 0 as StationId;
         this._tb = parseInt(s.slice(0, 4), 16);
         this._h3 = s.slice(5);
         this._lockKey = '0/' + s;
     }
 
     // Allocate a new structure. Used when no data has been accumulated yet
-    _init(dbid, t, b, h) {
+    _init(dbid, t: string | AccumulatorType, b: AccumulatorBucket, h: H3Index) {
         this._dbid = dbid;
         if (typeof t == 'string') {
             this._tb = ((accumulatorTypes[t] & 0x0f) << 12) | (b & 0x0fff);
@@ -174,7 +170,7 @@ export class CoverageHeader {
         this._generateLockKey(h);
     }
 
-    _generateLockKey(h3string) {
+    _generateLockKey(h3string: H3Index) {
         this._lockKey = this._dbid.toString(36) + '/' + prefixWithZeros(4, this._tb.toString(16)) + '/' + h3string;
     }
 }
