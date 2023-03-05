@@ -11,7 +11,7 @@ import _uniq from 'lodash.uniq';
 
 import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync} from 'fs';
 
-import {getDb, closeDb, DB, allOpenDbs} from './stationcache';
+import {getDb, closeDb, DB} from './stationcache';
 
 import {Epoch, StationName, StationId} from './types';
 
@@ -112,7 +112,6 @@ else {
         const resolver = promises[data.station + '_' + data.action]?.resolve;
         delete promises[data.station + '_' + data.action];
         if (resolver) {
-            console.log(JSON.stringify(data, null, 0));
             resolver(data);
         } else {
             console.error(`missing resolve function for ${data.station} ${data.action}`);
