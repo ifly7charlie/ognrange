@@ -27,7 +27,7 @@ export interface StationDetails {
 
 let stations: Record<StationName, StationDetails> = {}; // map from string to details
 let stationIds: Record<StationId, StationName> = {}; // map from id to string
-let statusDb: ClassicLevel<StationName, string> | undefined;
+let statusDb: ClassicLevel<StationName, StationDetails> | undefined;
 
 // We need to use a protected data structure to generate ids
 // for the station ID. This allows us to use atomics, will also
@@ -43,19 +43,16 @@ export function getNextStationId() {
 export async function loadStationStatus() {
     console.log('loading station status');
     // Open the status database
-    statusDb = new ClassicLevel<StationName, string>(DB_PATH + 'status');
-    await statusDb.open();
 
-    // And now we read it
-    //    const nowEpoch = Math.floor(Date.now() / 1000);
-    //    const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
     try {
+        statusDb = new ClassicLevel<StationName, StationDetails>(DB_PATH + 'status', {valueEncoding: 'json'});
+
         for await (const [key, value] of statusDb.iterator()) {
-            stations[key] = JSON.parse(String(value));
+            stations[key] = value;
             stationIds[stations[key].id] = key;
         }
     } catch (e) {
-        console.error('Unable to loadStationStatus', e);
+        console.log('Unable to loadStationStatus', e);
         process.exit(1);
     }
 
@@ -84,7 +81,7 @@ export function getStationId(stationName: StationName, serialise = true): number
             console.log(`allocated id ${stationid} to ${stationName}, ${Object.keys(stations).length} in hash`);
 
             if (serialise) {
-                statusDb.put(stationName, JSON.stringify(stations[stationName]));
+                statusDb.put(stationName, stations[stationName]);
             }
         }
 
@@ -129,7 +126,7 @@ export function checkStationMoved(stationName: StationName, latitude: Latitude, 
             details.notice = `${Math.round(distance)}km move detected ${new Date(timestamp * 1000).toISOString()} resetting history`;
             details.moved = true; // we need to persist this
             console.log(`station ${stationName} has moved location from ${details.lat},${details.lng} to ${latitude},${longitude} which is ${distance.toFixed(1)}km`);
-            statusDb.put(stationName, JSON.stringify(details));
+            statusDb.put(stationName, details);
         }
     }
     details.lat = latitude;
@@ -146,11 +143,11 @@ export function updateStationBeacon(stationName: StationName, body: string, time
     }
     details.lastBeacon = timestamp;
     details.status = body;
-    statusDb.put(stationName, JSON.stringify(details));
+    statusDb.put(stationName, details);
 }
 
 export function updateStationStatus(details: StationDetails): Promise<void> {
-    return statusDb.put(details.station, JSON.stringify(details));
+    return statusDb.put(details.station, details);
 }
 
 export async function closeStatusDb(): Promise<void> {
