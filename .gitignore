@@ -42,5 +42,4 @@ public/data
 
 # emacs
 *~
-*.lock
 package-lock.json
