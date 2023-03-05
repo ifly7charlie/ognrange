@@ -108,7 +108,9 @@ async function main() {
     try {
         mkdirSync(DB_PATH + 'stations', {recursive: true});
         mkdirSync(OUTPUT_PATH, {recursive: true});
-    } catch (e) {}
+    } catch (e) {
+        console.log('error creating directories', e);
+    }
 
     // Open our databases
     initialiseAccumulators();
