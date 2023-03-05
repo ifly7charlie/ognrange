@@ -1,4 +1,8 @@
-# Viewing Data
+# OGN Range Version 2.0
+
+This is a complete replacement for the old glidernet/ognrange project. You can run it totally self contained in docker if you like
+
+## Viewing Data
 
 You can see this project running at https://ognrange.onglide.com
 
@@ -12,6 +16,9 @@ Check the configuration file is correct - for docker it is located in `./conf/.e
 docker compose build --build-arg 'NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=<>'
 docker compose up -d
 ```
+
+If you want to store the data files locally you should change the volume config in `docker-compose.yml`
+
 
 ### Locally without docker, perhaps testing etc.
 
