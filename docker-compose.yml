@@ -40,8 +40,10 @@ services:
         volumes:
             - arrow:/ognrange/data/arrow:ro
         depends_on:
-            - next
-            - ogn
+            next:
+                condition: service_healthy
+            aprs:
+                condition: service_healthy
         ports:
             - 8080:8000
 volumes:

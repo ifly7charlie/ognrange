@@ -1,5 +1,6 @@
 FROM node:16-alpine as gyp
 RUN apk add --no-cache --virtual .build-deps alpine-sdk python3
+RUN apk add --no-cache flock curl
 WORKDIR /ognrange
 COPY .git/HEAD .git/HEAD
 COPY .git/refs/heads .git/refs/heads
@@ -40,6 +41,7 @@ RUN npm_config_build_from_source=true yarn install --production  --frozen-lockfi
 RUN apk del .build-deps
 
 FROM base-image AS next
+HEALTHCHECK --interval=10s --retries=5 CMD curl -Q --fail http://localhost:3000 || exit 1
 WORKDIR /ognrange
 COPY --from=next-build-image /ognrange/.next ./.next
 COPY ./public ./public
@@ -49,12 +51,15 @@ EXPOSE 3000
 CMD yarn next start
 
 FROM base-image AS aprs
+HEALTHCHECK --interval=10s --retries=5 CMD flock --exclusive --nonblock /ognrange/data/db/status/LOCK  --command 'echo lock failed' || exit 1
 WORKDIR /ognrange
 RUN mkdir data
 COPY --from=aprs-build-image /ognrange/dist ./dist
-RUN cat /ognrange/.env.local
+#RUN cat /ognrange/.env.local
 CMD node dist/bin/aprs.js
 
 FROM httpd:2.4-alpine AS apache
+HEALTHCHECK --interval=10s --retries=5 CMD curl -Q --fail http://localhost:8000 || exit 1
+RUN apk add --no-cache curl
 RUN mkdir -p /ognrange/data
 COPY ./conf/docker-httpd.conf /usr/local/apache2/conf/httpd.conf
