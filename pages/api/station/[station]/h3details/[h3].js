@@ -2,7 +2,7 @@ import {splitLongToh3Index, h3IndexToSplitLong} from 'h3-js';
 
 import {searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
 
-import {OUTPUT_PATH} from '../../../../../lib/common/config.js';
+import {OUTPUT_PATH, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config.js';
 
 import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros.js';
 
@@ -29,7 +29,7 @@ export default async function getH3Details(req, res) {
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
-            oldest = !lockedH3 ? new Date(now - 2 * 30 * 24 * 3600 * 1000) : 0;
+            oldest = !lockedH3 ? new Date(now - MAXIMUM_GRAPH_AGE_MSEC) : 0;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
