@@ -4,11 +4,11 @@
 //
 
 import {h3IndexToSplitLong, cellToParent} from 'h3-js';
-import {searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '/lib/api/searcharrow';
+import {searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow';
 
-import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '/lib/common/config';
+import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
-import {prefixWithZeros} from '/lib/common/prefixwithzeros';
+import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
@@ -132,5 +132,5 @@ export default async function getH3Details(req, res) {
         series: [...top5, {s: 'Other', c: _reduce(top5, (r, v) => (r = r - v.c), total)}],
         data
     });
-    console.log('<-', Date.now() - now.getTime(), 'msec', result.length, 'rows');
+    console.log('<-', Date.now() - now.getTime(), 'msec', data.length, 'rows');
 }

@@ -13,13 +13,28 @@ const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, t
 
 const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
-type RowResult = Record<string, number | string> | void;
+interface RowResult {
+    h3lo: number;
+    h3hi: number;
+    minAgl: number;
+    minAlt: number;
+    minAltSig: number;
+    maxSig: number;
+    avgSig: number;
+    avgCrc: number;
+    count: number;
+    avgGap: number;
+    stations?: string;
+    expectedGap?: number;
+    numStations?: number;
+}
+
 type RowResultFunction = (data: RowResult | void) => void;
 
 //
 // Search a single file
 export async function searchArrowFileInline(fileName: string, h3SplitLong: [number, number]): Promise<RowResult | void> {
-    return new Promise<RowResult>((resolve) => {
+    return new Promise<RowResult | void>((resolve) => {
         searchArrowFile(fileName, h3SplitLong, resolve);
     });
 }
@@ -114,7 +129,7 @@ function searchTableForH3(fileName: string, table, [h3lo, h3hi]: [number, number
 
         // none found then it's not in the file
         if (index == -1) {
-            resolve({});
+            resolve();
             return;
         }
 
@@ -129,7 +144,7 @@ function searchTableForH3(fileName: string, table, [h3lo, h3hi]: [number, number
         // If one matches
         const subIndex = sortedIndexOf(subset, h3lo);
         if (subIndex == -1) {
-            resolve({});
+            resolve();
             return;
         }
 

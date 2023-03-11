@@ -1,12 +1,12 @@
 import {h3IndexToSplitLong} from 'h3-js';
 
-import {searchMatchingArrowFiles} from '/lib/api/searcharrow';
+import {searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow';
 
-import {MAXIMUM_GRAPH_AGE_MSEC} from '/lib/common/config';
+import {MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
-import {prefixWithZeros} from '/lib/common/prefixwithzeros';
+import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
-import {H3DetailsOutputStructure, H3DetailsOutput} from 'lib/api/types';
+import {H3DetailsOutputStructure, H3DetailsOutput} from '../../../../../lib/api/types';
 
 export default async function getH3Details(req, res) {
     // Top level
