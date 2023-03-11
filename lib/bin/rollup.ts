@@ -184,6 +184,9 @@ export async function rollupStartupAll() {
     const current = getCurrentAccumulators();
     const common = {current: current.currentAccumulator, processAccumulators: current.accumulators};
 
+    const allStations = allStationsDetails();
+    console.log(`performing rollup and output of ${allStations.length} stations + global stations`);
+
     // Global is biggest and takes longest
     let promises = [];
     promises.push(
@@ -199,7 +202,7 @@ export async function rollupStartupAll() {
     // it is worth running them in parallel as there is a lot of IO which would block
     promises.push(
         mapAllCapped(
-            allStationsDetails(),
+            allStations,
             async (stationMeta) => {
                 const station = stationMeta.station;
                 await rollupStartup(station, common, stationMeta);
@@ -208,6 +211,7 @@ export async function rollupStartupAll() {
         )
     );
     await Promise.allSettled(promises);
+    console.log(`done initial rollup`);
 }
 
 function Uint8FromObject(o: Record<any, any>): Uint8Array {
