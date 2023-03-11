@@ -1,11 +1,17 @@
-import lodash from 'lodash';
+import {sortedIndexOf, sortedLastIndex} from 'lodash';
 
 import {readFile, readdirSync, readFileSync, statSync} from 'fs';
 import {tableFromIPC} from 'apache-arrow/Arrow.node';
 
-import zlib from 'zlib';
+//import {writeFileSync, unlinkSync, symlinkSync} from 'fs';
+import {createReadStream} from 'fs';
+import {PassThrough} from 'stream';
 
-import {MAX_ARROW_FILES} from '../common/config.js';
+import {pipeline} from 'stream';
+
+import {gunzipSync, gunzip, createGunzip} from 'zlib';
+
+import {MAX_ARROW_FILES, ARROW_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
 import LRU from 'lru-cache';
 const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, ttl: 3 * 3600 * 1000},
@@ -13,15 +19,19 @@ const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, t
 
 const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
+type RowResult = Record<string, number | string> | void;
+type RowResultFunction = (data: RowResult | void) => void;
+
 //
 // Search a single file
-export async function searchArrowFileInline(fileName, h3SplitLong) {
-    return await new Promise((resolve) => {
+export async function searchArrowFileInline(fileName: string, h3SplitLong: [number, number]): Promise<RowResult | void> {
+    return new Promise<RowResult>((resolve) => {
         searchArrowFile(fileName, h3SplitLong, resolve);
     });
 }
 
-export function searchArrowFile(fileName, h3SplitLong, resolve) {
+export function searchArrowFile(fileName: string, h3SplitLong: [number, number], resolve: RowResultFunction) {
+    //
     let table = cache.get(fileName);
 
     // If the table is loaded then it's super quick to just search and return
@@ -40,7 +50,7 @@ export function searchArrowFile(fileName, h3SplitLong, resolve) {
         }
 
         if (fileName.match(/.gz$/)) {
-            arrowFileContents = zlib.gunzipSync(arrowFileContents);
+            arrowFileContents = gunzipSync(arrowFileContents);
         }
 
         try {
@@ -55,39 +65,39 @@ export function searchArrowFile(fileName, h3SplitLong, resolve) {
 }
 
 // Scan directory for files
-export async function searchMatchingArrowFiles(OUTPUT_PATH, station, fileDateMatch, h3SplitLong, oldest, combine) {
-    const pending = new Map();
+export async function searchMatchingArrowFiles(station: string, fileDateMatch: string, h3SplitLong: [number, number], oldest: Date, combine: Function) {
+    const pending = new Map<string, Promise<string>>();
     try {
-        const files = readdirSync(OUTPUT_PATH + station)
-            .filter((x) => x.match(fileDateMatch) && x.match(/day\.([0-9-]+)\.arrow$/))
-            .sort();
+        const files = readdirSync(ARROW_PATH + station)
+            .map((fn) => {
+                return {date: fn.match(/day\.([0-9-]+)\.arrow/)?.[1], fileName: fn};
+            })
+            .filter((x) => x.date == fileDateMatch)
+            .sort((a, b) => a.fileName.localeCompare(b.fileName));
 
-        for (const fileName of files) {
-            const matched = fileName.match(/day\.([0-9-]+)\.arrow$/);
-            if (matched) {
-                const fileDate = new Date(matched[1]);
-                if (oldest && fileDate < oldest) {
-                    continue;
-                }
+        for (const file of files) {
+            const fileDate = new Date(file.date);
+            if (oldest && fileDate < oldest) {
+                continue;
+            }
 
-                pending.set(
-                    fileName,
-                    new Promise((resolve) => {
-                        searchArrowFile(`${OUTPUT_PATH}${station}/${fileName}`, h3SplitLong, (row) => {
-                            if (row) {
-                                combine(row, dateFormat.format(fileDate).replace(' ', '-'));
-                            }
-                            resolve(fileName);
-                        });
-                    })
-                );
-            }
-            // Keep the queue size down so we don't run out of files
-            // or memory
-            if (pending.size > 0) {
-                const done = await Promise.race(pending.values());
-                pending.delete(done);
-            }
+            pending.set(
+                file.fileName,
+                new Promise<string>((resolve) => {
+                    searchArrowFile(`${ARROW_PATH}${station}/${file.fileName}`, h3SplitLong, (row) => {
+                        if (row) {
+                            combine(row, dateFormat.format(fileDate).replace(' ', '-'));
+                        }
+                        resolve(file.fileName);
+                    });
+                })
+            );
+        }
+        // Keep the queue size down so we don't run out of files
+        // or memory
+        if (pending.size > 0) {
+            const done = await Promise.race(pending.values());
+            pending.delete(done);
         }
     } catch (e) {
         console.log(e);
@@ -106,7 +116,7 @@ function searchTableForH3(fileName, table, [h3lo, h3hi], resolve) {
         }
 
         // Find the first h3hi in the file
-        const index = lodash.sortedIndexOf(h3hiArray, h3hi);
+        const index = sortedIndexOf(h3hiArray, h3hi);
 
         // none found then it's not in the file
         if (index == -1) {
@@ -115,7 +125,7 @@ function searchTableForH3(fileName, table, [h3lo, h3hi], resolve) {
         }
 
         // We now know the range it could be in
-        const lastIndex = lodash.sortedLastIndex(h3hiArray, h3hi);
+        const lastIndex = sortedLastIndex(h3hiArray, h3hi);
 
         const h3loArray = table.getChild('h3lo').toArray();
 
@@ -123,7 +133,7 @@ function searchTableForH3(fileName, table, [h3lo, h3hi], resolve) {
         const subset = h3loArray.subarray(index, lastIndex);
 
         // If one matches
-        const subIndex = lodash.sortedIndexOf(subset, h3lo);
+        const subIndex = sortedIndexOf(subset, h3lo);
         if (subIndex == -1) {
             resolve({});
             return;
@@ -142,7 +152,9 @@ function searchTableForH3(fileName, table, [h3lo, h3hi], resolve) {
 let arrowStationTable = null;
 let arrowStationFileMTime = null;
 
-export function searchStationArrowFile(fileName, id) {
+export function searchStationArrowFile(id: number) {
+    const fileName = ARROW_PATH + 'stations.arrow.gz';
+
     // Read file, decompress if needed
     try {
         // Check if file changed
@@ -157,7 +169,7 @@ export function searchStationArrowFile(fileName, id) {
             let arrowFileContents = readFileSync(fileName);
 
             if (fileName.match(/.gz$/)) {
-                arrowFileContents = zlib.gunzipSync(arrowFileContents);
+                arrowFileContents = gunzipSync(arrowFileContents);
             }
 
             arrowStationTable = tableFromIPC([arrowFileContents]);
@@ -171,7 +183,7 @@ export function searchStationArrowFile(fileName, id) {
         }
 
         // Find the first h3hi in the file
-        const index = lodash.sortedIndexOf(idArray, id);
+        const index = sortedIndexOf(idArray, id);
 
         // none found then it's not in the file
         if (index == -1) {

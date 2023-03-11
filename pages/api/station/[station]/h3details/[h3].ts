@@ -1,10 +1,10 @@
 import {h3IndexToSplitLong} from 'h3-js';
 
-import {searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
+import {searchMatchingArrowFiles} from '/lib/api/searcharrow';
 
-import {OUTPUT_PATH, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config.js';
+import {OUTPUT_PATH, MAXIMUM_GRAPH_AGE_MSEC} from '/lib/common/config';
 
-import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros.js';
+import {prefixWithZeros} from '/lib/common/prefixwithzeros';
 
 export default async function getH3Details(req, res) {
     // Top level
@@ -37,7 +37,7 @@ export default async function getH3Details(req, res) {
     console.log(now.toISOString(), 'h3details', subdir, selectedFile, fileDateMatch, req.query.h3, h3SplitLong, lockedH3, oldest, OUTPUT_PATH);
 
     // One dir for each station
-    await searchMatchingArrowFiles(OUTPUT_PATH, subdir, fileDateMatch, h3SplitLong, oldest, (json, date) => {
+    await searchMatchingArrowFiles(subdir, fileDateMatch, h3SplitLong, oldest, (json, date) => {
         if (json.avgGap) {
             const output = {
                 date,

@@ -7,11 +7,11 @@ import {readdirSync} from 'fs';
 
 import {h3IndexToSplitLong} from 'h3-js';
 
-import {searchArrowFile, searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow.js';
+import {searchArrowFile, searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow';
 
-import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES, H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config.js';
+import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES, H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
-import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros.js';
+import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
 import _map from 'lodash.map';
 import _reduce from 'lodash.reduce';
@@ -54,7 +54,7 @@ export default async function getH3Details(req, res) {
     const result = {};
     const sids = {};
 
-    await searchMatchingArrowFiles(OUTPUT_PATH, stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
+    await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
         console.log(row);
         result[date] = Object.assign(result[date] || {});
         result[date] = _reduce(
@@ -63,7 +63,7 @@ export default async function getH3Details(req, res) {
                 const decoded = parseInt(x, 36);
                 const sid = decoded >> 4;
                 if (!sids[sid]) {
-                    sids[sid] = searchStationArrowFile(OUTPUT_PATH + 'stations.arrow', sid)?.name || 'unknown';
+                    sids[sid] = searchStationArrowFile(sid)?.name || 'unknown';
                 }
                 const sname = sids[sid];
                 const percentage = (decoded & 0x0f) * 10;
