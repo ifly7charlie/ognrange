@@ -49,26 +49,49 @@ const promises: Record<string, {resolve: Function}> = {};
 // Start the worker thread
 const worker = isMainThread ? new Worker(__filename, {env: SHARE_ENV}) : null;
 
-export function rollupStartup(station: StationName, whatAccumulators: RollupStartupAccumulators, stationMeta?: StationDetails) {
-    return new Promise((resolve) => {
+export function rollupStartup(station: StationName, whatAccumulators: RollupStartupAccumulators, stationMeta?: StationDetails) : Promise<any> {
+
+  // Do the sync in the worker thread
+    const threadPromise = new Promise<any>((resolve) => {
         promises[station + '_startup'] = {resolve};
         worker.postMessage({station, action: 'startup', now: Date.now(), whatAccumulators, stationMeta});
     });
+
+    // And the compact in the aprs thread
+    return threadPromise.then((result) => {
+
+        return result.success ? new Promise( async (resolve) => {
+            const db = await getDb(station, {cache: true, open: true, throw: false});
+            await db.compactRange( '0', 'Z' );
+    console.log('compacted', station );
+            resolve( result);
+        }) : result;
+      })
+}
+
+export function rollupAbortStartup() {
+    const threadPromise = new Promise<any>((resolve) => {
+        promises['all_abortstartup'] = {resolve};
+        worker.postMessage({station:'all', action: 'abortstartup', now: Date.now()});
+    });
 }
 export function rollupDatabase(station: StationName, commonArgs: RollupDatabaseArgs): Promise<RollupResult> {
-    return new Promise((resolve) => {
+    return new Promise<RollupResult>((resolve) => {
         promises[station + '_rollup'] = {resolve};
         worker.postMessage({station, action: 'rollup', ...commonArgs});
     });
 }
 
-export function purgeDatabase(station: StationName) {
-    return new Promise((resolve) => {
+export function purgeDatabase(station: StationName) : Promise<any>  {
+    return new Promise<any>((resolve) => {
         promises[station + '_purge'] = {resolve};
         worker.postMessage({station, action: 'purge'});
     });
 }
 
+// block startup from continuing - variable in worker thread only
+let abortStartup = false;
+    
 //
 // Inbound in the thread Dispatch to the correct place
 if (!isMainThread) {
@@ -83,8 +106,12 @@ if (!isMainThread) {
                     case 'rollup':
                         out = await rollupDatabaseInternal(db, task);
                         break;
+                    case 'abortstartup':
+                        out = {success:true};
+                        abortStartup = true;
+                        break;
                     case 'startup':
-                        out = await rollupDatabaseStartup(db, task);
+                        out = abortStartup ? await rollupDatabaseStartup(db, task) : {success:false};
                         break;
                     case 'purge':
                         await purgeDatabaseInternal(db);
@@ -122,18 +149,18 @@ else {
 // Clear data from the db
 async function purge(db: DB, hr: CoverageHeader) {
     // See if there are actually data entries
-    const first100KeyCount = (await db.keys({...CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, false), limit: 100}).all()).length;
+    const first100KeyCount = (await db.keys({...CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, false), limit: 50}).all()).length;
 
     // Now clear and compact
     await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
-    await db.compactRange(
-        CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, true), //
-        CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket)
-    );
+//    await db.compactRange(
+//      CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, true), //
+//        CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket)
+//    );
 
     // And provide a status update
     if (first100KeyCount) {
-        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.dbKey()} purged [${first100KeyCount > 99 ? '>99' : first100KeyCount}] entries successfully`);
+        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.dbKey()} purged [${first100KeyCount > 49 ? '>49' : first100KeyCount}] entries successfully`);
     }
 }
 
@@ -166,7 +193,7 @@ export async function rollupDatabaseStartup(db: DB, {now, whatAccumulators, stat
         // store the metadata for our iterator
         if (!hr.isMeta) {
             accumulatorsToPurge[hr.accumulator] = {accumulator: hr.accumulator, meta: null, typeName: hr.typeName, t: hr.type, b: hr.bucket};
-            console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
+            //console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
             iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
             iteratorPromise = iterator.next();
             continue;
