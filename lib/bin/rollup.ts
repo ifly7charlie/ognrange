@@ -185,7 +185,7 @@ export async function rollupStartupAll() {
     const common = {current: current.currentAccumulator, processAccumulators: current.accumulators};
 
     const allStations = allStationsDetails();
-    console.log(`performing rollup and output of ${allStations.length} stations + global stations`);
+    console.log(`performing startup rollup and output of ${allStations.length} stations + global stations`);
 
     // Global is biggest and takes longest
     let promises = [];
