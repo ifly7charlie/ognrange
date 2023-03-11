@@ -3,13 +3,11 @@
 // extract information from them!
 //
 
-import {readdirSync} from 'fs';
-
 import {h3IndexToSplitLong} from 'h3-js';
 
-import {searchArrowFile, searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow';
+import {searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow';
 
-import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES, H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
+import {MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
 import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
@@ -39,23 +37,22 @@ export default async function getH3Details(req, res) {
     // Get a Year/Month component from the file
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
     let fileDateMatch = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
-    let oldest = 0;
+    let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
-            oldest = !lockedH3 ? new Date(now - MAXIMUM_GRAPH_AGE_MSEC) : null;
+            oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
 
-    console.log(now.toISOString(), ' h3summary', stationName, selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
+    console.log(now.toISOString(), ' h3summary', stationName, selectedFile, fileDateMatch, req.query.h3, h3SplitLong);
 
     const result = {};
     const sids = {};
 
     await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
-        console.log(row);
         result[date] = Object.assign(result[date] || {});
         result[date] = _reduce(
             row?.stations?.split(',') || [],
@@ -68,7 +65,6 @@ export default async function getH3Details(req, res) {
                 const sname = sids[sid];
                 const percentage = (decoded & 0x0f) * 10;
                 if (percentage) {
-                    console.log(sname, percentage);
                     acc[sname] = percentage;
                 }
                 return acc;
@@ -132,4 +128,6 @@ export default async function getH3Details(req, res) {
         series: [...top5, {s: 'Other', c: _reduce(top5, (r, v) => (r = r - v.c), total)}],
         data
     });
+
+    console.log('<-', Date.now() - now.getTime(), 'msec', data.length);
 }

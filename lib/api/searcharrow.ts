@@ -1,21 +1,15 @@
 import {sortedIndexOf, sortedLastIndex} from 'lodash';
 
 import {readFile, readdirSync, readFileSync, statSync} from 'fs';
-import {tableFromIPC} from 'apache-arrow/Arrow.node';
+import {tableFromIPC, Table} from 'apache-arrow/Arrow.node';
 
-//import {writeFileSync, unlinkSync, symlinkSync} from 'fs';
-import {createReadStream} from 'fs';
-import {PassThrough} from 'stream';
-
-import {pipeline} from 'stream';
-
-import {gunzipSync, gunzip, createGunzip} from 'zlib';
+import {gunzipSync} from 'zlib';
 
 import {MAX_ARROW_FILES, ARROW_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
 import LRU from 'lru-cache';
 const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, ttl: 3 * 3600 * 1000},
-    cache = new LRU(options);
+    cache = new LRU<string, Table<any>>(options);
 
 const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
@@ -42,7 +36,7 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
 
     // Otherwise we need to read it - cache the table itself
     // Read file, decompress if needed
-    readFile(fileName, null, (err, arrowFileContents) => {
+    readFile(ARROW_PATH + fileName, null, (err, arrowFileContents) => {
         if (err) {
             console.log(err);
             resolve();
@@ -65,14 +59,14 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
 }
 
 // Scan directory for files
-export async function searchMatchingArrowFiles(station: string, fileDateMatch: string, h3SplitLong: [number, number], oldest: Date, combine: Function) {
+export async function searchMatchingArrowFiles(station: string, fileDateMatch: string, h3SplitLong: [number, number], oldest: Date | undefined, combine: Function) {
     const pending = new Map<string, Promise<string>>();
     try {
         const files = readdirSync(ARROW_PATH + station)
             .map((fn) => {
-                return {date: fn.match(/day\.([0-9-]+)\.arrow/)?.[1], fileName: fn};
+                return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz/)?.[1], fileName: fn};
             })
-            .filter((x) => x.date == fileDateMatch)
+            .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch)
             .sort((a, b) => a.fileName.localeCompare(b.fileName));
 
         for (const file of files) {
@@ -84,7 +78,7 @@ export async function searchMatchingArrowFiles(station: string, fileDateMatch: s
             pending.set(
                 file.fileName,
                 new Promise<string>((resolve) => {
-                    searchArrowFile(`${ARROW_PATH}${station}/${file.fileName}`, h3SplitLong, (row) => {
+                    searchArrowFile(`${station}/${file.fileName}`, h3SplitLong, (row) => {
                         if (row) {
                             combine(row, dateFormat.format(fileDate).replace(' ', '-'));
                         }
@@ -105,7 +99,7 @@ export async function searchMatchingArrowFiles(station: string, fileDateMatch: s
     await Promise.allSettled(pending.values());
 }
 
-function searchTableForH3(fileName, table, [h3lo, h3hi], resolve) {
+function searchTableForH3(fileName: string, table, [h3lo, h3hi]: [number, number], resolve: RowResultFunction) {
     //
     try {
         const h3hiArray = table.getChild('h3hi')?.toArray();
@@ -148,10 +142,14 @@ function searchTableForH3(fileName, table, [h3lo, h3hi], resolve) {
     return;
 }
 
-// Used to keep temporary copy
-let arrowStationTable = null;
-let arrowStationFileMTime = null;
+// Used to keep temporary copy - it's a global file so we can cache it like this
+// easily enough
+let arrowStationTable: Table<any> | null = null;
+let arrowStationFileMTime: Date | null = null;
 
+//
+// This is an arrow version of stations.json we use it to speed up the
+// name resolution from station ID when producing output
 export function searchStationArrowFile(id: number) {
     const fileName = ARROW_PATH + 'stations.arrow.gz';
 
@@ -172,7 +170,7 @@ export function searchStationArrowFile(id: number) {
                 arrowFileContents = gunzipSync(arrowFileContents);
             }
 
-            arrowStationTable = tableFromIPC([arrowFileContents]);
+            arrowStationTable = tableFromIPC<any>([arrowFileContents]);
         }
 
         //

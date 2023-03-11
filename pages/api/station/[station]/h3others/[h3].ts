@@ -3,13 +3,10 @@
 // extract information from them!
 //
 
-import {readdirSync} from 'fs';
-
 import {h3IndexToSplitLong, cellToParent} from 'h3-js';
+import {searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '/lib/api/searcharrow';
 
-import {searchArrowFile, searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '/lib/api/searcharrow';
-
-import {DB_PATH, OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES, H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '/lib/common/config';
+import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '/lib/common/config';
 
 import {prefixWithZeros} from '/lib/common/prefixwithzeros';
 
@@ -24,7 +21,6 @@ export default async function getH3Details(req, res) {
     const lockedH3 = parseInt(req.query.lockedH3 || '0');
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
     const now = new Date();
-    const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
     if (!h3SplitLong) {
         res.status(200).json([]);
@@ -45,12 +41,12 @@ export default async function getH3Details(req, res) {
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
     let fileDateMatch = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let globalFileName = selectedFile;
-    let oldest = 0;
+    let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
             globalFileName = `year.${fileDateMatch}`;
-            oldest = !lockedH3 ? new Date(now - MAXIMUM_GRAPH_AGE_MSEC) : null;
+            oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
@@ -59,7 +55,7 @@ export default async function getH3Details(req, res) {
     console.log(now.toISOString(), ' h3others', subdir, selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     // Find the enclosing global record
-    const globalRecord = await searchArrowFileInline(OUTPUT_PATH + 'global/global.' + globalFileName + '.arrow', parentH3SplitLong);
+    const globalRecord = await searchArrowFileInline('global/global.' + globalFileName + '.arrow.gz', parentH3SplitLong);
 
     if (!globalRecord || !globalRecord.stations) {
         console.log('no record in global file');
@@ -73,12 +69,12 @@ export default async function getH3Details(req, res) {
     for (const station of globalRecord?.stations?.split(',') || []) {
         const sid = parseInt(station, 36) >> 4;
         // get station name
-        const stationName = searchStationArrowFile(OUTPUT_PATH + 'stations.arrow', sid)?.name;
+        const stationName = searchStationArrowFile(sid)?.name;
 
         if (!stationName) {
             console.log('station', sid, ' not found!');
         } else {
-            await searchMatchingArrowFiles(OUTPUT_PATH, stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
+            await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
                 result[date] = Object.assign(result[date] || {});
                 result[date][stationName] = row.count;
             });
@@ -136,4 +132,5 @@ export default async function getH3Details(req, res) {
         series: [...top5, {s: 'Other', c: _reduce(top5, (r, v) => (r = r - v.c), total)}],
         data
     });
+    console.log('<-', Date.now() - now.getTime(), 'msec', result.length, 'rows');
 }

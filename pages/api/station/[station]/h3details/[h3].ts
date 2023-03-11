@@ -2,20 +2,20 @@ import {h3IndexToSplitLong} from 'h3-js';
 
 import {searchMatchingArrowFiles} from '/lib/api/searcharrow';
 
-import {OUTPUT_PATH, MAXIMUM_GRAPH_AGE_MSEC} from '/lib/common/config';
+import {MAXIMUM_GRAPH_AGE_MSEC} from '/lib/common/config';
 
 import {prefixWithZeros} from '/lib/common/prefixwithzeros';
 
+import {H3DetailsOutputStructure, H3DetailsOutput} from 'lib/api/types';
+
 export default async function getH3Details(req, res) {
     // Top level
-    const pending = new Map();
     const subdir = req.query.station;
     const selectedFile = req.query.file;
     const lockedH3 = parseInt(req.query.lockedH3 || '0');
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
-    const result = [];
+    const result: H3DetailsOutput = [];
     const now = new Date();
-    const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
     if (!h3SplitLong) {
         res.status(200).json([]);
@@ -25,21 +25,21 @@ export default async function getH3Details(req, res) {
     // Get a Year/Month component from the file
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
     let fileDateMatch = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
-    let oldest = 0;
+    let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = now.getUTCFullYear();
-            oldest = !lockedH3 ? new Date(now - MAXIMUM_GRAPH_AGE_MSEC) : 0;
+            oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
-    console.log(now.toISOString(), 'h3details', subdir, selectedFile, fileDateMatch, req.query.h3, h3SplitLong, lockedH3, oldest, OUTPUT_PATH);
+    console.log(now.toISOString(), 'h3details', subdir, selectedFile, fileDateMatch, req.query.h3, h3SplitLong, lockedH3);
 
     // One dir for each station
     await searchMatchingArrowFiles(subdir, fileDateMatch, h3SplitLong, oldest, (json, date) => {
         if (json.avgGap) {
-            const output = {
+            const output: H3DetailsOutputStructure = {
                 date,
                 avgGap: json.avgGap >> 2,
                 maxSig: json.maxSig / 4,
@@ -60,4 +60,5 @@ export default async function getH3Details(req, res) {
 
     //
     res.status(200).json(result);
+    console.log('<-', Date.now() - now.getTime(), 'msec', result.length, 'rows');
 }
