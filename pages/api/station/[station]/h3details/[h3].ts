@@ -10,8 +10,8 @@ import {H3DetailsOutputStructure, H3DetailsOutput} from '../../../../../lib/api/
 
 export default async function getH3Details(req, res) {
     // Top level
-    const subdir = req.query.station;
-    const selectedFile = req.query.file;
+    const subdir: string = req.query.station;
+    const selectedFile: string = req.query.file;
     const lockedH3 = parseInt(req.query.lockedH3 || '0');
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
     const result: H3DetailsOutput = [];
@@ -24,11 +24,11 @@ export default async function getH3Details(req, res) {
 
     // Get a Year/Month component from the file
     let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
-    let fileDateMatch = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
+    let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
-            fileDateMatch = now.getUTCFullYear();
+            fileDateMatch = '' + now.getUTCFullYear();
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
