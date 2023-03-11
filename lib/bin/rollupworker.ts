@@ -49,9 +49,8 @@ const promises: Record<string, {resolve: Function}> = {};
 // Start the worker thread
 const worker = isMainThread ? new Worker(__filename, {env: SHARE_ENV}) : null;
 
-export function rollupStartup(station: StationName, whatAccumulators: RollupStartupAccumulators, stationMeta?: StationDetails) : Promise<any> {
-
-  // Do the sync in the worker thread
+export function rollupStartup(station: StationName, whatAccumulators: RollupStartupAccumulators, stationMeta?: StationDetails): Promise<any> {
+    // Do the sync in the worker thread
     const threadPromise = new Promise<any>((resolve) => {
         promises[station + '_startup'] = {resolve};
         worker.postMessage({station, action: 'startup', now: Date.now(), whatAccumulators, stationMeta});
@@ -59,20 +58,21 @@ export function rollupStartup(station: StationName, whatAccumulators: RollupStar
 
     // And the compact in the aprs thread
     return threadPromise.then((result) => {
-
-        return result.success ? new Promise( async (resolve) => {
-            const db = await getDb(station, {cache: true, open: true, throw: false});
-            await db.compactRange( '0', 'Z' );
-    console.log('compacted', station );
-            resolve( result);
-        }) : result;
-      })
+        return result.success
+            ? new Promise(async (resolve) => {
+                  const db = await getDb(station, {cache: true, open: true, throw: false});
+                  await db.compactRange('0', 'Z');
+                  console.log('compacted', station);
+                  resolve(result);
+              })
+            : result;
+    });
 }
 
 export function rollupAbortStartup() {
     const threadPromise = new Promise<any>((resolve) => {
         promises['all_abortstartup'] = {resolve};
-        worker.postMessage({station:'all', action: 'abortstartup', now: Date.now()});
+        worker.postMessage({station: 'all', action: 'abortstartup', now: Date.now()});
     });
 }
 export function rollupDatabase(station: StationName, commonArgs: RollupDatabaseArgs): Promise<RollupResult> {
@@ -82,7 +82,7 @@ export function rollupDatabase(station: StationName, commonArgs: RollupDatabaseA
     });
 }
 
-export function purgeDatabase(station: StationName) : Promise<any>  {
+export function purgeDatabase(station: StationName): Promise<any> {
     return new Promise<any>((resolve) => {
         promises[station + '_purge'] = {resolve};
         worker.postMessage({station, action: 'purge'});
@@ -91,7 +91,7 @@ export function purgeDatabase(station: StationName) : Promise<any>  {
 
 // block startup from continuing - variable in worker thread only
 let abortStartup = false;
-    
+
 //
 // Inbound in the thread Dispatch to the correct place
 if (!isMainThread) {
@@ -107,11 +107,11 @@ if (!isMainThread) {
                         out = await rollupDatabaseInternal(db, task);
                         break;
                     case 'abortstartup':
-                        out = {success:true};
+                        out = {success: true};
                         abortStartup = true;
                         break;
                     case 'startup':
-                        out = abortStartup ? await rollupDatabaseStartup(db, task) : {success:false};
+                        out = !abortStartup ? await rollupDatabaseStartup(db, task) : {success: false};
                         break;
                     case 'purge':
                         await purgeDatabaseInternal(db);
@@ -153,10 +153,10 @@ async function purge(db: DB, hr: CoverageHeader) {
 
     // Now clear and compact
     await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
-//    await db.compactRange(
-//      CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, true), //
-//        CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket)
-//    );
+    //    await db.compactRange(
+    //      CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, true), //
+    //        CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket)
+    //    );
 
     // And provide a status update
     if (first100KeyCount) {
