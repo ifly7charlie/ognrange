@@ -62,7 +62,7 @@ export class CoverageHeader {
 
     get h3bigint() {
         let h = this.h3splitlong;
-        return (BigInt(h[1]) << 32n) | BigInt(h[0]);
+        return (BigInt(h[1]) << BigInt(32)) | BigInt(h[0]);
     }
 
     get h3splitlong() {
