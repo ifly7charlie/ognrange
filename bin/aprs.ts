@@ -83,6 +83,7 @@ import {flushDirtyH3s, updateCachedH3, getH3CacheSize, unlockH3sForReads} from '
 
 // Rollup functions
 import {rollupAll, rollupStartupAll, rollupStats} from '../lib/bin/rollup';
+import {rollupAbortStartup} from '../lib/bin/rollupworker';
 import {getAccumulator, getCurrentAccumulators, updateAndProcessAccumulators, initialiseAccumulators} from '../lib/bin/accumulators';
 
 // Get our git version
@@ -150,7 +151,8 @@ async function handleExit(signal) {
     }
 
     if (startupPromise) {
-        console.log('waiting for startup to finish');
+        console.log('waiting for startup to abort');
+        await rollupAbortStartup();
         await startupPromise;
     }
 
