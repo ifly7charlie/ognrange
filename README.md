@@ -370,7 +370,7 @@ STATION_EXPIRY_TIME_DAYS=31
 #
 # This ALSO controls how often to write output files. Updated display files
 # are produced during rollups - so at startup, at rollup period, and at exit
-ROLLUP_PERIOD_HOURS=2
+ROLLUP_PERIOD_HOURS=3
 
 # how many databases we can process at once when doing a rollup, if
 # your system drops the APRS connection when it is busy then you should
