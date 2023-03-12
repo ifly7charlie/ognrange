@@ -77,6 +77,10 @@ export default function CombinePage(props) {
         visualisation = 'avgSig';
     }
 
+    // Where to put the dock
+    const hasWindow = typeof window !== 'undefined';
+    const dockPosition = hasWindow && window.innerWidth < window.innerHeight ? 'bottom' : 'right';
+
     // What the map is looking at
     const [viewport, setViewport] = useState({
         latitude: parseFloat(lat || 0) || 49.50305,
@@ -284,7 +288,7 @@ export default function CombinePage(props) {
                     ></CoverageMap>
                 </div>
                 {router.isReady && (
-                    <Dock isVisible={expanded && process.browser} size={size} style={{border: '10px solid black'}} dimMode="none" position="right" onVisibleChange={onDockVisibleChange} onSizeChange={onDockResize}>
+                    <Dock isVisible={expanded && process.browser} size={size} style={{border: '10px solid black'}} dimMode="none" position={dockPosition} onVisibleChange={onDockVisibleChange} onSizeChange={onDockResize}>
                         <div>
                             <span style={{padding: '0px', border: '5px solid white'}}>
                                 <img width="100" height="100" src="http://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />
