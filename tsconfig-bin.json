@@ -2,7 +2,7 @@
     "compilerOptions": {
         "allowJs": true,
         "checkJs": false,
-        "strict": false,
+        "strict": true,
         "lib": ["ES2021", "dom"],
         "module": "commonjs",
         "target": "ES2021",

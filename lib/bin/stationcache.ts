@@ -1,5 +1,5 @@
 // DB
-import {ClassicLevel} from 'classic-level';
+import {ClassicLevel, BatchOperation as ClassicBatchOperation} from 'classic-level';
 
 // Least Recently Used cache for Station Database connectiosn
 import LRUCache from 'lru-cache';
@@ -18,9 +18,11 @@ import {normaliseCase} from './caseinsensitive';
 
 import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from '../common/config';
 
+export type BatchOperation = ClassicBatchOperation<DB, string, Uint8Array>;
+
 const options = {
     max: MAX_STATION_DBS + 1, // global is stored in the cache
-    dispose: function (db, key, r) {
+    dispose: function (db: DB, key: string, r: string) {
         if (db.status == 'closed') {
             return; // if it's already closed then that's cool let it go
         }
@@ -63,8 +65,8 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
     //
     // If it's a number we need a name, and we want to make sure it matches the file system case sensitivity
     // or we'll end up with correct databases.
-    let stationName: StationName | undefined = normaliseCase(typeof station === 'number' ? getStationName(station) : station) as StationName;
-    if (!stationName) {
+    const stationName: StationName | undefined = normaliseCase(typeof station === 'number' ? getStationName(station) : station) as StationName;
+    if (stationName === undefined || !stationName) {
         console.error(`Unable to getDb, ${station} unknown`);
         if (options.throw) {
             throw new Error(`Unable to getDb, ${station} unknown`);
@@ -74,8 +76,8 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
 
     // Prevent re-entrancy
     const openDb = async () => {
-        let stationDb = stationDbCache.get(stationName) as DB;
-        if (!stationDb && !options.existingOnly) {
+        let stationDb: DB | undefined = stationDbCache.get(stationName);
+        if (stationDb === undefined && !options.existingOnly) {
             // You can get either global or specific station, they are stored in slightly different places
             const path = stationName == 'global' ? DB_PATH + stationName : DB_PATH + '/stations/' + stationName;
 
@@ -90,7 +92,7 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
             if (options.open) {
                 try {
                     await stationDb.open();
-                } catch (e) {
+                } catch (e: any) {
                     CurrentlyOpen.delete(stationName);
                     console.log(`${stationName}: Failed to open: ${stationDb.status}: ${e.cause?.code || e.code}`);
                     stationDb.close();
@@ -102,31 +104,30 @@ export async function getDb(station: StationName | StationId, options: {cache?: 
             }
 
             // If we opened successfully and are supposed to cache it
-            if (options.cache && stationDb) {
-                stationDbCache.set(stationName, stationDb);
-                stationDb.cached = true;
-            }
+            if (stationDb !== undefined) {
+                if (options.cache) {
+                    stationDbCache.set(stationName, stationDb);
+                    stationDb.cached = true;
+                }
 
-            // If we are opening and haven't been told to skip the meta data then we will write the current meta
-            // data into the file. Only reason to open without skipping is because we have a record to save in the
-            // file
-            if (!options.noMeta) {
-                await saveAccumulatorMetadata(stationDb);
+                // If we are opening and haven't been told to skip the meta data then we will write the current meta
+                // data into the file. Only reason to open without skipping is because we have a record to save in the
+                // file
+                if (!options.noMeta) {
+                    await saveAccumulatorMetadata(stationDb);
+                }
             }
         }
 
-        if (stationDb && !(stationDb.status == 'open' || stationDb.status == 'opening')) {
+        if (stationDb !== undefined && !(stationDb.status == 'open' || stationDb.status == 'opening')) {
             console.log(stationName, stationDb.status, new Error('db status invalid'));
         }
 
         return stationDb;
     };
 
-    return lock.acquire(stationName, (done) => {
-        openDb()
-            .then((r) => done(null, r))
-            .catch((e) => done(e, null));
-    });
+    // Acquire the station lock while opening the database
+    return lock.acquire(stationName, (): Promise<DB | undefined> => openDb());
 }
 
 // Size excluding global
@@ -155,7 +156,7 @@ export async function closeAllStationDbs(): Promise<void> {
     for (const v of dbs) {
         promises.push(
             lock.acquire(v.ognStationName, (done) => {
-                v.close((r) => done(null, r));
+                v.close(() => done());
             })
         );
     }
@@ -163,6 +164,6 @@ export async function closeAllStationDbs(): Promise<void> {
     stationDbCache.clear();
 }
 
-export function allOpenDbs(header) {
+export function allOpenDbs(header: string) {
     console.log(header, [...CurrentlyOpen.keys()].sort().join(','));
 }

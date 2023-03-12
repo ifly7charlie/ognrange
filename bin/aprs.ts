@@ -6,7 +6,7 @@ dotenv.config({path: '.env.local', override: true});
 
 // Import the APRS server
 import {ISSocket} from 'js-aprs-is';
-import {aprsParser} from 'js-aprs-fap';
+import {aprsParser, aprsPacket} from 'js-aprs-fap';
 
 // Height above ground calculations, uses mapbox to get height for point
 //import geo from './lib/getelevationoffset.js';
@@ -22,37 +22,40 @@ import {CoverageHeader} from '../lib/bin/coverageheader.js';
 
 import {gitVersion} from '../lib/bin/gitversion.js';
 
-import {loadStationStatus, getStationId, checkStationMoved, updateStationBeacon, closeStatusDb, getNextStationId, stationDetails} from '../lib/bin/stationstatus';
+import {loadStationStatus, checkStationMoved, updateStationBeacon, closeStatusDb, getNextStationId, getStationDetails} from '../lib/bin/stationstatus';
 import {closeAllStationDbs, initialiseStationDbCache, getStationDbCacheSize} from '../lib/bin/stationcache';
 
-import {Epoch, StationName, Longitude, Latitude} from '../lib/bin/types';
+import {Epoch, StationName, StationId, Longitude, Latitude, H3} from '../lib/bin/types';
 
 import {normaliseCase} from '../lib/bin/caseinsensitive';
 
 // H3 hexagon cell library
 import h3 from 'h3-js';
 
-import _reduce from 'lodash.reduce';
+import {reduce as _reduce} from 'lodash';
 
 let globalDb = undefined;
 
 // track any setInterval/setTimeout calls so we can stop them when asked to exit
 // also the async rollups we do during startup
-let intervals = [];
-let timeouts: Record<string, any> = {};
-let startupPromise = null;
+let intervals: NodeJS.Timer[] = [];
+let timeouts: Record<string, NodeJS.Timeout> = {};
+let startupPromise: Promise<void> | null = null;
 
 // APRS connection
-let connection: any = {};
+class OgnSocket extends ISSocket {
+    interval?: NodeJS.Timer;
+    exiting?: boolean;
+    valid?: boolean;
+    aprsc?: string;
+}
+let connection: OgnSocket | null = null;
 
 // Tracking aircraft so we can calculate gaps and double check for
 // planes that have GPS on but are stationary and have poor
 // coverage so jump a lot
 let aircraftStation = new Map();
 let allAircraft = new Map();
-
-// PM2 Metrics
-let metrics = undefined;
 
 // shortcuts so regexp compiled once
 const reExtractDb = / ([0-9.]+)dB /;
@@ -94,7 +97,7 @@ if (!existsSync('package.json')) {
     process.exit();
 }
 
-let packetStats = {ignoredStation: 0, ignoredTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0, pps: '', rawPps: ''};
+let packetStats = {ignoredStation: 0, ignoredTracker: 0, invalidTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0, pps: '', rawPps: ''};
 
 // Run stuff magically
 main().then(() => console.log('initialised'));
@@ -139,7 +142,7 @@ let alreadyExiting = false;
 // we need to stop receiving,
 // output the current data, close any databases,
 // and then kill of any timers
-async function handleExit(signal) {
+async function handleExit(signal: string) {
     if (alreadyExiting) {
         return;
     }
@@ -171,7 +174,7 @@ async function handleExit(signal) {
     await closeAllStationDbs();
     if (getCurrentAccumulators()) {
         const current = getCurrentAccumulators();
-        await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators});
+        await rollupAll({current: current!.currentAccumulator, processAccumulators: current!.accumulators});
     } else {
         console.log(`unable to output a rollup as service still starting`);
     }
@@ -197,7 +200,7 @@ process.on('SIGUSR1', async function () {
     await closeAllStationDbs();
     if (getCurrentAccumulators()) {
         const current = getCurrentAccumulators();
-        await rollupAll({current: current.currentAccumulator, processAccumulators: current.accumulators});
+        await rollupAll({current: current!.currentAccumulator, processAccumulators: current!.accumulators});
     }
     unlockH3sForReads();
 });
@@ -226,30 +229,35 @@ async function startAprsListener() {
 
     // Handle a connect
     connection.on('connect', () => {
+        if (!connection) {
+            throw new Error('no connection when connect called');
+        }
         connection.sendLine(connection.userLogin);
         connection.sendLine(`# ognrange ${CALLSIGN} ${gv}`);
     });
 
     // Handle a data packet
-    connection.on('packet', async function (data) {
+    connection.on('packet', async function (data: string) {
         if (!connection || connection.exiting) {
             return;
         }
         connection.valid = true;
         if (data.charAt(0) != '#' && !data.startsWith('user')) {
             packetStats.rawCount++;
-            const packet = parser.parseaprs(data);
-            if ('latitude' in packet && 'longitude' in packet && 'comment' in packet && packet.comment?.substr(0, 2) == 'id') {
-                processPacket(packet);
-            } else if (packet.sourceCallsign) {
-                const station: StationName = normaliseCase(packet.sourceCallsign) as StationName;
-                if ((packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && !ignoreStation(station)) {
-                    if (packet.type == 'location') {
-                        checkStationMoved(station, packet.latitude as Latitude, packet.longitude as Longitude, packet.timestamp as Epoch);
-                    } else if (packet.type == 'status') {
-                        updateStationBeacon(station, packet.body, packet.timestamp as Epoch);
-                    } else {
-                        console.log(data, packet);
+            const packet: aprsPacket = parser.parseaprs(data);
+            if (packet.sourceCallsign && 'timestamp' in packet) {
+                if ('latitude' in packet && 'longitude' in packet && 'comment' in packet && packet.comment?.substr(0, 2) == 'id') {
+                    processPacket(packet as AprsLocationPacket);
+                } else {
+                    const station: StationName = normaliseCase(packet.sourceCallsign) as StationName;
+                    if ((packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && !ignoreStation(station)) {
+                        if (packet.type == 'location') {
+                            checkStationMoved(station, packet.latitude as Latitude, packet.longitude as Longitude, packet.timestamp as Epoch);
+                        } else if (packet.type == 'status' && packet.body) {
+                            updateStationBeacon(station, packet.body, packet.timestamp as Epoch);
+                        } else {
+                            console.log(data, packet);
+                        }
                     }
                 }
             }
@@ -264,7 +272,7 @@ async function startAprsListener() {
 
     // Failed to connect, will create a new connection at the next periodic interval
     connection.on('error', (err) => {
-        if (!connection.exiting) {
+        if (connection && !connection.exiting) {
             console.log('Error: ' + err);
             connection.disconnect();
             connection.valid = false;
@@ -283,7 +291,7 @@ async function startAprsListener() {
     connection.interval = setInterval(function () {
         try {
             // Send APRS keep alive or we will get dumped
-            connection.sendLine(`# ${CALLSIGN} ${gv}`);
+            connection?.sendLine(`# ${CALLSIGN} ${gv}`);
         } catch (e) {
             console.log(`exception ${e} in sendLine status`);
         }
@@ -292,7 +300,7 @@ async function startAprsListener() {
         if (!connection || ((!connection.isConnected() || !connection.valid) && !connection.exiting)) {
             console.log('failed APRS connection, retrying');
             try {
-                connection.disconnect();
+                connection?.disconnect();
             } catch (e) {}
             // We want to restart the APRS listener if this happens
             startAprsListener();
@@ -400,15 +408,27 @@ function displayStatus() {
     console.log(JSON.stringify(packetStats));
 }
 
+class AprsLocationPacket extends aprsPacket {
+    id: string | number = '';
+    timestamp: number = 0;
+    sourceCallsign: string = '';
+    comment: string = '';
+    latitude: number = NaN;
+    longitude: number = NaN;
+}
+
 //
 // collect points, emit to competition db every 30 seconds
-async function processPacket(packet) {
-    // Count this packet into pm2
-    metrics?.ognPerSecond?.mark();
-
+async function processPacket(packet: AprsLocationPacket) {
     // Flarm ID we use is last 6 characters, check if OGN tracker or regular flarm
-    const flarmId = packet.sourceCallsign.slice(packet.sourceCallsign.length - 6);
-    const pawTracker = packet.sourceCallsign.slice(0, 3) == 'PAW';
+    const flarmId = packet.sourceCallsign?.slice(packet.sourceCallsign?.length - 6);
+    const pawTracker = packet.sourceCallsign?.slice(0, 3) == 'PAW';
+
+    // Make sure it's valid
+    if (flarmId?.length != 6 || !pawTracker) {
+        packetStats.invalidTracker++;
+        return;
+    }
 
     // Lookup the altitude adjustment for the
     const station = normaliseCase(packet.digipeaters?.pop()?.callsign || 'unknown') as StationName;
@@ -427,7 +447,7 @@ async function processPacket(packet) {
         return;
     }
 
-    let altitude = Math.floor(packet.altitude);
+    let altitude = Math.floor(packet?.altitude || 0);
 
     // Proxy for the plane
     let aircraft = allAircraft.get(flarmId);
@@ -439,7 +459,7 @@ async function processPacket(packet) {
     // vertical speed of 30 is ~0.5feet per second or ~15cm/sec and I'm guessing
     // helicopters can't hover that precisely. NOTE this threshold is not 0 because
     // the roc jumps a lot in the packet stream.
-    if (packet.speed < 1) {
+    if (packet.speed ?? 99 < 1) {
         const rawRot = (packet.comment.match(reExtractRot) || [0, 0])[1];
         const rawVC = (packet.comment.match(reExtractVC) || [0, 0])[1];
         if (rawRot == 0.0 && rawVC < 30) {
@@ -455,7 +475,7 @@ async function processPacket(packet) {
     //
     // The goal is to have some kind of shading that indicates how reliable packet reception is
     // which is to  a little to do with how many packets are received.
-    let gap;
+    let gap: number;
     let first = false;
     {
         const gs = station + '/' + flarmId;
@@ -514,11 +534,11 @@ async function processPacket(packet) {
 
     // Look for signal strength and checksum - we will ignore any packet without a signal strength
     // sometimes this happens to be missing and other times it happens because it is reported as 0.0
-    const rawSignalStrength = (packet.comment.match(reExtractDb) || [0, 0])[1];
+    const rawSignalStrength = (packet.comment.match(reExtractDb) || [0, '0'])[1];
     const signal = Math.min(Math.round(parseFloat(rawSignalStrength) * 4), 255);
 
     // crc may be absent, if it is then it's a 0
-    const crc = parseInt((packet.comment.match(reExtractCrc) || [0, 0])[1]);
+    const crc = parseInt((packet.comment.match(reExtractCrc) || [0, '0'])[1]);
 
     // If we have no signal strength then we'll ignore the packet... don't know where these
     // come from or why they exist...
@@ -531,14 +551,14 @@ async function processPacket(packet) {
 
     // Enrich with elevation and send to everybody, this is async
     // and we don't need it's results to say we logged the packet
-    getElevationOffset(packet.latitude, packet.longitude, async (gl) => {
+    getElevationOffset(packet.latitude, packet.longitude, async (gl: number) => {
         const agl = Math.round(Math.max(altitude - gl, 0));
 
         // Find the id for the station or allocate
-        const stationid = await getStationId(station);
+        const stationDetails = getStationDetails(station);
 
         // Packet for station marks it for dumping next time round
-        stationDetails(station).lastPacket = packet.timestamp;
+        stationDetails.lastPacket = packet.timestamp as Epoch;
 
         // What hexagon are we working with
         const h3id = h3.latLngToCell(packet.latitude, packet.longitude, H3_STATION_CELL_LEVEL);
@@ -547,20 +567,20 @@ async function processPacket(packet) {
         // We store the database records as binary bytes - in the format described in the mapping() above
         // this reduces the amount of storage we need and means we aren't constantly parsing text
         // and printing text.
-        async function mergeDataIntoDatabase(db: StationName, lockKeyStationId, h3) {
+        async function mergeDataIntoDatabase(db: StationName, lockKeyStationId: StationId, h3: H3) {
             // Header details for our update
             const h3k = new CoverageHeader(lockKeyStationId, ...getAccumulator(), h3);
 
             // And tell the cache to fetch/update - this may block if it needs to read
             // and there is nothing yet available
-            updateCachedH3(db, h3k, altitude, agl, crc, signal, gap, stationid);
+            updateCachedH3(db, h3k, altitude, agl, crc, signal, gap, stationDetails.id);
         }
 
         // Merge into both the station db (0,0) and the global db with the stationid we allocated
         // we don't pass stationid into the station specific db because there only ever is one
         // it gets used to build the list of stations that can see the cell
-        mergeDataIntoDatabase(station, stationid, h3id);
+        mergeDataIntoDatabase(station, stationDetails.id, h3id as H3);
 
-        mergeDataIntoDatabase('global' as StationName, 0, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL));
+        mergeDataIntoDatabase('global' as StationName, 0 as StationId, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL) as H3);
     });
 }

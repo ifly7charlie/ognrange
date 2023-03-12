@@ -3,16 +3,16 @@ import {CoverageRecord, bufferTypes} from './coveragerecord';
 
 import {H3_CACHE_FLUSH_PERIOD_MS, H3_CACHE_EXPIRY_TIME_MS, DB_PATH, H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS} from '../common/config';
 
-import {getDb} from './stationcache';
+import {getDb, DB} from './stationcache';
 import {getStationName} from './stationstatus';
 
-import {StationName, StationId} from './types';
+import {H3, StationName, StationId} from './types';
 
 // h3cache locking
 import AsyncLock from 'async-lock';
 let lock = new AsyncLock();
 
-import _find from 'lodash.find';
+import {find as _find} from 'lodash';
 
 import {setTimeout} from 'timers/promises';
 
@@ -33,7 +33,7 @@ export function getH3CacheSize() {
 // clears the records if it has expired. It is actually a synchronous function
 // as it will not return before everything has been written
 export async function flushDirtyH3s({allUnwritten = false, lockForRead = false}): Promise<any> {
-    return lock.acquire('flushDirtyH3s', function (done) {
+    return lock.acquire('flushDirtyH3s', function (done: Function) {
         internalFlushDirtyH3s({allUnwritten, lockForRead})
             .then((r) => done(null, r))
             .catch((e) => done(e, null));
@@ -75,11 +75,8 @@ async function internalFlushDirtyH3s({allUnwritten = false, lockForRead = false}
     }
 
     if (blockWrites) {
-        let pendingLocks: string[] = Object.keys(lock.queues);
-        while (pendingLocks.length != 1) {
-            console.log('pendinglocks', pendingLocks.join(','));
+        while (lock.isBusy()) {
             await setTimeout(100);
-            pendingLocks = Object.keys(lock.queues);
         }
     }
 
@@ -99,7 +96,7 @@ async function internalFlushDirtyH3s({allUnwritten = false, lockForRead = false}
                 // one transaction is active for a given h3 at a time, this will
                 // block all the other ones until the first completes, it's per db
                 // no issues updating h3s in different dbs at the same time
-                lock.acquire(h3klockkey, function (releaseLock) {
+                lock.acquire(h3klockkey, function (releaseLock: Function) {
                     // If we are dirty all we can do is write it out
                     if (v.dirty) {
                         // either periodic flush (eg before rollup) or flushTime elapsed
@@ -170,12 +167,12 @@ async function internalFlushDirtyH3s({allUnwritten = false, lockForRead = false}
     return stats;
 }
 
-export async function updateCachedH3(db: StationName, h3k, altitude, agl, crc, signal, gap, stationid) {
+export async function updateCachedH3(db: StationName, h3k: CoverageHeader, altitude: number, agl: number, crc: number, signal: number, gap: number, stationid: StationId): Promise<void> {
     // Because the DB is asynchronous we need to ensure that only
     // one transaction is active for a given h3 at a time, this will
     // block all the other ones until the first completes, it's per db
     // no issues updating h3s in different dbs at the same time
-    await lock.acquire(h3k.lockKey, function (release) {
+    return lock.acquire(h3k.lockKey, function (release: Function) {
         // If we have some cached changes for this h3 then we will simply
         // use the entry in the 'dirty' table. This table gets flushed
         // on a periodic basis and saves us hitting the disk for very
@@ -199,8 +196,9 @@ export async function updateCachedH3(db: StationName, h3k, altitude, agl, crc, s
                 updateH3Entry();
             } else {
                 getDb(db, {throw: true, open: true, cache: true})
-                    .then((db) => {
-                        db.get(h3k.dbKey())
+                    .then((db: DB | undefined) => {
+                        // will throw on error not actually return undefined
+                        db?.get(h3k.dbKey())
                             .then(updateH3Entry) // gets called with buffer
                             .catch((_) => updateH3Entry()); // not found, make new entry
                     })

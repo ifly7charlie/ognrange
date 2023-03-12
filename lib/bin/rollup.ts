@@ -1,12 +1,6 @@
-import {mapAllCapped} from './mapallcapped.js';
+import {mapAllCapped} from './mapallcapped';
 
-import _clonedeep from 'lodash.clonedeep';
-import _isequal from 'lodash.isequal';
-import _map from 'lodash.map';
-import _reduce from 'lodash.reduce';
-import _sortby from 'lodash.sortby';
-import _filter from 'lodash.filter';
-import _uniq from 'lodash.uniq';
+import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
 
 import {writeFileSync, unlinkSync, symlinkSync} from 'fs';
 import {createWriteStream} from 'fs';
@@ -15,16 +9,16 @@ import {Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apac
 
 import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from './rollupworker';
 
-import {allStationsDetails, updateStationStatus, stationDetails} from './stationstatus';
+import {allStationsDetails, updateStationStatus} from './stationstatus';
 
 import {DB} from './stationcache';
 
-import {CoverageHeader, accumulatorTypes} from './coverageheader.js';
-import {getCurrentAccumulators} from './accumulators';
+import {CurrentAccumulator, Accumulators, getCurrentAccumulators, AccumulatorTypeString} from './accumulators';
 
 import {gzipSync, createGzip} from 'zlib';
 
-import {StationName, StationId} from './types';
+import {Epoch, StationName, StationId} from './types';
+import {CoverageHeader} from './coverageheader.js';
 
 import {
     MAX_SIMULTANEOUS_ROLLUPS, //
@@ -54,11 +48,11 @@ export let rollupStats: RollupStats = {completed: 0, elapsed: 0};
 
 //
 // This iterates through all open databases and rolls them up.
-export async function rollupAll({current, processAccumulators}): Promise<RollupStats> {
+export async function rollupAll({current, processAccumulators}: {current: CurrentAccumulator; processAccumulators: Accumulators}): Promise<RollupStats> {
     //
     // Make sure we have updated validStations
     const nowDate = new Date();
-    const nowEpoch = Math.floor(Date.now() / 1000);
+    const nowEpoch = Math.floor(Date.now() / 1000) as Epoch;
     const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
     const validStations = new Set<StationId>();
     let needValidPurge = false;
@@ -113,62 +107,50 @@ export async function rollupAll({current, processAccumulators}): Promise<RollupS
         }
     };
 
-    // Global is biggest and takes longest
-    let promises = [];
-    promises.push(
-        new Promise<void>(async function (resolve) {
-            const r = await rollupDatabase('global' as StationName, {...commonArgs, validStations});
-            rollupStats.last.sumElapsed += r.elapsed;
-            rollupStats.last.operations += r.operations;
-            rollupStats.last.databases++;
-            resolve();
-        })
-    );
-
     // each of the stations, capped at 20% of db cache (or 30 tasks) to reduce risk of purging the whole cache
     // mapAllCapped will not return till all have completed, but this doesn't block the processing
     // of the global db or other actions.
     // it is worth running them in parallel as there is a lot of IO which would block
-    promises.push(
-        mapAllCapped(
-            allStationsDetails(),
-            async function (stationMeta) {
-                const station = stationMeta.station;
+    let promise = mapAllCapped(
+        allStationsDetails({includeGlobal: true}),
+        async function (stationMeta) {
+            const station = stationMeta.station;
 
-                // If there has been no packets since the last output then we don't gain anything by scanning the whole db and processing it
-                if (stationMeta.outputEpoch && !stationMeta.moved && (stationMeta.lastPacket || 0) < stationMeta.outputEpoch) {
-                    rollupStats.last.skippedStations++;
-                    return;
-                }
+            // If there has been no packets since the last output then we don't gain anything by scanning the whole db and processing it
+            if (stationMeta.outputEpoch && !stationMeta.moved && (stationMeta.lastPacket || 0) < stationMeta.outputEpoch) {
+                rollupStats.last!.skippedStations++;
+                return;
+            }
 
-                // If a station is not valid we are clearing the data from it from the registers
-                if (needValidPurge && !validStations.has(stationMeta.id)) {
-                    // empty the database... we could delete it but this is very simple and should be good enough
-                    console.log(`clearing database for ${station} as it is not valid`);
-                    await purgeDatabase(station);
-                    rollupStats.last.databases++;
-                    return;
-                }
+            // If a station is not valid we are clearing the data from it from the registers
+            if (needValidPurge && !validStations.has(stationMeta.id)) {
+                // empty the database... we could delete it but this is very simple and should be good enough
+                console.log(`clearing database for ${station} as it is not valid`);
+                await purgeDatabase(station);
+                rollupStats.last!.databases++;
+                return;
+            }
 
-                const r = await rollupDatabase(station, {...commonArgs, stationMeta});
-                rollupStats.last.sumElapsed += r.elapsed;
-                rollupStats.last.operations += r.operations;
-                rollupStats.last.databases++;
+            const r = await rollupDatabase(station, {...commonArgs, stationMeta});
+            if (r) {
+                rollupStats.last!.sumElapsed += r.elapsed;
+                rollupStats.last!.operations += r.operations;
+                rollupStats.last!.databases++;
+            }
 
-                // Details about when we wrote, also contains information about the station if
-                // it's not global
-                stationMeta.outputDate = nowDate.toISOString();
-                stationMeta.outputEpoch = nowEpoch;
-            },
-            MAX_SIMULTANEOUS_ROLLUPS
-        )
+            // Details about when we wrote, also contains information about the station if
+            // it's not global
+            stationMeta.outputDate = nowDate.toISOString();
+            stationMeta.outputEpoch = nowEpoch;
+        },
+        MAX_SIMULTANEOUS_ROLLUPS
     );
 
     // And the global json
     produceStationFile();
 
     // Wait for all to be done
-    await Promise.allSettled(promises);
+    await promise;
 
     // Report stats on the rollup
     rollupStats.lastElapsed = Date.now() - nowDate.valueOf();
@@ -181,7 +163,7 @@ export async function rollupAll({current, processAccumulators}): Promise<RollupS
 }
 
 export async function rollupStartupAll() {
-    const current = getCurrentAccumulators();
+    const current = getCurrentAccumulators() || superThrow('no accumulators on startup');
     const common = {current: current.currentAccumulator, processAccumulators: current.accumulators};
 
     const allStations = allStationsDetails();
@@ -219,7 +201,7 @@ function Uint8FromObject(o: Record<any, any>): Uint8Array {
 }
 
 export async function saveAccumulatorMetadata(db: DB): Promise<void> {
-    const {currentAccumulator, accumulators: allAccumulators} = getCurrentAccumulators();
+    const {currentAccumulator, accumulators: allAccumulators} = getCurrentAccumulators() || superThrow('no accumulators on saveAccumulatorMetadata');
 
     const dbkey = CoverageHeader.getAccumulatorMeta(...currentAccumulator).dbKey();
     const now = new Date();
@@ -246,8 +228,9 @@ export async function saveAccumulatorMetadata(db: DB): Promise<void> {
             );
         });
     // make sure we have an up to date header for each accumulator
-    for (const type in allAccumulators) {
-        const currentHeader = CoverageHeader.getAccumulatorMeta(type, allAccumulators[type].bucket);
+    for (const typeString in allAccumulators) {
+        const type = typeString as AccumulatorTypeString;
+        const currentHeader = CoverageHeader.getAccumulatorMeta(type, allAccumulators[type]!.bucket);
         const dbkey = currentHeader.dbKey();
         await db
             .get(dbkey)
@@ -268,7 +251,7 @@ export async function saveAccumulatorMetadata(db: DB): Promise<void> {
 function produceStationFile() {
     const stationDetailsArray = allStationsDetails();
     // Form a list of hashes
-    let statusOutput = _filter(stationDetailsArray, (v) => {
+    let statusOutput = stationDetailsArray.filter((v) => {
         return v.valid && v.lastPacket;
     });
 
@@ -309,16 +292,14 @@ function produceStationFile() {
         // And write them out
         if (UNCOMPRESSED_ARROW_FILES) {
             const pt = new PassThrough({objectMode: true});
-            const result = pt //
-                .pipe(RecordBatchWriter.throughNode())
+            pt.pipe(RecordBatchWriter.throughNode()) //
                 .pipe(createWriteStream(OUTPUT_PATH + 'stations.arrow'));
             pt.write(tableUpdates);
             pt.end();
         }
         {
             const pt = new PassThrough({objectMode: true, emitClose: true});
-            const result = pt
-                .pipe(RecordBatchWriter.throughNode())
+            pt.pipe(RecordBatchWriter.throughNode())
                 .pipe(createGzip())
                 .pipe(createWriteStream(OUTPUT_PATH + 'stations.arrow.gz'));
             pt.write(tableUpdates);
@@ -338,7 +319,7 @@ function produceStationFile() {
     }
 }
 
-function symlink(src, dest) {
+export function symlink(src: string, dest: string) {
     try {
         unlinkSync(dest);
     } catch (e) {}
@@ -347,4 +328,8 @@ function symlink(src, dest) {
     } catch (e) {
         console.log(`error symlinking ${src}.arrow to ${dest}: ${e}`);
     }
+}
+
+function superThrow(t: string): never {
+    throw new Error(t);
 }

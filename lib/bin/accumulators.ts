@@ -1,44 +1,42 @@
-import {writeFileSync} from 'fs';
-
 import {prefixWithZeros} from '../common/prefixwithzeros';
 
-import _clonedeep from 'lodash.clonedeep';
-import _isequal from 'lodash.isequal';
-import _reduce from 'lodash.reduce';
+import {cloneDeep as _clonedeep, isEqual as _isequal, reduce as _reduce} from 'lodash';
 
 import {
-    ROLLUP_PERIOD_MINUTES, //
-    OUTPUT_PATH
+    ROLLUP_PERIOD_MINUTES //
 } from '../common/config';
 
 import {flushDirtyH3s, unlockH3sForReads} from './h3cache';
 import {rollupAll} from './rollup';
 import {closeAllStationDbs} from './stationcache';
 
-//import {CoverageHeader} from './coverageheader';
-
-export type CurrentAccumulator = [string, number];
+export type {AccumulatorTypeString} from './coverageheader';
+import {AccumulatorTypeString} from './coverageheader';
 
 //
 // What accumulators we are operating on these are internal
+export type CurrentAccumulator = [AccumulatorTypeString, number];
 let currentAccumulator: CurrentAccumulator | undefined = undefined;
 
-export type Accumulators =
-    | Record<
-          'current' | 'day' | 'month' | 'year',
-          {
-              bucket: number;
-              file: string;
-          }
-      >
-    | {};
+//const primaryBufferVersions: {[P in bufferTypes | number]?: primaryVersionTypes} = {
 
-let accumulators: Accumulators = {};
+export type Accumulators = {
+    [key in AccumulatorTypeString]?: {
+        bucket: number;
+        file: string;
+    };
+};
+
+let accumulators: Accumulators;
 
 //
 // Helper for getting current accumulator used as  ...getAccumulator() in
 // calls to CoverageHeader
+
 export function getAccumulator(): CurrentAccumulator {
+    if (!currentAccumulator) {
+        throw new Error('getAccumulator() called before an acculumator is ready');
+    }
     return currentAccumulator;
 }
 /*
@@ -72,7 +70,7 @@ export function getCurrentAccumulators(): null | {currentAccumulator: CurrentAcc
 //
 // this takes effect immediately so all new packets will move to the new accumulator
 // rolling over is maximum of 12 times an hour...
-export function whatAccumulators(now) {
+export function whatAccumulators(now: Date): {current: number; accumulators: Accumulators} {
     const rolloverperiod = Math.floor((now.getUTCHours() * 60 + now.getUTCMinutes()) / ROLLUP_PERIOD_MINUTES);
     const newAccumulatorBucket = ((now.getUTCDate() & 0x1f) << 7) | (rolloverperiod & 0x7f);
     const n = {
@@ -88,7 +86,7 @@ export function whatAccumulators(now) {
         month: {bucket: ((now.getUTCFullYear() & 0xff) << 4) | (now.getUTCMonth() & 0x0f), file: `${n.y}-${n.m}`},
         year: {bucket: now.getUTCFullYear(), file: `${n.y}`}
     };
-    return {current: newAccumulatorBucket, accumulators: accumulators};
+    return {current: newAccumulatorBucket, accumulators};
 }
 
 export function initialiseAccumulators() {

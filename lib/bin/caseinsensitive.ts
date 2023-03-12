@@ -11,6 +11,7 @@ if (caseInsensitive) {
     console.warn('*** Case insensitive file system data may be merged unexpectedly');
 }
 
-export function normaliseCase(a: string): string {
+export function normaliseCase(a: string | undefined): string | undefined {
+    if (!a) return a;
     return caseInsensitive && a != 'global' ? a.toUpperCase() : a;
 }

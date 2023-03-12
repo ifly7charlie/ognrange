@@ -7,9 +7,11 @@ import {gunzipSync} from 'zlib';
 
 import {MAX_ARROW_FILES, ARROW_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
+type ArrowTableType = Table<any>;
+
 import LRU from 'lru-cache';
 const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, ttl: 3 * 3600 * 1000},
-    cache = new LRU<string, Table<any>>(options);
+    cache = new LRU<string, ArrowTableType>(options);
 
 const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
@@ -64,12 +66,11 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
 
         try {
             table = tableFromIPC([arrowFileContents]);
+            cache.set(fileName, table);
+            searchTableForH3(fileName, table, h3SplitLong, resolve);
         } catch (e) {
             console.log(fileName, 'invalid arrow table', e);
         }
-        cache.set(fileName, table);
-
-        searchTableForH3(fileName, table, h3SplitLong, resolve);
     });
 }
 
@@ -79,7 +80,7 @@ export async function searchMatchingArrowFiles(station: string, fileDateMatch: s
     try {
         const files = readdirSync(ARROW_PATH + station)
             .map((fn) => {
-                return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz/)?.[1], fileName: fn};
+                return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz/)?.[1] || '', fileName: fn};
             })
             .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch)
             .sort((a, b) => a.fileName.localeCompare(b.fileName));
@@ -114,7 +115,7 @@ export async function searchMatchingArrowFiles(station: string, fileDateMatch: s
     await Promise.allSettled(pending.values());
 }
 
-function searchTableForH3(fileName: string, table, [h3lo, h3hi]: [number, number], resolve: RowResultFunction) {
+function searchTableForH3(fileName: string, table: ArrowTableType, [h3lo, h3hi]: [number, number], resolve: RowResultFunction) {
     //
     try {
         const h3hiArray = table.getChild('h3hi')?.toArray();
@@ -136,7 +137,12 @@ function searchTableForH3(fileName: string, table, [h3lo, h3hi]: [number, number
         // We now know the range it could be in
         const lastIndex = sortedLastIndex(h3hiArray, h3hi);
 
-        const h3loArray = table.getChild('h3lo').toArray();
+        const h3loArray = table.getChild('h3lo')?.toArray();
+
+        if (!h3loArray) {
+            resolve();
+            return;
+        }
 
         // All the rows with h3hi
         const subset = h3loArray.subarray(index, lastIndex);
@@ -148,7 +154,7 @@ function searchTableForH3(fileName: string, table, [h3lo, h3hi]: [number, number
             return;
         }
 
-        resolve(table.get(subIndex + index).toJSON());
+        resolve(table.get(subIndex + index)?.toJSON() as RowResult);
         return;
     } catch (e) {
         console.log(fileName, e);
@@ -165,7 +171,7 @@ let arrowStationFileMTime: Date | null = null;
 //
 // This is an arrow version of stations.json we use it to speed up the
 // name resolution from station ID when producing output
-export function searchStationArrowFile(id: number) {
+export function searchStationArrowFile(id: number): Record<string, any> | null {
     const fileName = ARROW_PATH + 'stations.arrow.gz';
 
     // Read file, decompress if needed
@@ -203,7 +209,7 @@ export function searchStationArrowFile(id: number) {
             return null;
         }
 
-        return arrowStationTable.get(index).toJSON();
+        return arrowStationTable.get(index)?.toJSON() || null;
     } catch (e) {
         console.log(fileName, e);
     }

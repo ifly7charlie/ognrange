@@ -9,9 +9,11 @@ import {TypedArray} from 'apache-arrow/interfaces';
 import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
 
+import {CoverageHeader} from './coverageheader';
+
 import {createGzip} from 'node:zlib';
 
-import _sortby from 'lodash.sortby';
+import {sortBy as _sortby} from 'lodash';
 
 import {UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
@@ -24,6 +26,14 @@ const sU32 = 4;
 const sU16 = 2;
 const sU8 = 1;
 
+export enum bufferTypes {
+    unknown = 9999,
+    station = 0,
+    global = 1,
+    globalNested = 2
+}
+
+/*
 // field to sized offset, so u32oCount is number of u32s to Count
 const station = {
     // 32 bits
@@ -44,8 +54,8 @@ const station = {
 
     // How long are we in bytes (multiple of 32!)
     length: 5 * sU32 + 2 * sU16,
-    version: 0,
-    clearData(_u8, o8 = 0) {
+    version: bufferTypes.station,
+    clearData(_u8: Uint8Array, o8 = 0) {
         _u8.fill(0, o8 + this.u8oMinAltMaxSig, o8 + this.length);
     } // remove DATA not list
 };
@@ -59,9 +69,9 @@ const globalNestedStation = {
     u16oStationId: station.length / sU16,
 
     length: station.length + sU32, // u16oStationId + unused sU16,
-    version: 2,
+    version: bufferTypes.globalNested,
 
-    clearData(_u8, o8 = 0) {
+    clearData(_u8: Uint8Array, o8 = 0) {
         _u8.fill(0, o8 + this.u8oMinAltMaxSig, o8 + this.length);
     } // remove DATA not list
 };
@@ -72,27 +82,102 @@ const globalHeader = {
     u8oHead: 1, // immediately after version
 
     length: station.length,
-    version: 1,
+    version: bufferTypes.global,
     nestedVersion: globalNestedStation.version,
-    nestedAllocation: globalNestedStation.length,
 
-    clearData(_u8, o8 = 0) {
+    clearData(_u8: Uint8Array, o8 = 0) {
         _u8.fill(0, o8 + this.u8oMinAltMaxSig, o8 + this.length);
     } // remove DATA not list
 };
+*/
 
-const bufferVersion = {
-    0: station,
-    1: globalHeader,
-    2: globalNestedStation // must be referred to on the containing global!
-};
+class CRBase {
+    // first 32 bits
+    u8oVersion: 0 = 0; // current version is 0
+    version: bufferTypes = -1;
 
-export enum bufferTypes {
-    station = 0,
-    global = 1
+    u8oMinAltMaxSig: 2 = 2; // expanded
+    u8oMaxSig: 3 = 3;
+
+    // The big accumulators
+    u32oCount: 1 = 1;
+    u32oSumSig: 2 = 2;
+    u32oSumCrc: 3 = 3;
+    u32oSumGap: 4 = 4;
+
+    // we have had 5 * u32s at this point
+    u16oMinAltAgl: 10 = 10;
+    u16oMinAlt: 11 = 11;
+
+    nestedVersion = 0;
 }
 
+class CRStation extends CRBase {
+    // first 32 bits
+
+    // How long are we in bytes (multiple of 32!)
+    static len: number = 5 * sU32 + 2 * sU16;
+    length: number = CRStation.len;
+    version: bufferTypes.station = bufferTypes.station;
+    clearData(_u8: Uint8Array, o8 = 0): void {
+        _u8.fill(0, o8 + this.u8oMinAltMaxSig, o8 + CRStation.len);
+    } // remove DATA not list
+}
+const station: CRStation = new CRStation();
+
+// Slightly different structure for the global
+// it includes linked list of nodes and number of unique points
+class CRGlobalNestedStation extends CRBase {
+    u8oNext: 1 = 1; // next in linked list, only in stations referenced from globals
+
+    u16oStationId = CRStation.len / sU16;
+
+    static len = CRStation.len + sU32; // u16oStationId + unused sU16,
+    length = CRGlobalNestedStation.len;
+    version: bufferTypes.globalNested = bufferTypes.globalNested;
+
+    clearData(_u8: Uint8Array, o8 = 0) {
+        _u8.fill(0, o8 + this.u8oMinAltMaxSig, o8 + CRGlobalNestedStation.len);
+    } // remove DATA not list
+}
+const globalNestedStation: CRGlobalNestedStation = new CRGlobalNestedStation();
+
+class CRGlobalHeader extends CRBase {
+    u8oHead: 1 = 1; // immediately after version
+
+    static len = CRStation.len;
+    length = CRGlobalHeader.len;
+    version: bufferTypes.global = bufferTypes.global;
+    nestedVersion = globalNestedStation.version;
+
+    clearData(_u8: Uint8Array, o8 = 0) {
+        _u8.fill(0, o8 + this.u8oMinAltMaxSig, o8 + CRGlobalHeader.len);
+    } // remove DATA not list
+}
+const globalHeader: CRGlobalHeader = new CRGlobalHeader();
+
+type primaryVersionTypes = CRGlobalHeader | CRStation;
+type nestedVersionTypes = CRGlobalNestedStation;
+
+//
+const primaryBufferVersions: {[P in bufferTypes | number]?: primaryVersionTypes} = {
+    0: station,
+    1: globalHeader
+};
+
+const nestedBufferVersions: {[P in bufferTypes | number]?: nestedVersionTypes} = {
+    2: globalNestedStation
+};
+
+const allBufferVersions: Record<bufferTypes, nestedVersionTypes | primaryVersionTypes> = {
+    9999: station,
+    0: station,
+    1: globalHeader,
+    2: globalNestedStation
+};
+
 interface ArrowType {
+    readonly [index: string]: Uint8Builder | Uint16Builder | Uint32Builder | Utf8Builder | undefined;
     h3lo: Uint32Builder;
     h3hi: Uint32Builder;
     minAgl: Uint16Builder;
@@ -112,15 +197,28 @@ class ExtensionAllocationOptions {
     type: bufferTypes;
     length: number;
 
-    constructor(type, length) {
+    constructor(type: bufferTypes, length: number) {
         this.type = type;
         this.length = length;
     }
 }
 
+type CoverageRecordOut = Record<string, number | CoverageRecordOut[]>;
+type ValidMapKeys = 'di' | 'si' | 'i';
+interface StationMap {
+    id: StationId; // stationid
+    c: number; // count
+    si?: number | undefined;
+    di?: number | undefined;
+    i?: number | undefined;
+}
+
+function superThrow(t: string): never {
+    throw new Error(t);
+}
 export class CoverageRecord {
-    _sh: typeof globalHeader; // | typeof station;
-    _ish: typeof globalNestedStation;
+    _sh: primaryVersionTypes;
+    _ish: nestedVersionTypes | undefined;
     _u32: Uint32Array;
     _u16: Uint16Array;
     _u8: Uint8Array;
@@ -128,13 +226,43 @@ export class CoverageRecord {
 
     // Create a structure to work with existing data that is stored in buffer
     // we are using TypedArrays which means we are making a view not a copy
-    constructor(i) {
-        if (i instanceof ExtensionAllocationOptions) {
-            this._initType(i.type, i.length);
-        } else if (typeof i == 'number') {
-            this._initType(i);
+    constructor(i: ExtensionAllocationOptions | bufferTypes | Uint8Array) {
+        if (i instanceof Uint8Array) {
+            this._buffer = i;
+
+            this._u8 = new Uint8Array(i.buffer, 0, i.byteLength);
+
+            this._sh = primaryBufferVersions[this._u8[0]] || superThrow(`unknown bufferType ${this._u8[0]}`);
+            this._ish = this._sh.nestedVersion ? nestedBufferVersions[this._sh.nestedVersion] : undefined;
+
+            // Note we are allowing access to all the memory not just the stuff we mapped
+            // this is for global iteration
+            this._u16 = new Uint16Array(i.buffer, 0, i.byteLength / sU16);
+            this._u32 = new Uint32Array(i.buffer, 0, i.byteLength / sU32);
         } else {
-            this._use(i);
+            const iIsObject = typeof i == 'object';
+            const bufferType = iIsObject ? i.type : i;
+            const extensionItems = iIsObject ? i.length : 1;
+
+            // Find the correct structure based on passed in type and allocate
+            // enough space for it. If nested also alloc
+            this._sh = primaryBufferVersions[bufferType] || superThrow(`unknown bufferType ${bufferType}`);
+            this._ish = this._sh.nestedVersion ? nestedBufferVersions[this._sh.nestedVersion] : undefined;
+
+            this._buffer = this._u8 = new Uint8Array(this._sh.length + (this._ish?.length || 0) * extensionItems);
+
+            // Now set the type in the header otherwise all goes wrong
+            this._u8[0] = this._sh.version; // version always first byte
+
+            this._u16 = new Uint16Array(this._buffer.buffer, 0, this._buffer.byteLength / sU16);
+            this._u32 = new Uint32Array(this._buffer.buffer, 0, this._buffer.byteLength / sU32);
+
+            // If we have nested then point linked list to it
+            // and set the version of the extension
+            if (this._ish) {
+                this._u8[(this._sh as typeof globalHeader).u8oHead] = 1;
+                this._u8[this._sh.length + 0] = (this._sh as typeof globalHeader).nestedVersion;
+            }
         }
     }
 
@@ -142,24 +270,19 @@ export class CoverageRecord {
     // Update a record, will update based on the type detected in the version field
     // this deals with accumulating and making sure values are correct
     // lazily it doesn't deal with overflows... probably should!
-    update(altitude, agl, crc, signal, gap, stationid) {
+    update(altitude: number, agl: number, crc: number, signal: number, gap: number, stationid: StationId) {
         this._update(0, 0, 0, this._sh, altitude, agl, crc, signal, gap);
-
-        if (this._sh?.nestedVersion) {
-            this._updateStationList(stationid, altitude, agl, crc, signal, gap);
-        }
-
-        //		console.log( ">>> update >> ", JSON.stringify(this.toObject()));
+        this._updateStationList(stationid, altitude, agl, crc, signal, gap);
     }
 
     // Simple helper to store the unique number of seconds that have had
     // tracking - helps to determine how good the coverage actually is
     // This is done later as we need to collect to allowed for delayed packets
-    updateSumGap(number, stationid) {
-        this._u32[this._sh.u32oSumGap] += number;
+    updateSumGap(gap: number, stationid: StationId) {
+        this._u32[this._sh.u32oSumGap] += gap;
 
-        if (this._sh.nestedVersion && stationid) {
-            let i = this._u8[this._sh.u8oHead];
+        if (this._ish && stationid) {
+            let i = this._u8[(this._sh as typeof globalHeader).u8oHead];
 
             // Iterate through the list, note we have mapped
             while (i != 0) {
@@ -173,7 +296,7 @@ export class CoverageRecord {
                 // we are done
                 const sid = this._u16[o16 + this._ish.u16oStationId];
                 if (sid == stationid) {
-                    this._u32[o32 + this._ish.u32oSumGap] += number;
+                    this._u32[o32 + this._ish.u32oSumGap] += gap;
                     return;
                 }
                 i = this._u8[o8 + this._ish.u8oNext];
@@ -193,11 +316,11 @@ export class CoverageRecord {
 
     //
     // Dump for debugging
-    toObject(o = 0) {
-        const output = {};
-        const sh = bufferVersion[this._u8[0 + o]]; // version always first byte, this works nested rather than _ish/_sh
-        for (const k in sh) {
-            const v = sh[k];
+    toObject(o = 0): CoverageRecordOut {
+        const output: CoverageRecordOut = {};
+        const sh = allBufferVersions[this._u8[0 + o] as bufferTypes]; // version always first byte, this works nested rather than _ish/_sh
+        for (const k in Object.keys(sh)) {
+            const v = Object(sh)[k];
             if (k.match(/^u8/)) {
                 output[k.slice(3)] = this._u8[o + v];
             }
@@ -208,8 +331,8 @@ export class CoverageRecord {
                 output[k.slice(4)] = this._u32[o / sU32 + v];
             }
         }
-        if (sh.nestedVersion) {
-            let i = this._u8[sh.u8oHead];
+        if (this._ish) {
+            let i = this._u8[(sh as typeof globalHeader).u8oHead];
             output['stations'] = [];
 
             // Iterate through the list, note we have mapped
@@ -225,7 +348,7 @@ export class CoverageRecord {
 
     //
     // Create an arrow that can support specified format
-    static initArrow(type) {
+    static initArrow(type: bufferTypes) {
         let arrow: ArrowType = {
             h3lo: makeBuilder({type: new Uint32()}),
             h3hi: makeBuilder({type: new Uint32()}),
@@ -251,21 +374,23 @@ export class CoverageRecord {
     static finalizeArrow(arrow: ArrowType, fileName: string) {
         const output: Record<string, TypedArray> = {};
         for (const k in arrow) {
-            output[k] = arrow[k].finish().toVector();
+            const outputArray = arrow[k]?.finish()?.toVector()?.toArray();
+            if (outputArray) {
+                output[k] = outputArray;
+            }
         }
         const outputTable = makeTable(output);
 
         if (UNCOMPRESSED_ARROW_FILES) {
             const pt = new PassThrough({objectMode: true});
-            const result = pt.pipe(RecordBatchWriter.throughNode()).pipe(createWriteStream(fileName));
+            pt.pipe(RecordBatchWriter.throughNode()).pipe(createWriteStream(fileName));
             pt.write(outputTable);
             pt.end();
         }
 
         {
             const pt = new PassThrough({objectMode: true});
-            const result = pt
-                .pipe(RecordBatchWriter.throughNode())
+            pt.pipe(RecordBatchWriter.throughNode())
                 .pipe(createGzip())
                 .pipe(createWriteStream(fileName + '.gz'));
             pt.write(outputTable);
@@ -281,7 +406,7 @@ export class CoverageRecord {
     // (because the key pointing to the row does)
     // we need to emit it for the browser so it can render data in the
     // correct place.
-    appendToArrow(h3, arrow: ArrowType) {
+    appendToArrow(h3: CoverageHeader, arrow: ArrowType) {
         const count = this._u32[this._sh.u32oCount];
         const sl = h3.h3splitlong;
         arrow.h3lo.append(sl[0]);
@@ -295,8 +420,8 @@ export class CoverageRecord {
         arrow.avgGap.append((this._u32[this._sh.u32oSumGap] / count) * 4);
         arrow.count.append(count);
 
-        if (this._sh.nestedVersion) {
-            let i = this._u8[this._sh.u8oHead],
+        if (this._ish) {
+            let i = this._u8[(this._sh as typeof globalHeader).u8oHead],
                 sid = 99999;
             let o = undefined;
             let ns = 0;
@@ -323,9 +448,9 @@ export class CoverageRecord {
                 i = this._u8[o8 + this._ish.u8oNext];
                 ns++;
             }
-            arrow.stations.append(o || '');
-            arrow.expectedGap.append(((this._u32[this._sh.u32oSumGap] / count) * 4) / ns);
-            arrow.numStations.append(Math.min(ns, 255));
+            arrow.stations?.append(o || '');
+            arrow.expectedGap?.append(((this._u32[this._sh.u32oSumGap] / count) * 4) / ns);
+            arrow.numStations?.append(Math.min(ns, 255));
         }
     }
 
@@ -339,11 +464,11 @@ export class CoverageRecord {
     //
     // Also note that once you have completed rolling up then you should discard
     // the old records!
-    rollup(/*CoverageRecord*/ srcRecord, validStationSet) {
+    rollup(srcRecord: CoverageRecord, validStationSet: Set<StationId> | undefined) {
         // If we do not have sub stations then this is super easy we just
         // need to add the new values to our own and we are done
-        if (!this._sh.nestedVersion) {
-            if (srcRecord._sh.nestedVersion) {
+        if (!this._ish) {
+            if (srcRecord._ish) {
                 throw 'CoverageRecord: mixing global and station records...';
             }
             CoverageRecord._updateNested(this, 0, srcRecord, 0);
@@ -363,7 +488,7 @@ export class CoverageRecord {
         // assumption is if it is in src it's valid
         for (let i = destStations.length - 1; i >= 0; i--) {
             const k = destStations[i].id;
-            if (validStationSet && !validStationSet.has(k)) {
+            if (validStationSet && !validStationSet.has(k as StationId)) {
                 destStations.splice(i, 1);
             } else if (srcStations[k]) {
                 // id in both both so we pull them together
@@ -386,7 +511,7 @@ export class CoverageRecord {
 
         // Then we simply iterate through these picking and combining
         // we have allocated enough space and they are in order so next is always just +1 except at end when 0
-        newBr._u8[newBr._sh.u8oHead] = 1;
+        newBr._u8[(newBr._sh as typeof globalHeader).u8oHead] = 1;
 
         let i = 1;
         let remaining = pickList.length - 1;
@@ -418,7 +543,7 @@ export class CoverageRecord {
     //
     // This is an alternative path function that is used to make sure we dump any stations
     // from accumulators if they are not used any longer.
-    removeInvalidStations(validStationSet) {
+    removeInvalidStations(validStationSet: Set<StationId>) {
         if (!this._ish) {
             return this; // this gets called even if we are not nested just say 'no change' and carry on
         }
@@ -454,7 +579,7 @@ export class CoverageRecord {
 
         // Then we simply iterate through these picking and combining
         // we have allocated enough space and they are in order so next is always just +1 except at end when 0
-        newBr._u8[newBr._sh.u8oHead] = 1;
+        newBr._u8[(newBr._sh as typeof globalHeader).u8oHead] = 1;
 
         let i = 1;
         let remaining = pickList.length - 1;
@@ -465,7 +590,7 @@ export class CoverageRecord {
 
             // now we need to copy, though merge is just as easy
             // ** (COULD BE OPTIMIZED)
-            CoverageRecord._updateNested(newBr, i, this, pick.i);
+            CoverageRecord._updateNested(newBr, i, this, pick.i || superThrow('i missing from pick'));
 
             // And then roll those up to the top level
             CoverageRecord._updateNested(newBr, 0, newBr, i);
@@ -480,18 +605,20 @@ export class CoverageRecord {
     }
 
     //////////////////////////
-
     //
     // Adjust station linked list to put us in the right place and
     // update our values at the same time
-    _updateStationList(stationid: StationId, altitude, agl, crc, signal, gap) {
+    _updateStationList(stationid: StationId, altitude: number, agl: number, crc: number, signal: number, gap: number) {
+        if (!this._ish || this._sh.version != bufferTypes.global) {
+            return;
+        }
         // So we can calculate offsets etc
         let firstEmpty = 0;
         let pCount = 0;
 
-        let i = this._u8[this._sh.u8oHead],
+        let oPrevNext: number = this._sh.u8oHead;
+        let i = this._u8[oPrevNext],
             iPrevNext = 0,
-            oPrevNext = this._sh.u8oHead,
             oPrevPrevNext = 0;
 
         // Iterate through the list, note we have mapped
@@ -575,7 +702,7 @@ export class CoverageRecord {
 
     // Update a record based on specific offset, used internally
     // for updating either station or global or sub records
-    _update(o8, o16, o32, sh, altitude, agl, crc, signal, gap) {
+    _update(o8: number, o16: number, o32: number, sh: CRBase, altitude: number, agl: number, crc: number, signal: number, gap: number) {
         // Deal with lowest point and signal for that
         if (!this._u16[o16 + sh.u16oMinAlt] || this._u16[o16 + sh.u16oMinAlt] > altitude) {
             this._u16[o16 + sh.u16oMinAlt] = altitude;
@@ -608,17 +735,17 @@ export class CoverageRecord {
     }
 
     // Generic rollup and update function updates our object from passed source
-    static _updateNested(dest, di, src, si) {
+    static _updateNested(dest: CoverageRecord, di: number, src: CoverageRecord, si: number) {
         // dest can be parent or the station
         const destOffset = di ? dest._calcOffset(di) : 0;
-        const dsh = di ? dest._ish : dest._sh;
+        const dsh = di ? dest._ish || superThrow('dest._ish undefined') : dest._sh;
         const do8 = destOffset,
             do16 = destOffset / sU16,
             do32 = destOffset / sU32;
 
         // Where we are reading from
         const srcOffset = si ? src._calcOffset(si) : 0;
-        const ssh = si ? src._ish : src._sh;
+        const ssh = si ? src._ish || superThrow('src._ish undefined') : src._sh;
         const so8 = srcOffset,
             so16 = srcOffset / sU16,
             so32 = srcOffset / sU32;
@@ -644,31 +771,33 @@ export class CoverageRecord {
         dest._u32[do32 + dsh.u32oSumGap] += src._u32[so32 + ssh.u32oSumGap];
     }
 
-    static _updateNestedHeader(br, i, stationid, next) {
-        const destOffset = br._calcOffset(i);
-        const do8 = destOffset,
-            do16 = destOffset / sU16;
-        br._u16[do16 + br._ish.u16oStationId] = stationid;
-        br._u8[do8 + br._ish.u8oNext] = next;
-        br._u8[do8 + br._ish.u8oVersion] = br._ish.version;
+    static _updateNestedHeader(br: CoverageRecord, i: number, stationid: StationId, next: number) {
+        if (br._ish) {
+            const destOffset = br._calcOffset(i);
+            const do8 = destOffset,
+                do16 = destOffset / sU16;
+            br._u16[do16 + br._ish.u16oStationId] = stationid;
+            br._u8[do8 + br._ish.u8oNext] = next;
+            br._u8[do8 + br._ish.u8oVersion] = br._ish.version;
+        }
     }
 
     // Iterate through linked list for a CoverageRecord and produce a map
     // of stationid:index... note keys end up as strings, so we add
     // id to the map so we have a number as well (remember sort order for
     // strings may not be what you expect :)
-    static _makeStationMap(br, key) {
-        const ish = br._ish;
-        let stations = {};
+    static _makeStationMap(br: CoverageRecord, key: ValidMapKeys): Record<StationId, StationMap> {
+        let stations: Record<StationId, StationMap> = {};
+        const ish = br._ish || superThrow(`_makeStationMap called on ${br._sh.version}`);
 
         // pass 0 get list of all the existing stations
-        for (let i = br._u8[br._sh.u8oHead]; i != 0; ) {
+        for (let i = br._u8[(br._sh as typeof globalHeader).u8oHead]; i != 0; ) {
             // Calculate bytes from start for this item
             const startOffset = br._calcOffset(i);
             const o8 = startOffset,
                 o16 = startOffset / sU16,
                 o32 = startOffset / sU32;
-            const sid = br._u16[o16 + ish.u16oStationId];
+            const sid = br._u16[o16 + ish.u16oStationId] as StationId;
 
             if (sid) {
                 stations[sid] = {id: sid, c: br._u32[o32 + ish.u32oCount]};
@@ -685,19 +814,19 @@ export class CoverageRecord {
     // of stationid:index... note keys end up as strings, so we add
     // id to the map so we have a number as well (remember sort order for
     // strings may not be what you expect :)
-    static _makeStationArray(br, key) {
-        const ish = br._ish;
-        let stations = new Array((br._u8.byteLength - br._sh.length) / br._ish.length);
+    static _makeStationArray(br: CoverageRecord, key: ValidMapKeys): StationMap[] {
+        const ish = br._ish || superThrow(`_makeStationArray called on ${br._sh.version}`);
+        let stations = new Array((br._u8.byteLength - br._sh.length) / ish.length);
 
         // pass 0 get list of all the existing stations
         let di = 0;
-        for (let i = br._u8[br._sh.u8oHead]; i != 0; ) {
+        for (let i = br._u8[(br._sh as typeof globalHeader).u8oHead]; i != 0; ) {
             // Calculate bytes from start for this item
             const startOffset = br._calcOffset(i);
             const o8 = startOffset,
                 o16 = startOffset / sU16,
                 o32 = startOffset / sU32;
-            const sid = br._u16[o16 + ish.u16oStationId];
+            const sid = br._u16[o16 + ish.u16oStationId] as StationId;
 
             if (sid) {
                 stations[di] = {id: sid, c: br._u32[o32 + ish.u32oCount]};
@@ -717,57 +846,21 @@ export class CoverageRecord {
 
     //
     // Helpers for finding offset of extensions in nested allocation
-    _calcOffset(i) {
-        return this._sh.length + (i - 1) * this._sh.nestedAllocation;
+    _calcOffset(i: number): number {
+        return this._sh.length + (i - 1) * (this._ish?.length || 0);
     }
-    _reverseOffset(o) {
-        return (o - this._sh.length) / this._sh.nestedAllocation + 1;
+    _reverseOffset(o: number): number {
+        return (o - this._sh.length) / (this._ish?.length || 0) + 1;
     }
 
     //
     // We need to be able to add new records to the end of the record
     _allocationExtension(length?: number) {
         // Allocate bigger buffer
-        const n = new Uint8Array(this._buffer.byteLength + (length || this._sh.nestedAllocation));
+        const n = new Uint8Array(this._buffer.byteLength + (length || this._ish?.length || superThrow(`no ish length`)));
         n.set(this._buffer);
         this._buffer = this._u8 = n;
         this._u16 = new Uint16Array(this._buffer.buffer, 0, this._buffer.byteLength / sU16);
         this._u32 = new Uint32Array(this._buffer.buffer, 0, this._buffer.byteLength / sU32);
-    }
-
-    _use(buffer) {
-        this._buffer = buffer;
-
-        this._u8 = new Uint8Array(buffer.buffer, 0, buffer.byteLength);
-        this._sh = bufferVersion[this._u8[0]]; // version always first byte
-        this._ish = bufferVersion[this._sh.nestedVersion];
-
-        // Note we are allowing access to all the memory not just the stuff we mapped
-        // this is for global iteration
-        this._u16 = new Uint16Array(buffer.buffer, 0, buffer.byteLength / sU16);
-        this._u32 = new Uint32Array(buffer.buffer, 0, buffer.byteLength / sU32);
-    }
-
-    // Allocate a new structure. Used when no data has been accumulated yet
-    _initType(bufferType, extensionItems = 1) {
-        // Find the correct structure based on passed in type and allocate
-        // enough space for it. If nested also alloc
-        this._sh = bufferVersion[bufferType];
-        this._ish = bufferVersion[this._sh.nestedVersion];
-
-        this._buffer = this._u8 = new Uint8Array(this._sh.length + (this._sh?.nestedAllocation || 0) * extensionItems);
-
-        // Now set the type in the header otherwise all goes wrong
-        this._u8[0] = this._sh.version; // version always first byte
-
-        this._u16 = new Uint16Array(this._buffer.buffer, 0, this._buffer.byteLength / sU16);
-        this._u32 = new Uint32Array(this._buffer.buffer, 0, this._buffer.byteLength / sU32);
-
-        // If we have nested then point linked list to it
-        // and set the version of the extension
-        if (this._sh?.nestedAllocation) {
-            this._u8[this._sh.u8oHead] = 1;
-            this._u8[this._sh.length + 0] = this._sh.nestedVersion;
-        }
     }
 }

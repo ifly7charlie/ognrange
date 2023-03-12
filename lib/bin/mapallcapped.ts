@@ -14,33 +14,33 @@
 // (and it supports Set/Map now)
 //
 
+type CbFunctionType<T> = (currentValue: T, index: number, array: T[]) => Promise<void>;
+
 // Run a maximum number in parallel but don't return before all finished
 // return values and exceptions are ignored. Accepts normal Arrays or Set/Maps
-export async function mapAllCapped(array, mapFn, limit) {
-    const result = [];
-    const length = array.length || array.size;
-
+export async function mapAllCapped<T>(array: T[], mapFn: CbFunctionType<T>, limit: number) {
+    const length = array.length;
     if (length === 0 || !limit) {
-        return result;
+        return;
     }
 
     // Different iterator for sets/maps
-    const gen = array.size ? setMapGenerator(array) : arrayGenerator(array);
+    const gen = arrayGenerator<T>(array);
 
     limit = Math.min(limit, length);
 
     const workers = new Array(limit);
     for (let i = 0; i < limit; i++) {
-        workers.push(worker(i, gen, mapFn, result));
+        workers.push(worker<T>(i, gen, mapFn));
     }
 
-    await Promise.all(workers);
-
-    return result;
+    await Promise.allSettled(workers);
 }
 
-async function worker(id, gen, callback, result) {
-    async function processCallback(currentValue, index, array) {
+export type G<T> = Generator<[T, number, T[]], void, void>;
+
+async function worker<T>(id: number, gen: G<T>, callback: CbFunctionType<T>) {
+    async function processCallback(currentValue: T, index: number, array: T[]) {
         try {
             await callback(currentValue, index, array);
         } catch (e) {
@@ -53,15 +53,16 @@ async function worker(id, gen, callback, result) {
     }
 }
 
-function* arrayGenerator(array) {
+function* arrayGenerator<T>(array: T[]): G<T> {
     for (let index = 0; index < array.length; index++) {
         const currentValue = array[index];
         yield [currentValue, index, array];
     }
 }
-
+/*
 function* setMapGenerator(array) {
     for (let [currentValue, index] of array.entries()) {
         yield [currentValue, index, array];
     }
 }
+*/
