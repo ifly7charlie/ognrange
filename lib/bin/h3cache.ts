@@ -28,26 +28,38 @@ export function getH3CacheSize() {
     return cachedH3s.size;
 }
 
+export const exportedForTest = {
+    cachedH3s,
+    blockWrites
+};
+
+interface FlushStats {
+    total: number;
+    expired: number;
+    written: number;
+    databases: number;
+}
+
 //
 // This function writes the H3 buffers to the disk if they are dirty, and
 // clears the records if it has expired. It is actually a synchronous function
 // as it will not return before everything has been written
-export async function flushDirtyH3s({allUnwritten = false, lockForRead = false}): Promise<any> {
-    return lock.acquire('flushDirtyH3s', function (done: Function) {
+export async function flushDirtyH3s({allUnwritten = false, lockForRead = false}): Promise<FlushStats> {
+    return lock.acquire<FlushStats>('flushDirtyH3s', function (done: Function) {
         internalFlushDirtyH3s({allUnwritten, lockForRead})
             .then((r) => done(null, r))
             .catch((e) => done(e, null));
     });
 }
 
-async function internalFlushDirtyH3s({allUnwritten = false, lockForRead = false}) {
+async function internalFlushDirtyH3s({allUnwritten = false, lockForRead = false}): Promise<FlushStats> {
     // When do we write and when do we expire
     const now = Date.now();
     const flushTime = Math.max(0, now - H3_CACHE_FLUSH_PERIOD_MS);
     const maxDirtyTime = Math.max(0, now - H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS);
     const expiryTime = Math.max(0, now - H3_CACHE_EXPIRY_TIME_MS);
 
-    let stats = {
+    let stats: FlushStats = {
         total: cachedH3s.size,
         expired: 0,
         written: 0,

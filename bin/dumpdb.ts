@@ -1,22 +1,18 @@
 import {ClassicLevel} from 'classic-level';
 
-import dotenv from 'dotenv';
+import {CoverageRecord} from '../lib/bin/coveragerecord';
+import {CoverageHeader} from '../lib/bin/coverageheader';
 
-import {ignoreStation} from '../lib/bin/ignorestation.js';
-
-import {CoverageRecord, bufferTypes} from '../lib/bin/coveragerecord.js';
-import {CoverageHeader, accumulatorTypes} from '../lib/bin/coverageheader.js';
-
-import {DB_PATH, OUTPUT_PATH} from '../lib/common/config.js';
+import {DB_PATH} from '../lib/common/config';
 
 import yargs from 'yargs';
 
-main().then('exiting');
+main().then(() => 'exiting');
 
 //
 // Primary configuration loading and start the aprs receiver
 async function main() {
-    const args = yargs(process.argv.slice(2)) //
+    const args = await yargs(process.argv.slice(2)) //
         .option('db', {alias: 'd', type: 'string', default: 'global', description: 'Choose Database'})
         .option('all', {alias: 'a', type: 'boolean', description: 'dump all records'})
         .option('match', {type: 'string', description: 'regex match of dbkey'})
@@ -36,16 +32,20 @@ async function main() {
     let db = null;
 
     try {
-        db = new ClassicLevel(dbPath, {valueEncoding: 'view', createIfMissing: false});
+        db = new ClassicLevel<string, Uint8Array>(dbPath, {valueEncoding: 'view', createIfMissing: false});
         await db.open();
     } catch (e) {
         console.error(e);
     }
+
+    if (!db) {
+        return;
+    }
+
     console.log('---', dbPath, '---');
 
     let n = db.iterator();
-    let accumulators = {},
-        count = {};
+    let accumulators: Record<string, any> = {};
     let x = n.next();
     let y = null;
     while ((y = await x)) {
@@ -58,7 +58,7 @@ async function main() {
                 console.log(hr.dbKey(), String(value));
 
                 if (args.size) {
-                    db.db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
+                    db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
                         accumulators[hr.accumulator].size = r;
                     });
                 }
@@ -70,7 +70,7 @@ async function main() {
                 }
 
                 if (accumulators[hr.accumulator].count == 1 && args.size) {
-                    db.db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
+                    db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
                         accumulators[hr.accumulator].size = r;
                     });
                 }

@@ -1,5 +1,5 @@
-import {CoverageRecord, bufferTypes} from './coveragerecord.js';
-import {CoverageHeader} from './coverageheader.js';
+import {CoverageRecord, bufferTypes} from './coveragerecord';
+import {CoverageHeader} from './coverageheader';
 
 import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
 
@@ -723,3 +723,10 @@ function symlink(src: string, dest: string) {
 function Uint8FromObject(o: Record<any, any>): Uint8Array {
     return Buffer.from(JSON.stringify(o));
 }
+
+// Helpers for testing
+export const exportedForTest = {
+    rollupDatabaseInternal,
+    rollupDatabaseStartup,
+    purgeDatabaseInternal
+};

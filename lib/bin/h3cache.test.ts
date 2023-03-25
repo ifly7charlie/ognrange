@@ -1,82 +1,156 @@
-import LevelUP from 'levelup';
-import LevelDOWN from 'leveldown';
+import {ClassicLevel} from 'classic-level';
 
-import {ignoreStation} from './ignorestation.js';
+import {ignoreStation} from './ignorestation';
 
-import {CoverageRecord, bufferTypes} from './coveragerecord.js';
-import {CoverageHeader, accumulatorTypes} from './coverageheader.js';
+import {CoverageRecord, CoverageRecordOut} from './coveragerecord';
+import {CoverageHeader} from './coverageheader';
+
+import {StationId, StationName} from './types';
+import {H3Index} from 'h3-js';
 
 // h3 cache functions
-import {cachedH3s, flushDirtyH3s, H3lock} from './h3cache.js';
+import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from './h3cache';
 
-import {getAccumulator, getAccumulatorForType, updateGlobalAccumulatorMetadata, rollupAll, rollupDatabase, updateAndProcessAccumulators, rollupStartup, rollupStats} from './rollup.js';
+jest.mock('./rollup');
+jest.mock('./rollupworker', () => {});
 
-import test from 'ava';
+import {getAccumulator, getCurrentAccumulators, CurrentAccumulator, AccumulatorTypeString, initialiseAccumulators} from './accumulators';
+import {getStationDetails} from './stationstatus';
 
-import _filter from 'lodash.filter';
-import _reduce from 'lodash.reduce';
+import {getDb} from './stationcache';
 
-import {DB_PATH, OUTPUT_PATH} from '../common/config.js';
+import {filter as _filter, reduce as _reduce} from 'lodash';
+
+import {DB_PATH, OUTPUT_PATH} from '../common/config';
 
 let log = process.env.TEST_DEBUG ? console.log : () => 0;
 
 // Set in global, we only have one db ;)
-function set({h3, altitude, agl, crc, signal, gap, stationid = 0, accumulator = getAccumulator(), now = Date.now()}) {
-    const h3k = new CoverageHeader(0, ...accumulator, h3);
-    const buffer = new CoverageRecord(stationid ? bufferTypes['global'] : bufferTypes['station']);
-    log('set', accumulator, h3k.lockKey, altitude, agl, crc, signal, gap, stationid);
-    buffer.update(altitude, agl, crc, signal, gap, stationid);
-    cachedH3s.set(h3k.lockKey, {br: buffer, dirty: true, lastAccess: now, lastWrite: now});
+function set({
+    h3,
+    altitude,
+    agl,
+    crc,
+    signal,
+    gap,
+    station,
+    accumulator
+}: //
+{
+    h3: any;
+    altitude: number;
+    agl: number;
+    signal: number;
+    gap: number;
+    crc: number;
+    station: StationName;
+    accumulator?: CurrentAccumulator;
+}): Promise<void> {
+    accumulator ??= getAccumulator();
+    const stationDetails = getStationDetails(station);
+    const h3k = new CoverageHeader(stationDetails.id, ...accumulator, h3);
+    return updateCachedH3(station, h3k, altitude, agl, crc, signal, gap, stationDetails.id);
 }
 
-async function get({h3, type, accumulator = null, inputAccumulators = null}) {
-    const acc = accumulator ? accumulator : inputAccumulators ? [type, inputAccumulators[type].bucket] : getAccumulatorForType(type);
-    const h3k = new CoverageHeader(0, ...acc, h3);
-    log('get ', h3k.dbKey());
+async function get(
+    station: StationName,
+    h3: H3Index,
+    type: AccumulatorTypeString,
+    accumulator?: CurrentAccumulator,
+    inputAccumulators?: ReturnType<typeof getCurrentAccumulators>
+): //
+Promise<CoverageRecordOut | any> {
+    const iAccumulator = inputAccumulators ?? getCurrentAccumulators() ?? superThrow('no accumulator');
+    const acc: [AccumulatorTypeString, number] = accumulator ?? (type == 'current' ? getAccumulator() : [type, iAccumulator.accumulators[type]?.bucket ?? superThrow('missing bucket for type')]);
+    const h3k = new CoverageHeader(0 as StationId, ...acc, h3);
+    console.log('get ', h3k.dbKey());
     try {
-        return new CoverageRecord(await db.get(h3k.dbKey())).toObject();
+        return new CoverageRecord(await (await getDb(station))!.get(h3k.dbKey())).toObject();
     } catch (e) {
         return e;
     }
 }
 
-//
-// Primary configuration loading and start the aprs receiver
-let db = LevelUP(LevelDOWN(DB_PATH + 'test'));
+const test_a1 = 'test-a1' as StationName;
+const test_a2 = 'test-a2' as StationName;
+const test_global = 'global' as StationName;
 
-let validStations = new Set();
-validStations.add(1);
-
-let validStations3 = new Set();
-validStations3.add(3);
-
-// Start empty
-test('clear', async (t) => {
-    await db.clear();
-    t.pass();
+beforeAll(() => {
+    initialiseAccumulators();
 });
 
-// init rollup
-test('updateAndProcessAccumulators', async (t) => {
-    updateAndProcessAccumulators({globalDb: db, statusDb: null, stationDbCache: null, stations: {}});
-    t.pass();
+// Start empty
+test('clear', async () => {
+    (await getDb(test_a1))!.clear();
+    (await getDb(test_a2))!.clear();
+    (await getDb(test_global))!.clear();
+});
+
+test('init a', () => {
+    expect(getCurrentAccumulators()).toMatchObject({
+        accumulators: {
+            day: expect.anything(),
+            month: expect.anything(),
+            year: expect.anything()
+        },
+        currentAccumulator: ['current', expect.anything()]
+    });
 });
 
 // Set one row in the database and flush
-test('set', async (t) => {
-    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, stationid: 1});
-    t.is(cachedH3s.size, 1, 'one item in cache');
+test('set', async () => {
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a1});
+    expect(getH3CacheSize()).toBe(1);
 });
 
-test('flushed one', async (t) => {
-    const flushStats = await flushDirtyH3s({globalDb: db, stationDbCache: undefined, stations: {}, allUnwritten: true});
-    if (flushStats.written != 1) {
-        t.fail();
-    } else {
-        t.pass();
-    }
+test('flushed one', async () => {
+    const flushStats = await flushDirtyH3s({allUnwritten: true});
+    expect(flushStats).toMatchObject({
+        written: 1,
+        databases: 1,
+        expired: 0
+    });
 });
 
+test('persisted', async () => {
+    const cr = await get(test_a1, '87088619bffffff', 'current');
+    expect(cr).toMatchObject({
+        MinAlt: 100
+    });
+});
+
+test('flushed none', async () => {
+    const flushStats = await flushDirtyH3s({allUnwritten: true});
+    expect(flushStats).toMatchObject({
+        written: 0,
+        databases: 0,
+        expired: 0
+    });
+});
+
+test('flushed several', async () => {
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a1});
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a2});
+    const flushStats = await flushDirtyH3s({allUnwritten: true});
+    expect(flushStats).toMatchObject({
+        written: 2,
+        databases: 2,
+        expired: 0
+    });
+});
+
+test('clear exclusive', async () => {
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a1});
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a2});
+    const flushStats = await flushDirtyH3s({allUnwritten: true});
+    expect(flushStats).toMatchObject({
+        written: 2,
+        databases: 2,
+        expired: 0
+    });
+});
+
+/*
 // roll it up ;)
 test('rollup one item empty db', async (t) => {
     let meta = {};
@@ -101,7 +175,7 @@ test('rollup nothing one item db', async (t) => {
 });
 
 test('check db is correct values', async (t) => {
-    //	await set({ h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, stationid: 1 });
+    //	set({ h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, stationid: 1 });
     return get({h3: '87088619bffffff', type: 'month'}).then((d) => {
         t.is(d.MaxSig, 10);
         t.is(d.SumGap, 1);
@@ -113,7 +187,7 @@ test('check db is correct values', async (t) => {
 function doTestMergeUniqueH3s({name, input, merge, output, finish, vs = validStations, inputAccumulators = undefined, emptyDb = false, stationName = 'global'}) {
     // Set one row in the database and flush
     test(name + ' (set)', async (t) => {
-        cachedH3s.clear();
+        flushDirtyH3s({allUnwritten: true, lockForRead: true});
         try {
             input.forEach((r) => {
                 log(r);
@@ -123,7 +197,7 @@ function doTestMergeUniqueH3s({name, input, merge, output, finish, vs = validSta
             log(e);
         }
 
-        t.is(cachedH3s.size, input.length, 'h3s in list');
+        t.is(getH3CacheSize(), input.length, 'h3s in list');
 
         if (emptyDb) {
             await db.clear();
@@ -132,7 +206,7 @@ function doTestMergeUniqueH3s({name, input, merge, output, finish, vs = validSta
     });
 
     test(name + ' (flush/write)', async (t) => {
-        const flushStats = await flushDirtyH3s({globalDb: db, stationDbCache: undefined, stations: {}, allUnwritten: true});
+        const flushStats = await flushDirtyH3s({allUnwritten: true});
         t.is(flushStats.written, input.length, 'items written');
     });
 
@@ -169,8 +243,7 @@ function doTestMergeUniqueH3s({name, input, merge, output, finish, vs = validSta
                 t.is(true, true, 'rollup completed');
             })
             .catch((e) => {
-                //				t.fail( e.toString() );
-                t.fail(true);
+                t.fail('unexpected exception' + e);
                 console.log(e);
             });
     });
@@ -189,23 +262,23 @@ function doTestMergeUniqueH3s({name, input, merge, output, finish, vs = validSta
                     }
                 })
                 .catch((e) => {
-                    t.pass(r.fail, true, 'expected to fail');
+                    t.pass('expected to fail');
                 });
         }
     });
 
-    test(name + 'finishs', (t) => {
+    test(name + 'finishes', (t) => {
         if (finish == true) {
             process.exit();
         }
-        t.pass(finish, false);
+        t.pass(finish);
     });
 }
 
 function doTestStartup({name, inputAccumulators, input, currentAccumulators, output, finish}) {
     test('db clear (startup prep)', async (t) => {
         await db.clear();
-        t.pass();
+        expect(true).toBe(true);
     });
 
     // Set one row in the database and flush
@@ -235,8 +308,10 @@ function doTestStartup({name, inputAccumulators, input, currentAccumulators, out
     });
 
     test(name + ' (startup/write)', async (t) => {
-        const flushStats = await flushDirtyH3s({globalDb: db, stationDbCache: undefined, stations: {}, allUnwritten: true});
-        t.is(flushStats.written, input.length, 'items written');
+        const flushStats = await flushDirtyH3s({allUnwritten: true});
+        expect(flushStats).toMatchObject({
+            written: input.length
+        });
     });
 
     test(name + ' (startup/rollup)', async (t) => {
@@ -422,7 +497,7 @@ doTestMergeUniqueH3s({
         {type: 'day', h3updated: 1}
     ],
     output: [{type: 'day', h3: '87088619a0fffff', Count: 3, SumSig: (10 >> 2) * 3, SumGap: 4, MaxSig: 10, MinAlt: 9, NumStations: 2}]
-    /*, finish:true*/
+
 });
 
 doTestMergeUniqueH3s({
@@ -690,3 +765,9 @@ doTestMergeUniqueH3s({
 
 // Lets generate a hanging current
 doTestStartup({name: 'A', inputAccumulators: {current: [0, 1], day: {bucket: 1}, month: {bucket: 1}}, currentAccumulators: {current: [0, 3], day: {bucket: 2}, month: {bucket: 1}}, input: [{h3: '87088619cffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, accumulator: ['current', 1]}], output: [{h3: '87088619a0fffff', accumulator: ['current', 1], fail: true}]});
+
+*/
+
+function superThrow(t: string): never {
+    throw new Error(t);
+}

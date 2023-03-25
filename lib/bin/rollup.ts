@@ -18,7 +18,7 @@ import {CurrentAccumulator, Accumulators, getCurrentAccumulators, AccumulatorTyp
 import {gzipSync, createGzip} from 'zlib';
 
 import {Epoch, StationName, StationId} from './types';
-import {CoverageHeader} from './coverageheader.js';
+import {CoverageHeader} from './coverageheader';
 
 import {
     MAX_SIMULTANEOUS_ROLLUPS, //
@@ -201,7 +201,7 @@ function Uint8FromObject(o: Record<any, any>): Uint8Array {
 }
 
 export async function saveAccumulatorMetadata(db: DB): Promise<void> {
-    const {currentAccumulator, accumulators: allAccumulators} = getCurrentAccumulators() || superThrow('no accumulators on saveAccumulatorMetadata');
+    const {currentAccumulator, accumulators: allAccumulators} = getCurrentAccumulators() || superThrow('no accumulators available');
 
     const dbkey = CoverageHeader.getAccumulatorMeta(...currentAccumulator).dbKey();
     const now = new Date();
