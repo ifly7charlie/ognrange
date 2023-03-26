@@ -33,7 +33,8 @@ function set({
     crc,
     signal,
     gap,
-    station,
+    stationName,
+    stationId,
     accumulator
 }: //
 {
@@ -43,13 +44,13 @@ function set({
     signal: number;
     gap: number;
     crc: number;
-    station: StationName;
+    stationName: StationName;
+    stationId: StationId;
     accumulator?: CurrentAccumulator;
 }): Promise<void> {
     accumulator ??= getAccumulator();
-    const stationDetails = getStationDetails(station);
-    const h3k = new CoverageHeader(stationDetails.id, ...accumulator, h3);
-    return updateCachedH3(station, h3k, altitude, agl, crc, signal, gap, stationDetails.id);
+    const h3k = new CoverageHeader(stationId, ...accumulator, h3);
+    return updateCachedH3(stationName, h3k, altitude, agl, crc, signal, gap, stationId);
 }
 
 async function get(
@@ -71,7 +72,7 @@ Promise<CoverageRecordOut | any> {
     }
 }
 
-const test_a1 = 'test-a1' as StationName;
+const test_a1 = {stationName: 'test-a1' as StationName, stationId: 1 as StationId};
 const test_a2 = 'test-a2' as StationName;
 const test_global = 'global' as StationName;
 
@@ -81,9 +82,9 @@ beforeAll(() => {
 
 // Start empty
 test('clear', async () => {
-    (await getDb(test_a1))!.clear();
-    (await getDb(test_a2))!.clear();
-    (await getDb(test_global))!.clear();
+    (await getDb('test_a1' as StationName))!.clear();
+    (await getDb(<StationName>'test_a2'))!.clear();
+    (await getDb(<StationName>'global'))!.clear();
 });
 
 test('init a', () => {
@@ -99,7 +100,7 @@ test('init a', () => {
 
 // Set one row in the database and flush
 test('set', async () => {
-    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a1});
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, ...test_a1});
     expect(getH3CacheSize()).toBe(1);
 });
 
