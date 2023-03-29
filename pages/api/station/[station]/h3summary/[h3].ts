@@ -58,13 +58,11 @@ export default async function getH3Details(req, res) {
             row?.stations?.split(',') || [],
             (acc, x) => {
                 const decoded = parseInt(x, 36);
-                const sid = decoded >> 4;
-                if (!sids[sid]) {
-                    sids[sid] = searchStationArrowFile(sid)?.name || 'unknown';
-                }
-                const sname = sids[sid];
                 const percentage = (decoded & 0x0f) * 10;
                 if (percentage) {
+                    const sid = decoded >> 4;
+                    sids[sid] ??= searchStationArrowFile(sid)?.name || 'unknown';
+                    const sname = sids[sid];
                     acc[sname] = percentage;
                 }
                 return acc;
