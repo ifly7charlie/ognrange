@@ -59,7 +59,7 @@ export default async function getH3Details(req, res) {
 
     if (!globalRecord || !globalRecord.stations) {
         console.log('no record in global file');
-        res.String(200).json([]);
+        res.status(200).json([]);
         return;
     }
 
