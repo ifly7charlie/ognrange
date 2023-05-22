@@ -16,7 +16,7 @@ export let OUTPUT_PATH = fixTrailingSlash(process.env.OUTPUT_PATH || './data');
 export let ARROW_PATH = OUTPUT_PATH;
 
 // Do we want to keep the uncompressed files or not - not needed if behind webserver
-export const UNCOMPRESSED_ARROW_FILES = !!(parseInt(process.env.UNCOMPRESSED_ARROW_FILES ?? '') || 1);
+export const UNCOMPRESSED_ARROW_FILES = !!(parseInt(process.env.UNCOMPRESSED_ARROW_FILES ?? '') ?? 1);
 
 // APRS Server Keep Alive
 export const APRS_KEEPALIVE_PERIOD_MS = (parseInt(process.env.APRS_KEEPALIVE_PERIOD_SECONDS ?? '') || 45) * 1000;
