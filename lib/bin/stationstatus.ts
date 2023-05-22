@@ -48,6 +48,7 @@ export async function loadStationStatus() {
 
     try {
         statusDb = new ClassicLevel<StationName, StationDetails>(DB_PATH + 'status', {valueEncoding: 'json'});
+        await statusDb.open();
 
         for await (const [key, value] of statusDb.iterator()) {
             stations[key] = value;
