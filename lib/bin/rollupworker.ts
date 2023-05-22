@@ -56,12 +56,12 @@ export async function rollupStartup(station: StationName, whatAccumulators: Roll
 
     // And the compact in the aprs thread
     return threadPromise.then((result) => {
-        return result.success
+        return result.success && result.datachanged
             ? new Promise(async (resolve) => {
                   const db = await getDb(station, {cache: true, open: true, throw: false});
                   await db?.compactRange('0', 'Z');
                   console.log('compacted', station);
-                  resolve(result);
+                  resolve({...result, datacompacted: true});
               })
             : result;
     });
@@ -181,6 +181,8 @@ export async function rollupDatabaseStartup(
 ) {
     let accumulatorsToPurge: Record<string, {accumulator: string; meta: null | any; typeName: string; t: number; b: number; file?: string}> = {};
     let hangingCurrents: Record<string, any> = {};
+    let datapurged = false;
+    let datamerged = false;
 
     // Our accumulators
     const {current: expectedCurrentAccumulator, processAccumulators: expectedAccumulators} = whatAccumulators;
@@ -324,10 +326,12 @@ export async function rollupDatabaseStartup(
             if (Object.keys(rollupAccumulators).length) {
                 const rollupResult = await rollupDatabaseInternal(db, {current: [hangingHeader.typeName, hangingHeader.bucket], processAccumulators: rollupAccumulators, now, needValidPurge: false, stationMeta});
                 console.log(`${db.ognStationName}: rolled up hanging current accumulator ${hangingHeader.accumulator} into ${JSON.stringify(rollupAccumulators)}: ${JSON.stringify(rollupResult)}`);
+                datamerged = true;
             } else {
                 //                console.log(`${db.ognStationName}: purging hanging current accumulator ${JSON.stringify(hangingHeader)} and associated sub accumulators`);
                 // now we clear it
                 await purge(db, hangingHeader);
+                datapurged = true;
             }
         }
     }
@@ -335,9 +339,10 @@ export async function rollupDatabaseStartup(
     // These are old accumulators we purge them because we aren't sure what else can be done
     for (const key in accumulatorsToPurge) {
         await purge(db, new CoverageHeader(key));
+        datapurged = true;
     }
 
-    return {success: true};
+    return {success: true, datapurged, datamerged, datachanged: datamerged || datapurged};
 }
 
 async function purgeDatabaseInternal(db: DB) {
