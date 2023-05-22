@@ -60,16 +60,17 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
             return;
         }
 
-        if (fileName.match(/.gz$/)) {
-            arrowFileContents = gunzipSync(arrowFileContents);
-        }
-
         try {
+            if (fileName.match(/.gz$/)) {
+               arrowFileContents = gunzipSync(arrowFileContents);
+            }
+
             table = tableFromIPC([arrowFileContents]);
             cache.set(fileName, table);
             searchTableForH3(fileName, table, h3SplitLong, resolve);
         } catch (e) {
             console.log(fileName, 'invalid arrow table', e);
+            resolve();
         }
     });
 }
