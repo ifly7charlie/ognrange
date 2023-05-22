@@ -123,7 +123,7 @@ export function checkStationMoved(stationName: StationName, latitude: Latitude, 
     if (distance > STATION_MOVE_THRESHOLD_KM) {
         details.notice = `${Math.round(distance)}km move detected ${new Date(timestamp * 1000).toISOString()} resetting history`;
         details.moved = true; // we need to persist this
-        console.log(`station ${stationName} has moved location from ${details.lat},${details.lng} to ${latitude},${longitude} which is ${distance.toFixed(1)}km`);
+        console.log(`station ${stationName} has moved location to ${latitude},${longitude} which is ${distance.toFixed(1)}km`);
         updateStationStatus(details);
     }
 }
