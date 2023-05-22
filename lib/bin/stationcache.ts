@@ -26,9 +26,9 @@ const options = {
         if (db.status == 'closed') {
             return; // if it's already closed then that's cool let it go
         }
-        console.log('~', db.ognStationName, key, r);
+        //        console.log('~', db.ognStationName, key, r);
         if (db.global && r == 'evict') {
-            console.warn('closing global db on cache evict');
+            //            console.warn('closing global db on cache evict');
         }
         if (stationDbCache.getRemainingTTL(key) < H3_CACHE_FLUSH_PERIOD_MS / 1000) {
             console.log(`Closing database ${key} while it's still needed. You should increase MAX_STATION_DBS in .env.local [db status ${db.status}]`);
