@@ -424,8 +424,14 @@ async function processPacket(packet: AprsLocationPacket) {
     const flarmId = packet.sourceCallsign?.slice(packet.sourceCallsign?.length - 6);
     const pawTracker = packet.sourceCallsign?.slice(0, 3) == 'PAW';
 
+    if (pawTracker) {
+        packetStats.ignoredPAW++;
+        return;
+    }
+
     // Make sure it's valid
-    if (flarmId?.length != 6 || !pawTracker) {
+    if (flarmId?.length != 6) {
+        console.log(packet.sourceCallsign?.slice(packet.sourceCallsign?.length - 6));
         packetStats.invalidTracker++;
         return;
     }
@@ -440,10 +446,6 @@ async function processPacket(packet: AprsLocationPacket) {
     }
     if (packet.destCallsign == 'OGNTRK' && packet.digipeaters?.[0]?.callsign?.slice(0, 2) != 'qA') {
         packetStats.ignoredTracker++;
-        return;
-    }
-    if (pawTracker) {
-        packetStats.ignoredPAW++;
         return;
     }
 
