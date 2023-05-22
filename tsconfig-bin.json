@@ -19,6 +19,6 @@
         "isolatedModules": true,
         "jsx": "preserve"
     },
-    "exclude": ["dist", "node_modules"],
-    "include": ["bin/*ts", "lib/**/*ts", "test/**ts"]
+    "exclude": ["dist", "node_modules", "**/*test.ts"],
+    "include": ["bin/*ts", "lib/**/*ts" ]
 }
