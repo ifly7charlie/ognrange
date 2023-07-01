@@ -1,0 +1,59 @@
+# disposable to find github version, only used for that
+FROM node:16-alpine as version
+WORKDIR /ognrange
+COPY .git/HEAD .git/HEAD
+COPY .git/refs/heads .git/refs/heads
+COPY ./conf/.env.local ./.env.local
+RUN echo "NEXT_PUBLIC_GIT_REF=$(cat /ognrange/.git/`cat .git/HEAD | cut -f2 -d ' '`)" >> ./.env.local
+
+######## builders
+FROM node:16-alpine as gyp
+RUN apk add --no-cache flock curl
+WORKDIR /ognrange
+COPY --from=version /ognrange/.env.local ./.env.local
+
+FROM gyp as build-image
+WORKDIR /ognrange
+ARG NEXT_PUBLIC_SITEURL
+ARG NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
+COPY ./package.json ./
+COPY ./yarn.lock ./
+RUN apk add --no-cache --virtual .build-deps alpine-sdk python3 && npm_config_build_from_source=true yarn install --frozen-lockfile && apk del .build-deps
+
+FROM build-image AS next-build-image
+COPY ./next.config.cjs ./next.config.cjs
+COPY ./styles ./styles
+COPY ./lib/api ./lib/api
+COPY ./pages ./pages
+COPY ./lib/react ./lib/react
+COPY ./lib/bin ./lib/bin
+RUN yarn next build
+
+########### production images
+FROM gyp as base-image
+WORKDIR /ognrange
+COPY ./package.json ./
+COPY ./yarn.lock ./
+RUN apk add --no-cache --virtual .build-deps alpine-sdk python3 && npm_config_build_from_source=true yarn install --production  --frozen-lockfile && apk del .build-deps
+
+FROM base-image AS next
+HEALTHCHECK --interval=10s --retries=5 CMD curl -Q --fail http://localhost:3000 || exit 1
+WORKDIR /ognrange
+COPY --from=next-build-image /ognrange/.next ./.next
+COPY ./next.config.cjs ./next.config.cjs
+EXPOSE 3000
+CMD yarn next start
+
+FROM base-image AS aprs
+HEALTHCHECK --interval=10s --retries=5 CMD flock --exclusive --nonblock /ognrange/data/db/status/LOCK  --command 'echo lock failed' || exit 1
+WORKDIR /ognrange
+COPY ./bin ./bin
+COPY ./lib/bin ./lib/bin
+RUN mkdir data
+CMD node bin/aprs.js
+
+FROM httpd:2.4-alpine AS apache
+HEALTHCHECK --interval=10s --retries=5 CMD curl -Q --fail http://localhost:8000 || exit 1
+RUN apk add --no-cache curl
+RUN mkdir -p /ognrange/data && chown 82:1006 /usr/local/apache2/logs
+COPY ./conf/docker-httpd.conf /usr/local/apache2/conf/httpd.conf

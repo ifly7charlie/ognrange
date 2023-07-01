@@ -1,0 +1,57 @@
+version: '3.9'
+services:
+    next:
+        platform: linux/amd64
+        image: ghcr.io/ifly7charlie/ogr-next:latest
+        build:
+            context: .
+            dockerfile: ./conf/Dockerfile
+            target: next
+            args:
+                - NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
+                - NEXT_PUBLIC_DATA_URL
+        depends_on:
+            aprs:
+                condition: service_healthy
+        volumes:
+            - arrow:/ognrange/data/arrow:ro
+        restart: always
+    aprs:
+        platform: linux/amd64
+        image: ghcr.io/ifly7charlie/ogr-aprs:latest
+        build:
+            context: .
+            dockerfile: ./conf/Dockerfile
+            target: aprs
+        command: node bin/aprs.js
+        deploy:
+            resources:
+                limits:
+                    cpus: '1'
+                    memory: 5000M
+        restart: always
+        volumes:
+            - db:/ognrange/data/db
+            - arrow:/ognrange/data/arrow
+    apache:
+        platform: linux/amd64
+        image: ghcr.io/ifly7charlie/ogr-apache:latest
+        build:
+            context: .
+            dockerfile: ./conf/Dockerfile
+            target: apache
+        restart: always
+        tty: true
+        stdin_open: true
+        volumes:
+            - arrow:/ognrange/data/arrow:ro
+        depends_on:
+            next:
+                condition: service_healthy
+            aprs:
+                condition: service_healthy
+        ports:
+            - 8080:8000
+volumes:
+    arrow:
+    db:
