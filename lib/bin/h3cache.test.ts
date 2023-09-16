@@ -73,7 +73,7 @@ Promise<CoverageRecordOut | any> {
 }
 
 const test_a1 = {stationName: 'test-a1' as StationName, stationId: 1 as StationId};
-const test_a2 = 'test-a2' as StationName;
+const test_a2 = {stationName: 'test-a2' as StationName, stationId: 2 as StationId};
 const test_global = 'global' as StationName;
 
 beforeAll(() => {
@@ -82,7 +82,7 @@ beforeAll(() => {
 
 // Start empty
 test('clear', async () => {
-    (await getDb('test_a1' as StationName))!.clear();
+    (await getDb(test_a1.stationName))!.clear();
     (await getDb(<StationName>'test_a2'))!.clear();
     (await getDb(<StationName>'global'))!.clear();
 });
@@ -114,7 +114,7 @@ test('flushed one', async () => {
 });
 
 test('persisted', async () => {
-    const cr = await get(test_a1, '87088619bffffff', 'current');
+    const cr = await get(test_a1.stationName, '87088619bffffff', 'current');
     expect(cr).toMatchObject({
         MinAlt: 100
     });
@@ -130,8 +130,8 @@ test('flushed none', async () => {
 });
 
 test('flushed several', async () => {
-    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a1});
-    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a2});
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, ...test_a1});
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, ...test_a2});
     const flushStats = await flushDirtyH3s({allUnwritten: true});
     expect(flushStats).toMatchObject({
         written: 2,
@@ -141,8 +141,8 @@ test('flushed several', async () => {
 });
 
 test('clear exclusive', async () => {
-    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a1});
-    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, station: test_a2});
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, ...test_a1});
+    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, ...test_a2});
     const flushStats = await flushDirtyH3s({allUnwritten: true});
     expect(flushStats).toMatchObject({
         written: 2,
