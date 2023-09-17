@@ -44,8 +44,8 @@ export function getNextStationId() {
 // Load the status of the current stations
 export async function loadStationStatus() {
     console.log('loading station status');
-    // Open the status database
 
+    // Open the status database
     try {
         statusDb = new ClassicLevel<StationName, StationDetails>(DB_PATH + 'status', {valueEncoding: 'json'});
         await statusDb.open();
@@ -94,15 +94,15 @@ export function getStationDetails(stationName: StationName, serialise = true): S
 }
 export function allStationsDetails({includeGlobal}: {includeGlobal: boolean} = {includeGlobal: false}): StationDetails[] {
     const values = Object.values(stations);
-    if (!includeGlobal) {
-        values.shift();
+    if (includeGlobal) {
+        values.unshift({station: 'global' as StationName, id: 0 as StationId});
     }
     return values;
 }
 export function allStationsNames({includeGlobal}: {includeGlobal: boolean} = {includeGlobal: false}): string[] {
     const values = Object.keys(stations);
-    if (!includeGlobal) {
-        values.shift();
+    if (includeGlobal) {
+        values.unshift('global');
     }
     return values;
 }
