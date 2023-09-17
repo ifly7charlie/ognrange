@@ -239,10 +239,7 @@ async function purge(db: DB, hr: CoverageHeader) {
 
     // Now clear and compact
     await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
-    //    await db.compactRange(
-    //      CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, true), //
-    //        CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket)
-    //    );
+    await db.compactRange('0', 'Z');
 
     // And provide a status update
     if (first100KeyCount) {
