@@ -1,17 +1,19 @@
 import dotenv from 'dotenv';
 dotenv.config({path: '.env.local', override: true});
 
-import {readFileSync} from 'fs';
+import {readFileSync, readdirSync} from 'fs';
 import {tableFromIPC, RecordBatchStreamReader} from 'apache-arrow/Arrow.node';
 
 import {ClassicLevel} from 'classic-level';
 
 import {CoverageRecord} from '../lib/bin/coveragerecord';
 import {CoverageHeader, AccumulatorTypeString} from '../lib/bin/coverageheader';
+import {CurrentAccumulator} from '../lib/bin/accumulators';
+import {saveAccumulatorMetadata} from '../lib/bin/rollupmetadata';
 
 import {StationId} from '../lib/bin/types';
 
-import {DB_PATH, OUTPUT_PATH} from '../lib/common/config';
+import {ROLLUP_PERIOD_MINUTES, DB_PATH, OUTPUT_PATH} from '../lib/common/config';
 
 import {pickBy} from 'lodash';
 
@@ -30,7 +32,7 @@ async function getArgs() {
         .option('stations', {type: 'boolean'})
         .option('fix', {type: 'boolean', default: false, description: 'attempt to recover missing or low records'})
         .option('station', {alias: 's', type: 'string', default: 'global', description: 'Station'})
-        .option('period', {alias: 'p', type: 'string', default: 'year', description: 'Type of file (accumulator)'})
+        .option('period', {alias: 'p', type: 'string', default: 'day,month,year', description: 'Type of file (accumulator)'})
         .help()
         .alias('help', 'h').argv;
 
@@ -61,7 +63,7 @@ async function getAccumulatorsFromDb(db: DB) {
     let n = db.iterator();
     let accumulators: Record<string, any> = {};
     let x = n.next();
-    let y = null;
+    let y: any = null;
     while ((y = await x)) {
         const [key, value] = y;
         let hr = new CoverageHeader(key);
@@ -75,45 +77,83 @@ async function getAccumulatorsFromDb(db: DB) {
     return accumulators;
 }
 
-function getAccumulatorsFromDisk(file: string, period: string) {
+function getAccumulatorsFromDisk(file: string) {
     const d = JSON.parse(readFileSync(file, {encoding: 'utf-8'}));
     console.log(d);
-    d.accumulators[period].hr = CoverageHeader.getAccumulatorMeta(period as AccumulatorTypeString, d.accumulators[period].bucket);
+    try {
+        d.accumulators['day'].hr = CoverageHeader.getAccumulatorMeta('day' as AccumulatorTypeString, d.accumulators['day'].bucket);
+        d.accumulators['month'].hr = CoverageHeader.getAccumulatorMeta('month' as AccumulatorTypeString, d.accumulators['month'].bucket);
+        d.accumulators['year'].hr = CoverageHeader.getAccumulatorMeta('year' as AccumulatorTypeString, d.accumulators['year'].bucket);
+    } catch (e) {
+        console.log(`incomplete metagdata for ${file}`);
+        return null;
+    }
 
     return d.accumulators;
 }
 
+function getCurrentAccumulatorFromDate(date: string): CurrentAccumulator {
+    // If we are the same date then we will assume we are valid
+    const now = new Date().toISOString().startsWith(date) ? new Date() : new Date(date);
+
+    const rolloverperiod = Math.floor((now.getUTCHours() * 60 + now.getUTCMinutes()) / ROLLUP_PERIOD_MINUTES);
+    const newAccumulatorBucket = ((now.getUTCDate() & 0x1f) << 7) | (rolloverperiod & 0x7f);
+
+    return ['current', newAccumulatorBucket];
+}
+
+function getFilesForStation(station: string) {
+    const files = readdirSync(OUTPUT_PATH + station)
+        .map((fn) => {
+            const [_all, type, date] = fn.match(/(day|month|year)\.([0-9-]+)\.arrow\.gz/) ?? ['', null, null];
+            return {type: type ?? '', date: date ?? '', fileName: fn};
+        })
+        .filter((a) => !!a.type)
+        .sort((a, b) => a.fileName.localeCompare(b.fileName));
+
+    const dayFile = files.find((x) => x.type === 'day');
+    const monthFile = files.find((x) => x.type === 'month');
+    const yearFile = files.find((x) => x.type === 'year');
+
+    if (!dayFile?.date || !monthFile?.date || !yearFile || !dayFile?.date?.startsWith(yearFile?.date ?? '-no') || !dayFile?.date?.startsWith(monthFile?.date ?? '-no')) {
+        throw new Error(`Arrow files are not consistent in dates ${dayFile}, ${monthFile} ${yearFile}`);
+    }
+
+    const now = new Date(dayFile.date);
+    const n = {
+        d: prefixWithZeros(2, String(now.getUTCDate())),
+        m: prefixWithZeros(2, String(now.getUTCMonth() + 1)),
+        y: now.getUTCFullYear()
+    };
+
+    const a: any = {
+        day: {
+            bucket: ((now.getUTCFullYear() & 0x07) << 9) | ((now.getUTCMonth() & 0x0f) << 5) | (now.getUTCDate() & 0x1f), //
+            file: `${n.y}-${n.m}-${n.d}`
+        },
+        month: {bucket: ((now.getUTCFullYear() & 0xff) << 4) | (now.getUTCMonth() & 0x0f), file: `${n.y}-${n.m}`},
+        year: {bucket: now.getUTCFullYear(), file: `${n.y}`}
+    };
+    a['day'].hr = CoverageHeader.getAccumulatorMeta('day' as AccumulatorTypeString, a['day'].bucket);
+    a['month'].hr = CoverageHeader.getAccumulatorMeta('month' as AccumulatorTypeString, a['month'].bucket);
+    a['year'].hr = CoverageHeader.getAccumulatorMeta('year' as AccumulatorTypeString, a['year'].bucket);
+
+    return a;
+}
+
 // Check all arrow data is in the station
-async function reconcile() {
-    const args = await getArgs();
-    const db = await openDb(args);
-    let accumulators = await getAccumulatorsFromDb(db);
-
-    if (!accumulators || !Object.keys(accumulators).length) {
-        accumulators = getAccumulatorsFromDisk(OUTPUT_PATH + 'global/global.' + args.period + '.json', args.period);
-    }
-
-    const a = accumulators[args.period];
-    if (!a) {
-        console.log(`accumulator ${args.period} not found in database or disk, available accumulators:`, accumulators);
-        return;
-    }
-
-    const file = OUTPUT_PATH + args.station + '/' + args.station + '.' + args.period + '.arrow.gz';
+async function reconcilePeriod(sa: any, period: string, station: string, db: DB, fix: boolean) {
+    const file = OUTPUT_PATH + station + '/' + station + '.' + period + '.arrow.gz';
     let differences = 0;
     let rows = 0;
     const fd = await open(file);
 
+    const a = sa[period];
+
     const reader = await RecordBatchStreamReader.from(fd.createReadStream().pipe(createGunzip()));
 
     for await (const batch of reader) {
-        let c = 0;
-        let d = 0;
-
-        let lo = 0;
-        let hi = 0;
         for (const columns of batch) {
-            let out = '';
             const json = columns.toJSON();
 
             const h3 = prefixWithZeros(7, json.h3hi?.toString(16) || 'null') + prefixWithZeros(8, json.h3lo?.toString(16) || 'null');
@@ -121,6 +161,7 @@ async function reconcile() {
             delete json.h3hi;
 
             const ch = new CoverageHeader(0 as StationId, a.hr.type, a.hr.bucket, h3);
+            console.log(ch);
 
             // Look it up in the db
             let row: Uint8Array | undefined = undefined;
@@ -129,7 +170,7 @@ async function reconcile() {
                 row = await db.get(ch.dbKey());
             } catch (e) {}
 
-            let fix = args.fix;
+            let dofix = fix;
             if (row) {
                 const cr = new CoverageRecord(row);
                 const dbAsArrow = cr.arrowFormat();
@@ -137,19 +178,20 @@ async function reconcile() {
                 const difference = pickBy(dbAsArrow as any, (v, k) => json[k] !== v);
                 if (difference.length) {
                     console.log(h3, difference);
-                    console.log(dbAsArrow, json);
+                    //                    console.log(dbAsArrow, json);
                     differences++;
                     if (cr.count >= json.count) {
-                        fix = false;
+                        dofix = false;
                     }
                 }
             } else {
+                differences++;
                 console.log(h3, 'absent from db');
             }
 
-            if (fix) {
+            if (dofix) {
                 // If the database is behind the json then we will rebuild
-                console.log(`-> fixing`);
+                console.log(`-> fixing ${ch.dbKey()}`);
 
                 try {
                     const newCr = CoverageRecord.fromArrow(json);
@@ -161,7 +203,42 @@ async function reconcile() {
             }
         }
     }
-    console.log(`${differences} differences, ${rows} rows from ${args.station} ${args.period}`);
+
+    if (differences && fix) {
+        console.log('saving metadata');
+        await saveAccumulatorMetadata(db as any, getCurrentAccumulatorFromDate(sa['day'].file), sa);
+    }
+
+    console.log(`${a.file}: ${differences} differences, ${rows} rows from ${station} ${period}`);
+}
+
+async function reconcile() {
+    const args = await getArgs();
+    const db = await openDb(args);
+    ////await getAccumulatorsFromDb(db);
+
+    // Figure out what accumulators are relevant
+    let saccumulators: any = getFilesForStation(args.station) ?? getAccumulatorsFromDisk(OUTPUT_PATH + args.station + '/' + args.station + '.year.json');
+    let gaccumulators = getAccumulatorsFromDisk(OUTPUT_PATH + 'global/global.year.json');
+
+    for (const period of args.period.split(',')) {
+        const sa = saccumulators[period];
+        const ga = gaccumulators[period];
+
+        if (!sa || !ga) {
+            console.log(`accumulator ${period} not found in station or global, available accumulators:`, saccumulators, gaccumulators);
+            return;
+        }
+
+        // If it isn't relevant any longer then we can ignore it
+        if (sa.file < ga.file) {
+            console.log(`station accumulator for ${period} no longer relevant ${sa.file} < ${ga.file}`);
+        } else if (sa.file > ga.file) {
+            console.log(`data missing from global records for ${sa.file}`);
+        } else {
+            reconcilePeriod(saccumulators, period, args.station, db, args.fix);
+        }
+    }
 }
 
 reconcile();

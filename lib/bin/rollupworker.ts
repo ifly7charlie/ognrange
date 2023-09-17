@@ -18,6 +18,8 @@ import {StationDetails} from './stationstatus';
 
 import {backupDatabase as backupDatabaseInternal} from './backupdatabase';
 
+import {Uint8FromObject, saveAccumulatorMetadata} from './rollupmetadata';
+
 interface RollupResult {
     elapsed: number;
     operations: number;
@@ -285,7 +287,7 @@ export async function rollupDatabaseStartup(
         // store the metadata for our iterator
         if (!hr.isMeta) {
             accumulatorsToPurge[hr.accumulator] = {accumulator: hr.accumulator, meta: null, typeName: hr.typeName, t: hr.type, b: hr.bucket};
-            //console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
+            console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
             iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
             iteratorPromise = iterator.next();
             continue;
@@ -804,10 +806,6 @@ function symlink(src: string, dest: string) {
     }
 }
 
-function Uint8FromObject(o: Record<any, any>): Uint8Array {
-    return Uint8Array.from(Buffer.from(JSON.stringify(o)));
-}
-
 // This reads the DB for the record and then adds data to it - it's how we get data from the APRS
 // (main) thread to the DB thread
 async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, buffer: Uint8Array): Promise<void> {
@@ -897,45 +895,3 @@ export const exportedForTest = {
     flushH3DbOps,
     writeH3ToDB
 };
-
-export async function saveAccumulatorMetadata(db: DB, currentAccumulator: CurrentAccumulator, allAccumulators: Accumulators): Promise<void> {
-    const dbkey = CoverageHeader.getAccumulatorMeta(...currentAccumulator).dbKey();
-    const now = new Date();
-    const nowEpoch = Math.trunc(now.valueOf() / 1000);
-    await db
-        .get(dbkey)
-        .then((value) => {
-            const meta = JSON.parse(String(value));
-            meta.oldStarts = [...meta?.oldStarts, {start: meta.start, startUtc: meta.startUtc}];
-            meta.accumulators = allAccumulators;
-            meta.start = nowEpoch;
-            meta.startUtc = now.toISOString();
-            db.put(dbkey, Uint8FromObject(meta));
-        })
-        .catch((e) => {
-            db.put(
-                dbkey,
-                Uint8FromObject({
-                    accumulators: allAccumulators,
-                    oldStarts: [],
-                    start: nowEpoch,
-                    startUtc: now.toISOString()
-                })
-            );
-        });
-    // make sure we have an up to date header for each accumulator
-    for (const typeString in allAccumulators) {
-        const type = typeString as AccumulatorTypeString;
-        const currentHeader = CoverageHeader.getAccumulatorMeta(type, allAccumulators[type]!.bucket);
-        const dbkey = currentHeader.dbKey();
-        await db
-            .get(dbkey)
-            .then((value) => {
-                const meta = JSON.parse(String(value));
-                db.put(dbkey, Uint8FromObject({...meta, accumulators: allAccumulators, currentAccumulator: currentAccumulator[1]}));
-            })
-            .catch((e) => {
-                db.put(dbkey, Uint8FromObject({start: nowEpoch, startUtc: now.toISOString(), accumulators: allAccumulators, currentAccumulator: currentAccumulator[1]}));
-            });
-    }
-}
