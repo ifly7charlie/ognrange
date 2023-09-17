@@ -267,11 +267,9 @@ export class CoverageRecord {
     // Dump for debugging
     toObject(o = 0): CoverageRecordOut {
         const output: CoverageRecordOut = {};
-        console.log('u80:', new Error('' + this._u8[0 + o]), o, this._u8);
-        const sh = allBufferVersions[this._u8[0 + o] as bufferTypes] ?? superThrow('nope'); // version always first byte, this works nested rather than _ish/_sh
-        console.log(sh);
-        for (const k in Object.keys(sh)) {
-            const v = Object(sh)[k];
+        const sh: any = allBufferVersions[this._u8[0 + o] as bufferTypes] ?? superThrow('nope'); // version always first byte, this works nested rather than _ish/_sh
+        for (const k of Object.keys(sh)) {
+            const v = sh[k];
             if (k.match(/^u8/)) {
                 output[k.slice(3)] = this._u8[o + v];
             }
@@ -289,7 +287,6 @@ export class CoverageRecord {
             // Iterate through the list, note we have mapped
             while (i != 0) {
                 const o8 = this._calcOffset(i);
-                console.log('next offset:' + o8);
                 output['stations'].push(this.toObject(o8));
                 i = this._u8[o8 + this._ish.u8oNext];
             }

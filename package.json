@@ -6,6 +6,7 @@
         "aprs": "node --enable-source-maps dist/bin/aprs.js",
         "build": "yarn aprs:build && yarn next build",
         "aprs:build": "tsc --project tsconfig-bin.json",
+        "dumpdb": "yarn aprs:build && node --enable-source-maps dist/bin/dumpdb.js",
         "export": "next export",
         "start": "next start",
         "lint": "next lint",
