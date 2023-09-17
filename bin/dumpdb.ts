@@ -87,10 +87,10 @@ async function main() {
         }
         x = n.next();
 
-        if ((y = await x)) {
-            const [key, value] = y;
-            let hr = new CoverageHeader(key);
-        }
+        //        if ((y = await x)) {
+        //            const [key] = y;
+        //          let hr = new CoverageHeader(key);
+        //    }
     }
     for (const a in accumulators) {
         console.log(`${accumulators[a].hr.typeName} [${a}]: ${accumulators[a].count} records, ~ ${accumulators[a].size} bytes`);
