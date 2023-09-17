@@ -3,7 +3,7 @@
 // as they are stored in ram and also ON DISK
 //
 
-import {Utf8, Uint8, Uint16, Uint32, makeBuilder, makeTable, RecordBatchWriter, Uint8Builder, Utf8Builder, Uint16Builder, Uint32Builder} from 'apache-arrow/Arrow.node';
+import {Utf8, Uint8, Uint16, Uint32, makeBuilder, Table, makeTable, RecordBatchWriter, Uint8Builder, Utf8Builder, Uint16Builder, Uint32Builder} from 'apache-arrow/Arrow.node';
 import {TypedArray} from 'apache-arrow/interfaces';
 
 import {createWriteStream} from 'fs';
@@ -321,14 +321,14 @@ export class CoverageRecord {
     //
     // Called to convert the in progress buffers to finished vectors ready for streaming
     static finalizeArrow(arrow: ArrowType, fileName: string) {
-        const output: Record<string, TypedArray> = {};
+        const output: Record<string, any> = {};
         for (const k in arrow) {
-            const outputArray = arrow[k]?.finish()?.toVector()?.toArray();
+            const outputArray = arrow[k]?.finish()?.toVector();
             if (outputArray) {
                 output[k] = outputArray;
             }
         }
-        const outputTable = makeTable(output);
+        const outputTable = new Table(output);
 
         if (UNCOMPRESSED_ARROW_FILES) {
             const pt = new PassThrough({objectMode: true});
