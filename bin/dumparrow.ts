@@ -32,13 +32,14 @@ async function dump() {
 
         let lo = 0;
         let hi = 0;
+        console.log(JSON.stringify(batch, null, 2));
         for (const columns of batch) {
             let out = '';
             const json = columns.toJSON();
 
-            json.h3 = prefixWithZeros(8, json.h3hi?.toString(16) || 'null') + prefixWithZeros(8, json.h3lo?.toString(16) || 'null');
-            delete json.h3lo;
-            delete json.h3hi;
+            json.h3 = prefixWithZeros(7, json.h3hi?.toString(16) || 'null') + prefixWithZeros(8, json.h3lo?.toString(16) || 'null');
+            //            delete json.h3lo;
+            //            delete json.h3hi;
             console.log(JSON.stringify(json));
         }
     }

@@ -402,6 +402,60 @@ export class CoverageRecord {
             arrow.numStations?.append(Math.min(ns, 255));
         }
     }
+    arrowFormat(h3: CoverageHeader) {
+        const count = this._u32[this._sh.u32oCount];
+        const sl = h3.h3splitlong;
+
+        let extra = {};
+        if (this._ish) {
+            let i = this._u8[(this._sh as typeof globalHeader).u8oHead],
+                sid = 99999;
+            let o = undefined;
+            let ns = 0;
+
+            // Iterate through the list, note we have mapped
+            while (i != 0 && sid != 0) {
+                // Calculate bytes from start for this item
+                const startOffset = this._calcOffset(i);
+                const o8 = startOffset,
+                    o16 = startOffset / sU16,
+                    o32 = startOffset / sU32;
+
+                // Get sid to add to list
+                sid = this._u16[o16 + this._ish.u16oStationId];
+                let scount = this._u32[o32 + this._ish.u32oCount];
+                let percentage = Math.trunc((10 * scount) / count);
+
+                // emit id base16 plus percentage (percentage will only be one digit
+                // at the end 0-A (0%-100%) - only the first 30 stations
+                if (ns < 30) {
+                    o = (o ? o + ',' : '') + ((sid << 4) | (percentage & 0x0f)).toString(36);
+                }
+
+                i = this._u8[o8 + this._ish.u8oNext];
+                ns++;
+            }
+            extra = {
+                stations: o || '',
+                expectedGap: (((this._u32[this._sh.u32oSumGap] / count) * 4) / ns) >> 0,
+                numStations: Math.min(ns, 255)
+            };
+        }
+
+        return {
+            //            h3lo: sl[0], //
+            //            h3hi: sl[1],
+            minAgl: this._u16[this._sh.u16oMinAltAgl],
+            minAlt: this._u16[this._sh.u16oMinAlt],
+            minAltSig: this._u8[this._sh.u8oMinAltMaxSig],
+            maxSig: this._u8[this._sh.u8oMaxSig],
+            avgSig: ((this._u32[this._sh.u32oSumSig] / count) * 4) >> 0,
+            avgCrc: ((this._u32[this._sh.u32oSumCrc] / count) * 10) >> 0,
+            avgGap: ((this._u32[this._sh.u32oSumGap] / count) * 4) >> 0,
+            count: count,
+            ...extra
+        };
+    }
 
     //
     // The last action we need to be able to do is fold data into our
