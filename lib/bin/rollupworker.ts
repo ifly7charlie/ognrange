@@ -134,6 +134,10 @@ export async function purgeDatabase(station: StationName): Promise<any> {
     if (!worker) {
         return;
     }
+    if (station === 'global') {
+        throw new Error('attempt to purge global');
+    }
+
     return new Promise<any>((resolve) => {
         promises[station + '_purge'] = {resolve};
         worker.postMessage({station, action: 'purge'});
@@ -767,9 +771,11 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
     // If we have a new accumulator then we need to purge the old meta data records - we
     // have already purged the data above
     dbOps.push({type: 'del', key: CoverageHeader.getAccumulatorMeta(...current).dbKey()});
-    //    if (db.global) {
-    console.log(`rollup: ${db.ognStationName}: current bucket ${[...current]} completed, removing ${CoverageHeader.getAccumulatorMeta(...current).dbKey()} & ${dbOps.filter((o) => o.type === 'del').length} records`);
-    //    }
+    const countToDelete = dbOps.filter((o) => o.type === 'del').length - 1;
+    //if (db.global) {
+    if (countToDelete > 0) {
+        console.log(`rollup: ${db.ognStationName}: current bucket ${[...current]} completed, removing ${CoverageHeader.getAccumulatorMeta(...current).dbKey()} & ${countToDelete} records`);
+    }
 
     // Is this actually beneficial? - feed operations to the database in key type sorted order
     // so it can just process them. Keys should be stored clustered so theoretically this will

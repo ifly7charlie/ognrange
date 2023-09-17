@@ -211,6 +211,14 @@ export class CoverageRecord {
         }
     }
 
+    get count(): number {
+        return this._u32[this._sh.u32oCount];
+    }
+
+    get type(): bufferTypes {
+        return this._sh.version;
+    }
+
     //
     // Update a record, will update based on the type detected in the version field
     // this deals with accumulating and making sure values are correct
@@ -402,9 +410,10 @@ export class CoverageRecord {
             arrow.numStations?.append(Math.min(ns, 255));
         }
     }
-    arrowFormat(h3: CoverageHeader) {
+    arrowFormat() {
+        //h3: CoverageHeader) {
         const count = this._u32[this._sh.u32oCount];
-        const sl = h3.h3splitlong;
+        //        const sl = h3.h3splitlong;
 
         let extra = {};
         if (this._ish) {
@@ -455,6 +464,24 @@ export class CoverageRecord {
             count: count,
             ...extra
         };
+    }
+
+    static fromArrow(arrowJson: any) {
+        if (arrowJson.stations) {
+            throw new Error('fromArrow can only be used to recover stations');
+        }
+        const newArrow = new CoverageRecord(bufferTypes.station);
+        newArrow._u16[newArrow._sh.u16oMinAltAgl] = arrowJson.minAgl;
+        newArrow._u16[newArrow._sh.u16oMinAlt] = arrowJson.minAlt;
+        newArrow._u8[newArrow._sh.u8oMinAltMaxSig] = arrowJson.minAltSig;
+        newArrow._u32[newArrow._sh.u32oCount] = arrowJson.count;
+        newArrow._u8[newArrow._sh.u8oMaxSig] = arrowJson.maxSig;
+
+        newArrow._u32[newArrow._sh.u32oSumSig] = (arrowJson.avgSig * arrowJson.count) / 4;
+        newArrow._u32[newArrow._sh.u32oSumCrc] = (arrowJson.avgCrc * arrowJson.count) / 10;
+        newArrow._u32[newArrow._sh.u32oSumGap] = (arrowJson.avgGap * arrowJson.count) / 4;
+
+        return newArrow;
     }
 
     //
