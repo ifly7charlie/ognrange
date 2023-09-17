@@ -20,6 +20,7 @@ const explicitlyIgnoredStations: Record<string, boolean> = {
     SafeSky: true,
     IGCDroid: true,
     APRSPUSH: true,
+    TEST: true,
     ADSBExch: true,
     DLY2APRS: true,
     TTN2OGN: true,
