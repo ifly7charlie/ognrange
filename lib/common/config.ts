@@ -12,11 +12,15 @@ export const MAXIMUM_GRAPH_AGE_MSEC = (parseInt(process.env.MAXIMUM_GRAPH_AGE_DA
 
 // Database and output paths
 export let DB_PATH = fixTrailingSlash(process.env.DB_PATH || './db');
+export let BACKUP_PATH = fixTrailingSlash(process.env.BACKUP_PATH ?? DB_PATH + '../backup');
 export let OUTPUT_PATH = fixTrailingSlash(process.env.OUTPUT_PATH || './data');
 export let ARROW_PATH = OUTPUT_PATH;
 
 // Do we want to keep the uncompressed files or not - not needed if behind webserver
 export const UNCOMPRESSED_ARROW_FILES = !!(parseInt(process.env.UNCOMPRESSED_ARROW_FILES ?? '') ?? 1);
+
+// Should we take backups or not
+export const DO_BACKUPS = !!(parseInt(process.env.DO_BACKUPS ?? '1') ?? 1);
 
 // APRS Server Keep Alive
 export const APRS_KEEPALIVE_PERIOD_MS = (parseInt(process.env.APRS_KEEPALIVE_PERIOD_SECONDS ?? '') || 45) * 1000;
@@ -29,7 +33,7 @@ export const APRS_SERVER = process.env.APRS_SERVER || 'aprs.glidernet.org:14580'
 # over to prevent double counting. This is a fairly costly activity so if the
 # disk or cpu load goes too high during this process (it potentially reads and 
 # writes EVERYTHING in every database) you should increase this number */
-export const ROLLUP_PERIOD_MINUTES = (parseFloat(process.env.ROLLUP_PERIOD_HOURS ?? '') || 3) * 60;
+export const ROLLUP_PERIOD_MINUTES = process.env.ROLLUP_PERIOD_MINUTES ? parseFloat(process.env.ROLLUP_PERIOD_MINUTES) : (parseFloat(process.env.ROLLUP_PERIOD_HOURS ?? '') || 3) * 60;
 
 /* # how many databases we can process at once when doing a rollup, if
  * # your system drops the APRS connection when it is busy then you should
@@ -77,13 +81,8 @@ export const STATION_DB_EXPIRY_MS = (parseInt(process.env.STATION_DB_EXPIRY_HOUR
 #   will reduce the number of DB writes when there are lots of points being
 #   tracked
 # - MAXIMUM_DIRTY_PERIOD ensures that they will be written at least this often
-# - expirytime is how long they can remain in memory without being purged. If it
-#   is in memory then it will be used rather than reading from the db.
-#   purges happen normally at flush period intervals (so 5 and 16 really it will
-#   be flushed at the flush run at 20min)
 */
-export const H3_CACHE_FLUSH_PERIOD_MS = (parseInt(process.env.H3_CACHE_FLUSH_PERIOD_MINUTES ?? '') || 1) * 60 * 1000;
-export const H3_CACHE_EXPIRY_TIME_MS = (parseInt(process.env.H3_CACHE_EXPIRY_TIME_MINUTES ?? '') || 4) * 60 * 1000;
+export const H3_CACHE_FLUSH_PERIOD_MS = (parseInt(process.env.H3_CACHE_FLUSH_PERIOD_MINUTES ?? '') || 5) * 60 * 1000;
 export const H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS = (parseInt(process.env.H3_CACHE_MAXIMUM_DIRTY_PERIOD_MINUTES ?? '') || 30) * 60 * 1000;
 
 /* # control the elevation tile cache, note tiles are not evicted on expiry

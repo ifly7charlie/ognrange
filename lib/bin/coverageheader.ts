@@ -8,7 +8,7 @@
 import {H3Index} from 'h3-js';
 import {prefixWithZeros} from '../common/prefixwithzeros';
 
-import {StationId} from './types';
+import {H3LockKey, StationId} from './types';
 
 export type AccumulatorBucket = number;
 
@@ -82,11 +82,11 @@ export class CoverageHeader {
     // Helpers for working with the data, no setters for these because
     // the can only be set on construction (all the h3 functions can
     // handle split longs, though they all return strings)
-    get h3() {
+    get h3(): H3Index {
         return this._h3;
     }
 
-    get h3bigint() {
+    get h3bigint(): BigInt {
         let h = this.h3splitlong;
         return (BigInt(h[1]) << BigInt(32)) | BigInt(h[0]);
     }
@@ -114,8 +114,8 @@ export class CoverageHeader {
         return this._dbid;
     }
 
-    get lockKey() {
-        return this._lockKey;
+    get lockKey(): H3LockKey {
+        return this._lockKey as H3LockKey;
     }
 
     get isMeta() {

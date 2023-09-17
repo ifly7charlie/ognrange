@@ -8,6 +8,7 @@
         "forceConsistentCasingInFileNames": true,
         "downlevelIteration": true,
         "noEmit": true,
+        "sourceMap": true,
         "incremental": true,
         "esModuleInterop": true,
         "module": "esnext",
@@ -17,5 +18,5 @@
         "jsx": "preserve"
     },
     "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
-    "exclude": ["node_modules","**/*.test.ts"]
+    "exclude": ["node_modules", "**/*.test.ts"]
 }

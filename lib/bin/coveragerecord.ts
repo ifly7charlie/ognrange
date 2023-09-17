@@ -39,7 +39,7 @@ export type bufferTypeString = 'unknown' | 'station' | 'global' | 'globalNested'
 class CRBase {
     // first 32 bits
     u8oVersion: 0 = 0; // current version is 0
-    version: bufferTypes = -1;
+    version: bufferTypes = bufferTypes.unknown;
 
     u8oMinAltMaxSig: 2 = 2; // expanded
     u8oMaxSig: 3 = 3;
@@ -416,7 +416,7 @@ export class CoverageRecord {
     //
     // Also note that once you have completed rolling up then you should discard
     // the old records!
-    rollup(srcRecord: CoverageRecord, validStationSet: Set<StationId> | undefined) {
+    rollup(srcRecord: CoverageRecord, validStationSet?: Set<StationId>): CoverageRecord | null {
         // If we do not have sub stations then this is super easy we just
         // need to add the new values to our own and we are done
         if (!this._ish) {

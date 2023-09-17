@@ -11,8 +11,6 @@ import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from '
 
 import {allStationsDetails, updateStationStatus} from './stationstatus';
 
-import {DB} from './stationcache';
-
 import {CurrentAccumulator, Accumulators, getCurrentAccumulators, AccumulatorTypeString} from './accumulators';
 
 import {gzipSync, createGzip} from 'zlib';
@@ -89,11 +87,16 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
         current,
         now: nowEpoch,
         processAccumulators,
+        validStations,
         needValidPurge,
         stationMeta: undefined
     };
 
     console.log(`performing rollup and output of ${validStations.size} stations + global, removing ${invalidStations} stations`);
+    if (invalidStations / validStations.size > 0.02 /*%*/) {
+        console.error(`there are too many invalid stations, not purging any`);
+        commonArgs.needValidPurge = false;
+    }
 
     rollupStats = {
         ...rollupStats, //
@@ -194,54 +197,6 @@ export async function rollupStartupAll() {
     );
     await Promise.allSettled(promises);
     console.log(`done initial rollup`);
-}
-
-function Uint8FromObject(o: Record<any, any>): Uint8Array {
-    return Buffer.from(JSON.stringify(o));
-}
-
-export async function saveAccumulatorMetadata(db: DB): Promise<void> {
-    const {currentAccumulator, accumulators: allAccumulators} = getCurrentAccumulators() || superThrow('no accumulators available');
-
-    const dbkey = CoverageHeader.getAccumulatorMeta(...currentAccumulator).dbKey();
-    const now = new Date();
-    const nowEpoch = Math.trunc(now.valueOf() / 1000);
-    await db
-        .get(dbkey)
-        .then((value) => {
-            const meta = JSON.parse(String(value));
-            meta.oldStarts = [...meta?.oldStarts, {start: meta.start, startUtc: meta.startUtc}];
-            meta.accumulators = allAccumulators;
-            meta.start = nowEpoch;
-            meta.startUtc = now.toISOString();
-            db.put(dbkey, Uint8FromObject(meta));
-        })
-        .catch((e) => {
-            db.put(
-                dbkey,
-                Uint8FromObject({
-                    accumulators: allAccumulators,
-                    oldStarts: [],
-                    start: nowEpoch,
-                    startUtc: now.toISOString()
-                })
-            );
-        });
-    // make sure we have an up to date header for each accumulator
-    for (const typeString in allAccumulators) {
-        const type = typeString as AccumulatorTypeString;
-        const currentHeader = CoverageHeader.getAccumulatorMeta(type, allAccumulators[type]!.bucket);
-        const dbkey = currentHeader.dbKey();
-        await db
-            .get(dbkey)
-            .then((value) => {
-                const meta = JSON.parse(String(value));
-                db.put(dbkey, Uint8FromObject({...meta, accumulators: allAccumulators, currentAccumulator: currentAccumulator[1]}));
-            })
-            .catch((e) => {
-                db.put(dbkey, Uint8FromObject({start: nowEpoch, startUtc: now.toISOString(), accumulators: allAccumulators, currentAccumulator: currentAccumulator[1]}));
-            });
-    }
 }
 
 //

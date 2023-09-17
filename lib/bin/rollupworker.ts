@@ -5,9 +5,9 @@ import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _re
 
 import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync} from 'fs';
 
-import {getDb, closeDb, DB, BatchOperation} from './stationcache';
+import {getDb, getDbThrow, DB, BatchOperation} from './stationcache';
 
-import {Epoch, StationName, StationId} from './types';
+import {Epoch, EpochMS, StationName, StationId, H3LockKey} from './types';
 
 import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
@@ -15,6 +15,8 @@ import {Worker, parentPort, isMainThread, SHARE_ENV} from 'node:worker_threads';
 
 import {CurrentAccumulator, Accumulators, AccumulatorTypeString} from './accumulators';
 import {StationDetails} from './stationstatus';
+
+import {backupDatabase as backupDatabaseInternal} from './backupdatabase';
 
 interface RollupResult {
     elapsed: number;
@@ -39,9 +41,44 @@ interface RollupStartupAccumulators {
 // Record of all the outstanding transactions
 const promises: Record<string, {resolve: Function}> = {};
 
+// So we can wait for all of them
+const h3promises: Promise<void>[] = [];
 //
 // Start the worker thread
 const worker = isMainThread ? new Worker(__filename, {env: SHARE_ENV}) : null;
+
+// Update the disk version of the H3 by transferring the buffer record to
+// the worker thread, the buffer is NO LONGER VALID
+export async function updateH3(station: StationName, h3lockkey: H3LockKey, buffer: Uint8Array) {
+    if (!worker) {
+        return;
+    }
+    const donePromise = new Promise<void>((resolve) => {
+        promises[h3lockkey + '_updateH3'] = {resolve};
+        worker.postMessage({action: 'updateH3', now: Date.now(), station, h3lockkey, buffer}, [buffer.buffer]);
+    });
+
+    // Keep copy so we can wait for it and also return it so the caller can wait
+    h3promises.push(donePromise);
+    return donePromise;
+}
+
+// Send all the recently flushed operations to the disk, called after h3cache flush is done and
+// before a rollup can start
+export async function flushPendingH3s(): Promise<{databases: number}> {
+    if (!worker) {
+        return {databases: 0};
+    }
+    // Make sure all the h3promises are settled, then reset that - we don't
+    // care what happens just want to make sure we don't flush too early
+    await Promise.allSettled(h3promises);
+    h3promises.length = 0;
+
+    return new Promise<{databases: number}>((resolve) => {
+        promises['all_flushPending'] = {resolve};
+        worker.postMessage({station: 'all', action: 'flushPending', now: Date.now()});
+    });
+}
 
 export async function rollupStartup(station: StationName, whatAccumulators: RollupStartupAccumulators, stationMeta?: StationDetails): Promise<any> {
     if (!worker) {
@@ -49,21 +86,9 @@ export async function rollupStartup(station: StationName, whatAccumulators: Roll
     }
 
     // Do the sync in the worker thread
-    const threadPromise = new Promise<any>((resolve) => {
+    return new Promise<any>((resolve) => {
         promises[station + '_startup'] = {resolve};
         worker.postMessage({station, action: 'startup', now: Date.now(), whatAccumulators, stationMeta});
-    });
-
-    // And the compact in the aprs thread
-    return threadPromise.then((result) => {
-        return result.success && result.datachanged
-            ? new Promise(async (resolve) => {
-                  const db = await getDb(station, {cache: true, open: true, throw: false});
-                  await db?.compactRange('0', 'Z');
-                  console.log('compacted', station);
-                  resolve({...result, datacompacted: true});
-              })
-            : result;
     });
 }
 
@@ -80,6 +105,13 @@ export async function rollupDatabase(station: StationName, commonArgs: RollupDat
     if (!worker) {
         return;
     }
+
+    // Safety check
+    if (h3promises.length) {
+        console.error(`rollupDatabase ${station} requested but h3s pending to disk`);
+        await flushPendingH3s();
+    }
+
     return new Promise<RollupResult>((resolve) => {
         promises[station + '_rollup'] = {resolve};
         worker.postMessage({station, action: 'rollup', ...commonArgs});
@@ -96,45 +128,75 @@ export async function purgeDatabase(station: StationName): Promise<any> {
     });
 }
 
+export async function backupDatabase(station: StationName, whatAccumulators: Accumulators): Promise<{rows: number; elapsed: EpochMS}> {
+    if (!worker) {
+        return {rows: 0, elapsed: 0 as EpochMS};
+    }
+    // Do the sync in the worker thread
+    return new Promise<any>((resolve) => {
+        promises[station + '_backup'] = {resolve};
+        worker.postMessage({station, action: 'backup', now: Date.now(), whatAccumulators});
+    });
+}
+
 // block startup from continuing - variable in worker thread only
 let abortStartup = false;
+
+let h3dbOps = new Map<StationName, BatchOperation[]>();
 
 //
 // Inbound in the thread Dispatch to the correct place
 if (!isMainThread) {
     parentPort!.on('message', async (task) => {
         let out: any = {success: false};
-        let db: DB | undefined = undefined;
         try {
-            db = await getDb(task.station, {cache: false, open: true, noMeta: true});
-
-            if (db) {
-                switch (task.action) {
-                    case 'rollup':
-                        out = await rollupDatabaseInternal(db, task);
-                        break;
-                    case 'abortstartup':
-                        out = {success: true};
-                        abortStartup = true;
-                        break;
-                    case 'startup':
-                        out = !abortStartup ? await rollupDatabaseStartup(db, task) : {success: false};
-                        break;
-                    case 'purge':
-                        await purgeDatabaseInternal(db);
-                        break;
-                }
-                await closeDb(db);
+            switch (task.action) {
+                case 'updateH3':
+                    await writeH3ToDB(task.station, task.h3lockkey, task.buffer);
+                    parentPort!.postMessage({action: task.action, h3lockkey: task.h3lockkey, success: true});
+                    return;
+                case 'flushPending':
+                    out = await flushH3DbOps();
+                    parentPort!.postMessage({action: task.action, ...out, station: task.station, success: true});
+                    return;
             }
+
+            let db: DB | undefined = undefined;
+            try {
+                db = await getDb(task.station, {cache: false, open: true, noMeta: true});
+
+                if (db) {
+                    switch (task.action) {
+                        case 'rollup':
+                            out = await rollupDatabaseInternal(db, task);
+                            break;
+                        case 'abortstartup':
+                            out = {success: true};
+                            abortStartup = true;
+                            break;
+                        case 'startup':
+                            out = !abortStartup ? await rollupDatabaseStartup(db, task) : {success: false};
+                            if (out.success && !abortStartup) {
+                                const db = await getDb(task.station, {cache: true, open: true, throw: false});
+                                await db?.compactRange('0', 'Z');
+                                out.datacompacted = true;
+                            }
+                            break;
+                        case 'purge':
+                            await purgeDatabaseInternal(db, 'purge');
+                            break;
+                        case 'backup':
+                            out = await backupDatabaseInternal(db, task);
+                            break;
+                    }
+                }
+            } catch (e) {
+                console.error(task, e);
+            }
+            parentPort!.postMessage({action: task.action, station: task.station, ...out});
         } catch (e) {
             console.error(task, e);
-            if (db) {
-                try {
-                    await closeDb(db);
-                } catch (e) {}
-            }
         }
-        parentPort!.postMessage({action: task.action, station: task.station, ...out});
     });
 }
 
@@ -143,12 +205,13 @@ if (!isMainThread) {
 // and pass the response values to the
 else {
     worker!.on('message', (data) => {
-        const resolver = promises[data.station + '_' + data.action]?.resolve;
-        delete promises[data.station + '_' + data.action];
+        const promiseKey = (data.h3lockkey ?? data.station) + '_' + data.action;
+        const resolver = promises[promiseKey]?.resolve;
+        delete promises[promiseKey];
         if (resolver) {
             resolver(data);
         } else {
-            console.error(`missing resolve function for ${data.station} ${data.action}`);
+            console.error(`missing resolve function for ${promiseKey}/`);
         }
     });
 }
@@ -345,9 +408,9 @@ export async function rollupDatabaseStartup(
     return {success: true, datapurged, datamerged, datachanged: datamerged || datapurged};
 }
 
-async function purgeDatabaseInternal(db: DB) {
+async function purgeDatabaseInternal(db: DB, reason: string) {
     // empty the database... we could delete it but this is very simple and should be good enough
-    console.log(`clearing database for ${db.ognStationName} as it is not valid`);
+    console.log(`clearing database for ${db.ognStationName} because ${reason}`);
     await db.clear();
     return;
 }
@@ -685,6 +748,9 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
         }
     }
 
+    // Make sure we have updated the meta data
+    await saveAccumulatorMetadata(db, current, allAccumulators);
+
     // If we have a new accumulator then we need to purge the old meta data records - we
     // have already purged the data above
     dbOps.push({type: 'del', key: CoverageHeader.getAccumulatorMeta(...current).dbKey()});
@@ -729,9 +795,134 @@ function Uint8FromObject(o: Record<any, any>): Uint8Array {
     return Buffer.from(JSON.stringify(o));
 }
 
+// This reads the DB for the record and then adds data to it - it's how we get data from the APRS
+// (main) thread to the DB thread
+async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, buffer: Uint8Array): Promise<void> {
+    const h3k = new CoverageHeader(h3lockkey);
+    const cr = new CoverageRecord(buffer);
+
+    const existingOperation = h3dbOps.get(station) ?? [];
+
+    // Save it back for flushing - we can still update it as by reference
+    // and this ensures that everybody in the async code following updates the
+    // same array
+    if (!existingOperation.length) {
+        h3dbOps.set(station, existingOperation);
+    }
+
+    const getOperation = (db: DB): Promise<BatchOperation | null> =>
+        db
+            .get(h3k.dbKey())
+            .then((dbData: Uint8Array): BatchOperation | null => {
+                const newCr = cr.rollup(new CoverageRecord(dbData));
+                if (newCr) {
+                    return {type: 'put', key: h3k.dbKey(), value: newCr.buffer()};
+                } else {
+                    return null;
+                }
+            })
+            .catch((): BatchOperation => {
+                // If we don't have a record then we can just use the raw value we received
+                return {type: 'put', key: h3k.dbKey(), value: buffer};
+            });
+
+    await getDbThrow(station, {open: true, cache: true})
+        .then((db: DB) => getOperation(db))
+        .then((operation) => {
+            if (operation) {
+                existingOperation.push(operation);
+            }
+        })
+
+        .catch((e) => {
+            console.error(`unable to find db for id ${h3k.dbid}/${station}, ${e}`);
+        });
+}
+
+// Flush all writes pending in the dbOps table
+async function flushH3DbOps(): Promise<{databases: number}> {
+    const promises: Promise<void>[] = [];
+
+    const outputOps = h3dbOps;
+    h3dbOps = new Map<StationName, BatchOperation[]>();
+
+    console.log(`flushH3DbOps :${h3dbOps.size} dbs`);
+
+    // Now push these to the database
+    for (const [station, v] of outputOps) {
+        promises.push(
+            new Promise<void>((resolve) => {
+                //
+                getDb(station, {cache: true, open: true})
+                    .then((db) => {
+                        if (!db) {
+                            console.error(`unable to find db for ${station}, discarding ${v.length} operations`);
+                            resolve();
+                        } else {
+                            // Execute all changes as a batch
+                            db.batch(v, (e) => {
+                                // log errors
+                                if (e) console.error(`error flushing ${v.length} db operations for station ${db.ognStationName}`, e);
+                                resolve();
+                            });
+                        }
+                    })
+                    .catch(resolve);
+            })
+        );
+    }
+
+    await Promise.allSettled(promises);
+    return {databases: outputOps.size};
+}
+
 // Helpers for testing
 export const exportedForTest = {
     rollupDatabaseInternal,
     rollupDatabaseStartup,
-    purgeDatabaseInternal
+    purgeDatabaseInternal,
+    flushH3DbOps,
+    writeH3ToDB
 };
+
+export async function saveAccumulatorMetadata(db: DB, currentAccumulator: CurrentAccumulator, allAccumulators: Accumulators): Promise<void> {
+    const dbkey = CoverageHeader.getAccumulatorMeta(...currentAccumulator).dbKey();
+    const now = new Date();
+    const nowEpoch = Math.trunc(now.valueOf() / 1000);
+    await db
+        .get(dbkey)
+        .then((value) => {
+            const meta = JSON.parse(String(value));
+            meta.oldStarts = [...meta?.oldStarts, {start: meta.start, startUtc: meta.startUtc}];
+            meta.accumulators = allAccumulators;
+            meta.start = nowEpoch;
+            meta.startUtc = now.toISOString();
+            db.put(dbkey, Uint8FromObject(meta));
+        })
+        .catch((e) => {
+            db.put(
+                dbkey,
+                Uint8FromObject({
+                    accumulators: allAccumulators,
+                    oldStarts: [],
+                    start: nowEpoch,
+                    startUtc: now.toISOString()
+                })
+            );
+        });
+    // make sure we have an up to date header for each accumulator
+    for (const typeString in allAccumulators) {
+        const type = typeString as AccumulatorTypeString;
+        const currentHeader = CoverageHeader.getAccumulatorMeta(type, allAccumulators[type]!.bucket);
+        const dbkey = currentHeader.dbKey();
+        await db
+            .get(dbkey)
+            .then((value) => {
+                const meta = JSON.parse(String(value));
+                db.put(dbkey, Uint8FromObject({...meta, accumulators: allAccumulators, currentAccumulator: currentAccumulator[1]}));
+            })
+            .catch((e) => {
+                db.put(dbkey, Uint8FromObject({start: nowEpoch, startUtc: now.toISOString(), accumulators: allAccumulators, currentAccumulator: currentAccumulator[1]}));
+            });
+    }
+}

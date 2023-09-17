@@ -17,13 +17,12 @@ import {mkdirSync, existsSync} from 'fs';
 import {ignoreStation} from '../lib/bin/ignorestation.js';
 
 // DB Structure
-import {CoverageRecord, bufferTypes} from '../lib/bin/coveragerecord.js';
-import {CoverageHeader} from '../lib/bin/coverageheader.js';
+import {CoverageHeader} from '../lib/bin/coverageheader';
 
 import {gitVersion} from '../lib/bin/gitversion.js';
 
+import {backupDatabases} from '../lib/bin/backupdatabases';
 import {loadStationStatus, checkStationMoved, updateStationBeacon, closeStatusDb, getNextStationId, getStationDetails} from '../lib/bin/stationstatus';
-import {closeAllStationDbs, initialiseStationDbCache, getStationDbCacheSize} from '../lib/bin/stationcache';
 
 import {Epoch, StationName, StationId, Longitude, Latitude, H3} from '../lib/bin/types';
 
@@ -33,8 +32,6 @@ import {normaliseCase} from '../lib/bin/caseinsensitive';
 import h3 from 'h3-js';
 
 import {reduce as _reduce} from 'lodash';
-
-let globalDb = undefined;
 
 // track any setInterval/setTimeout calls so we can stop them when asked to exit
 // also the async rollups we do during startup
@@ -71,15 +68,13 @@ import {
     APRS_KEEPALIVE_PERIOD_MS,
     H3_CACHE_FLUSH_PERIOD_MS,
     FORGET_AIRCRAFT_AFTER_SEC,
-    STATION_MOVE_THRESHOLD_KM,
     H3_STATION_CELL_LEVEL,
     H3_GLOBAL_CELL_LEVEL,
     DB_PATH,
     OUTPUT_PATH,
-    STATION_EXPIRY_TIME_SECS,
-    MAX_STATION_DBS,
-    STATION_DB_EXPIRY_MS
-} from '../lib/common/config.js';
+    BACKUP_PATH,
+    MAX_STATION_DBS
+} from '../lib/common/config';
 
 // h3 cache functions
 import {flushDirtyH3s, updateCachedH3, getH3CacheSize, unlockH3sForReads} from '../lib/bin/h3cache';
@@ -110,12 +105,13 @@ async function main() {
         process.exit();
     }
 
-    console.log(`Configuration loaded DB@${DB_PATH} Output@${OUTPUT_PATH}, Version ${gv}`);
+    console.log(`Configuration loaded DB@${DB_PATH} Output@${OUTPUT_PATH} Backups@${BACKUP_PATH}, Version ${gv}`);
 
     // Make sure our paths exist
     try {
         mkdirSync(DB_PATH + 'stations', {recursive: true});
         mkdirSync(OUTPUT_PATH, {recursive: true});
+        mkdirSync(BACKUP_PATH, {recursive: true});
     } catch (e) {
         console.log('error creating directories', e);
     }
@@ -123,10 +119,12 @@ async function main() {
     // Open our databases
     initialiseAccumulators();
     await loadStationStatus();
-    initialiseStationDbCache();
 
     // Check and process unflushed accumulators at the start
     // then we can increment the current number for each accumulator merge
+    await (startupPromise = backupDatabases(getCurrentAccumulators()!.accumulators).then(() => {
+        /**/
+    }));
     await (startupPromise = rollupStartupAll());
     await (startupPromise = updateAndProcessAccumulators());
     startupPromise = null;
@@ -170,8 +168,7 @@ async function handleExit(signal: string) {
     }
 
     // Flush everything to disk
-    console.log(await flushDirtyH3s({allUnwritten: true, lockForRead: true}));
-    await closeAllStationDbs();
+    console.log(await flushDirtyH3s({allUnwritten: true}));
     if (getCurrentAccumulators()) {
         const current = getCurrentAccumulators();
         await rollupAll({current: current!.currentAccumulator, processAccumulators: current!.accumulators});
@@ -196,8 +193,7 @@ process.on('SIGINFO', displayStatus);
 // dump out? not good idea really better to exit and restart
 process.on('SIGUSR1', async function () {
     console.log('-- data dump requested --');
-    await flushDirtyH3s({allUnwritten: true, lockForRead: true});
-    await closeAllStationDbs();
+    await flushDirtyH3s({allUnwritten: true});
     if (getCurrentAccumulators()) {
         const current = getCurrentAccumulators();
         await rollupAll({current: current!.currentAccumulator, processAccumulators: current!.accumulators});
@@ -337,7 +333,7 @@ async function setupPeriodicFunctions() {
             const h3expired = flushStats.expired;
             const h3written = flushStats.written;
             console.log(`elevation cache: ${getCacheSize()}, valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s`);
-            console.log(`total stations: ${getNextStationId() - 1}, openDbs: ${getStationDbCacheSize()}/${MAX_STATION_DBS}`);
+            console.log(`total stations: ${getNextStationId() - 1}`);
             console.log(JSON.stringify(packetStats));
             console.log(JSON.stringify(rollupStats));
             console.log(`h3s: ${h3length} delta ${h3delta} (${((h3delta * 100) / h3length).toFixed(0)}%): `, ` expired ${h3expired} (${((h3expired * 100) / h3length).toFixed(0)}%), written ${h3written} (${((h3written * 100) / h3length).toFixed(0)}%)[${flushStats.databases} stations]`, ` ${((h3written * 100) / packets).toFixed(1)}% ${(h3written / (H3_CACHE_FLUSH_PERIOD_MS / 1000)).toFixed(1)}/s ${(packets / h3written).toFixed(0)}:1`);
@@ -362,7 +358,6 @@ async function setupPeriodicFunctions() {
         intervals.push(
             setInterval(async function () {
                 const purgeBefore = Date.now() / 1000 - FORGET_AIRCRAFT_AFTER_SEC;
-                const purgeH3sBefore = Date.now() / 1000 - 3600; // 1 hour
                 let total = allAircraft.size;
 
                 allAircraft.forEach((aircraft, key) => {
@@ -404,7 +399,7 @@ async function setupPeriodicFunctions() {
 
 function displayStatus() {
     console.log(`elevation cache: ${getCacheSize()}, h3cache: ${getH3CacheSize()},  valid packets: ${packetStats.count} ${packetStats.pps}/s, all packets ${packetStats.rawCount} ${packetStats.rawPps}/s`);
-    console.log(`total stations: ${getNextStationId() - 1}, openDbs: ${getStationDbCacheSize() + 2}/${MAX_STATION_DBS}`);
+    console.log(`total stations: ${getNextStationId() - 1}`);
     console.log(JSON.stringify(packetStats));
 }
 
@@ -462,8 +457,8 @@ async function processPacket(packet: AprsLocationPacket) {
     // helicopters can't hover that precisely. NOTE this threshold is not 0 because
     // the roc jumps a lot in the packet stream.
     if (packet.speed ?? 99 < 1) {
-        const rawRot = (packet.comment.match(reExtractRot) || [0, 0])[1];
-        const rawVC = (packet.comment.match(reExtractVC) || [0, 0])[1];
+        const rawRot = parseFloat((packet.comment.match(reExtractRot) || [0, '0'])[1]);
+        const rawVC = parseFloat((packet.comment.match(reExtractVC) || [0, '0'])[1]);
         if (rawRot == 0.0 && rawVC < 30) {
             packetStats.ignoredStationary++;
             aircraft.seen = packet.timestamp;
@@ -569,20 +564,23 @@ async function processPacket(packet: AprsLocationPacket) {
         // We store the database records as binary bytes - in the format described in the mapping() above
         // this reduces the amount of storage we need and means we aren't constantly parsing text
         // and printing text.
-        async function mergeDataIntoDatabase(db: StationName, lockKeyStationId: StationId, h3: H3) {
+        async function mergeDataIntoDatabase(dbStationId: StationId, packetStationId: StationId, h3: H3) {
             // Header details for our update
-            const h3k = new CoverageHeader(lockKeyStationId, ...getAccumulator(), h3);
+            const h3k = new CoverageHeader(dbStationId, ...getAccumulator(), h3);
 
             // And tell the cache to fetch/update - this may block if it needs to read
             // and there is nothing yet available
-            updateCachedH3(db, h3k, altitude, agl, crc, signal, gap, stationDetails.id);
+            updateCachedH3(h3k, altitude, agl, crc, signal, gap, packetStationId);
         }
 
-        // Merge into both the station db (0,0) and the global db with the stationid we allocated
+        // Merge into both the station db (name,0) and the global db (global,id) with the stationid we allocated
         // we don't pass stationid into the station specific db because there only ever is one
-        // it gets used to build the list of stations that can see the cell
-        mergeDataIntoDatabase(station, stationDetails.id, h3id as H3);
+        // it gets used to build the list of stations that can see the cell in the global one so should be correct
+        // there
+        mergeDataIntoDatabase(stationDetails.id, 0 as StationId, h3id as H3);
 
-        mergeDataIntoDatabase('global' as StationName, 0 as StationId, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL) as H3);
+        mergeDataIntoDatabase(0 as StationId, stationDetails.id, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL) as H3);
+    }).catch((e) => {
+        console.error(`exception calling getElevationOffset for ${station}, ${packet.latitude}, ${packet.longitude}, ${altitude}`, e);
     });
 }

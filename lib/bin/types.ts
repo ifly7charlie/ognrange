@@ -15,5 +15,6 @@ export type StationId = number & As<'StationId'>;
 export type StationName = string & As<'StationName'>;
 
 export type H3 = string & As<'H3'>;
+export type H3LockKey = string & As<'H3LockKey'>;
 
 export type TZ = string & As<'TZ'>;

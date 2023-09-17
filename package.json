@@ -2,9 +2,9 @@
     "name": "ognrange",
     "private": true,
     "scripts": {
-        "dev": "NODE_OPTIONS='--inspect' next dev",
-        "aprs": "node dist/bin/aprs.js",
-        "build": "aprs:build && next build",
+        "dev": "NODE_OPTIONS='--inspect --enable-source-maps ' next dev",
+        "aprs": "node --enable-source-maps dist/bin/aprs.js",
+        "build": "yarn aprs:build && yarn next build",
         "aprs:build": "tsc --project tsconfig-bin.json",
         "export": "next export",
         "start": "next start",
@@ -74,6 +74,6 @@
         "ts-jest": "^29.0.5",
         "ts-node": "^10.9.1",
         "tsc-watch": "^5.0.3",
-        "typescript": "^4.8.4"
+        "typescript": "^5.1.0"
     }
 }

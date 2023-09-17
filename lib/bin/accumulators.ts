@@ -3,12 +3,13 @@ import {prefixWithZeros} from '../common/prefixwithzeros';
 import {cloneDeep as _clonedeep, isEqual as _isequal, reduce as _reduce} from 'lodash';
 
 import {
-    ROLLUP_PERIOD_MINUTES //
+    ROLLUP_PERIOD_MINUTES, //
+    DO_BACKUPS
 } from '../common/config';
 
-import {flushDirtyH3s, unlockH3sForReads} from './h3cache';
+import {flushDirtyH3s} from './h3cache';
 import {rollupAll} from './rollup';
-import {closeAllStationDbs} from './stationcache';
+import {backupDatabases} from './backupdatabases';
 
 export type {AccumulatorTypeString} from './coverageheader';
 import {AccumulatorTypeString} from './coverageheader';
@@ -122,10 +123,23 @@ export async function updateAndProcessAccumulators() {
         // Now we need to make sure we have flushed our H3 cache and everything
         // inflight has finished before doing this. we could purge cache
         // but that doesn't ensure that all the inflight has happened
-        const s = await flushDirtyH3s({allUnwritten: true, lockForRead: true});
+        const s = await flushDirtyH3s({allUnwritten: true});
         console.log(`accumulator rotation happening`, s);
-        await closeAllStationDbs();
+
+        // If we are chaging the day then we will do a backup before
+        // a rollup - this could lose some data in a restore as it doesn't
+        // capture the current accumulator and it hasn't been merged in
+        const doBackup = DO_BACKUPS && oldAccumulators?.day?.file && oldAccumulators.day.file !== accumulators?.day?.file;
+
+        if (doBackup) {
+            await backupDatabases(oldAccumulators);
+        }
+
         await rollupAll({current: oldAccumulator, processAccumulators: oldAccumulators});
-        unlockH3sForReads();
+
+        // We also do it after with the new date which is fully rolled up
+        if (doBackup) {
+            await backupDatabases(accumulators);
+        }
     }
 }

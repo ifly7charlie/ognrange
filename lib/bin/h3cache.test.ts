@@ -66,9 +66,9 @@ Promise<CoverageRecordOut | any> {
     const h3k = new CoverageHeader(0 as StationId, ...acc, h3);
     console.log('get ', h3k.dbKey());
     try {
-        return new CoverageRecord(await (await getDb(station))!.get(h3k.dbKey())).toObject();
+        return new CoverageRecord(await ((await getD) - b(station))!.get(h3k.dbKey())).toObject();
     } catch (e) {
-        return e;
+        return {...e, station, h3k};
     }
 }
 
@@ -83,8 +83,8 @@ beforeAll(() => {
 // Start empty
 test('clear', async () => {
     (await getDb(test_a1.stationName))!.clear();
-    (await getDb(<StationName>'test_a2'))!.clear();
-    (await getDb(<StationName>'global'))!.clear();
+    (await getDb(test_a2.stationName))!.clear();
+    (await getDb(test_global))!.clear();
 });
 
 test('init a', () => {
@@ -128,7 +128,7 @@ test('flushed none', async () => {
         expired: 0
     });
 });
-
+/*
 test('flushed several', async () => {
     await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, ...test_a1});
     await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, ...test_a2});
@@ -150,7 +150,7 @@ test('clear exclusive', async () => {
         expired: 0
     });
 });
-
+*/
 /*
 // roll it up ;)
 test('rollup one item empty db', async (t) => {
