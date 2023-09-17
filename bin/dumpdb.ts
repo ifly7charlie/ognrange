@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config({path: '.env.local', override: true});
+
 import {ClassicLevel} from 'classic-level';
 
 import {CoverageRecord} from '../lib/bin/coveragerecord';
