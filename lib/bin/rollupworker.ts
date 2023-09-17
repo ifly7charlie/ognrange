@@ -781,13 +781,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
 
     //
     // Finally execute all the operations on the database
-    await new Promise<void>((resolve) => {
-        db.batch(dbOps, (e) => {
-            // log errors
-            if (e) console.error('error flushing db operations for station id', name, e);
-            resolve();
-        });
-    });
+    await db.batch(dbOps);
 
     // Purge everything from the current accumulator, this should just do a compact as we
     // have already deleted in the batch above
