@@ -770,9 +770,9 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
     // If we have a new accumulator then we need to purge the old meta data records - we
     // have already purged the data above
     dbOps.push({type: 'del', key: CoverageHeader.getAccumulatorMeta(...current).dbKey()});
-    if (db.global) {
-        console.log(`rollup: current bucket ${[...current]} completed, removing ${CoverageHeader.getAccumulatorMeta(...current).dbKey()}`);
-    }
+    //    if (db.global) {
+    console.log(`rollup: ${db.ognStationName}: current bucket ${[...current]} completed, removing ${CoverageHeader.getAccumulatorMeta(...current).dbKey()} & ${dbOps.filter((o) => o.type === 'del').length} records`);
+    //    }
 
     // Is this actually beneficial? - feed operations to the database in key type sorted order
     // so it can just process them. Keys should be stored clustered so theoretically this will
