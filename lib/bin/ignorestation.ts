@@ -4,6 +4,7 @@
 //
 
 const explicitlyIgnoredStations: Record<string, boolean> = {
+    AKASB: true, // junk in error log about AX.25
     CV32QG: true, // Signal strength is wrong and only covering specific circle, probably PAW tracking
     SPOT: true,
     SPIDER: true,
