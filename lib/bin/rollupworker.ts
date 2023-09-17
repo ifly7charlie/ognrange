@@ -544,7 +544,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
                 if (!prefixedh3r) {
                     if (r.lastCopiedH3p != h3p.h3) {
                         const h3kr = h3p.getAccumulatorForBucket(r.type, r.bucket);
-                        dbOps.push({type: 'put', key: h3kr.dbKey(), value: Buffer.from(currentBr.buffer())});
+                        dbOps.push({type: 'put', key: h3kr.dbKey(), value: currentBr.buffer()});
                         currentBr.appendToArrow(h3kr, r.arrow);
                         r.lastCopiedH3p = h3p.h3;
                         r.stats.h3missing++;
@@ -579,7 +579,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
                 if (ordering < 0) {
                     if (r.lastCopiedH3p != h3p.h3) {
                         const h3kr = h3p.getAccumulatorForBucket(r.type, r.bucket);
-                        dbOps.push({type: 'put', key: h3kr.dbKey(), value: Buffer.from(currentBr.buffer())});
+                        dbOps.push({type: 'put', key: h3kr.dbKey(), value: currentBr.buffer()});
                         currentBr.appendToArrow(h3kr, r.arrow);
                         r.lastCopiedH3p = h3p.h3;
                         r.stats.h3missing++;
@@ -622,7 +622,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
                         r.stats.h3emptied++;
                     } else {
                         r.stats.h3updated++;
-                        dbOps.push({type: 'put', key: prefixedh3r, value: Buffer.from(updatedBr.buffer())});
+                        dbOps.push({type: 'put', key: prefixedh3r, value: updatedBr.buffer()});
                     }
                 } else {
                     r.stats.h3noChange++;
@@ -664,7 +664,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, current, proc
                         dbOps.push({type: 'del', key: prefixedh3r});
                         r.stats.h3emptied++;
                     } else {
-                        dbOps.push({type: 'put', key: prefixedh3r, value: Buffer.from(updatedBr.buffer())});
+                        dbOps.push({type: 'put', key: prefixedh3r, value: updatedBr.buffer()});
                         r.stats.h3updated++;
                     }
                 } else {
@@ -808,7 +808,7 @@ function symlink(src: string, dest: string) {
 }
 
 function Uint8FromObject(o: Record<any, any>): Uint8Array {
-    return Buffer.from(JSON.stringify(o));
+    return Uint8Array.from(Buffer.from(JSON.stringify(o)));
 }
 
 // This reads the DB for the record and then adds data to it - it's how we get data from the APRS
