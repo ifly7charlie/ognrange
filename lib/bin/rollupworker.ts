@@ -5,7 +5,7 @@ import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _re
 
 import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync} from 'fs';
 
-import {getDb, getDbThrow, DB, BatchOperation} from './stationcache';
+import {getDb, getDbThrow, DB, BatchOperation, closeAllStationDbs} from './stationcache';
 
 import {Epoch, EpochMS, StationName, StationId, H3LockKey} from './types';
 
@@ -77,6 +77,18 @@ export async function flushPendingH3s(): Promise<{databases: number}> {
     return new Promise<{databases: number}>((resolve) => {
         promises['all_flushPending'] = {resolve};
         worker.postMessage({station: 'all', action: 'flushPending', now: Date.now()});
+    });
+}
+
+export async function shutdownRollupWorker() {
+    if (!worker) {
+        return;
+    }
+
+    // Do the sync in the worker thread
+    return new Promise<void>((resolve) => {
+        promises['all_shutdown'] = {resolve};
+        worker.postMessage({station: 'all', action: 'shutdown', now: Date.now()});
     });
 }
 
@@ -157,6 +169,10 @@ if (!isMainThread) {
                     return;
                 case 'flushPending':
                     out = await flushH3DbOps();
+                    parentPort!.postMessage({action: task.action, ...out, station: task.station, success: true});
+                    return;
+                case 'shutdown':
+                    await closeAllStationDbs();
                     parentPort!.postMessage({action: task.action, ...out, station: task.station, success: true});
                     return;
             }

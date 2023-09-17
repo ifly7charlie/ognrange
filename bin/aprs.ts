@@ -81,7 +81,7 @@ import {flushDirtyH3s, updateCachedH3, getH3CacheSize, unlockH3sForReads} from '
 
 // Rollup functions
 import {rollupAll, rollupStartupAll, rollupStats} from '../lib/bin/rollup';
-import {rollupAbortStartup} from '../lib/bin/rollupworker';
+import {rollupAbortStartup, shutdownRollupWorker} from '../lib/bin/rollupworker';
 import {getAccumulator, getCurrentAccumulators, updateAndProcessAccumulators, initialiseAccumulators} from '../lib/bin/accumulators';
 
 // Get our git version
@@ -178,6 +178,7 @@ async function handleExit(signal: string) {
 
     // Close all the databases and cleanly exit
     await closeStatusDb();
+    await shutdownRollupWorker();
 
     connection = null;
     alreadyExiting = false;
