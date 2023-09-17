@@ -8,7 +8,7 @@
         "aprs:build": "tsc --project tsconfig-bin.json",
         "dumpdb": "yarn aprs:build && node --enable-source-maps dist/bin/dumpdb.js",
         "dumparrow": "yarn aprs:build && node --enable-source-maps dist/bin/dumparrow.js",
-        "reconcile": "yarn aprs:build && node --enable-source-maps dist/bin/comparearrowtodb.js",
+        "reconcile": "yarn aprs:build && node --enable-source-maps dist/bin/reconcile.js",
         "export": "next export",
         "start": "next start",
         "lint": "next lint",
