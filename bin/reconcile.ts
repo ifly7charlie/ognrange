@@ -80,7 +80,7 @@ async function getAccumulatorsFromDb(db: DB) {
 
 function getAccumulatorsFromDisk(file: string) {
     const d = JSON.parse(readFileSync(file, {encoding: 'utf-8'}));
-//    console.log(d);
+    //    console.log(d);
     try {
         d.accumulators['day'].hr = CoverageHeader.getAccumulatorMeta('day' as AccumulatorTypeString, d.accumulators['day'].bucket);
         d.accumulators['month'].hr = CoverageHeader.getAccumulatorMeta('month' as AccumulatorTypeString, d.accumulators['month'].bucket);
@@ -237,12 +237,11 @@ async function reconcile() {
         } else if (sa.file > ga.file) {
             console.log(`data missing from global records for ${sa.file}`);
         } else {
-            if( ! args.fix && args.fixmeta ) {
+            if (!args.fix && args.fixmeta) {
                 await saveAccumulatorMetadata(db as any, getCurrentAccumulatorFromDate(saccumulators['day'].file), saccumulators);
-    }   else {
-
-            reconcilePeriod(saccumulators, period, args.station, db, args.fix, args.fixmeta);
-    }
+            } else {
+                reconcilePeriod(saccumulators, period, args.station, db, args.fix, args.fixmeta);
+            }
         }
     }
 }

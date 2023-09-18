@@ -123,11 +123,11 @@ async function main() {
     // Check and process unflushed accumulators at the start
     // then we can increment the current number for each accumulator merge
     console.log('Backing up databases...');
-//    await (startupPromise = backupDatabases(getCurrentAccumulators()!.accumulators).then(() => {
-        /**/
-  //  }));
+    //    await (startupPromise = backupDatabases(getCurrentAccumulators()!.accumulators).then(() => {
+    /**/
+    //  }));
     console.log('Performing startup rollup...');
-    await (startupPromise = rollupStartupAll()); 
+    await (startupPromise = rollupStartupAll());
     console.log('Configuring accumulators...');
     await (startupPromise = updateAndProcessAccumulators());
     startupPromise = null;

@@ -62,7 +62,7 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
 
         try {
             if (fileName.match(/.gz$/)) {
-               arrowFileContents = gunzipSync(arrowFileContents);
+                arrowFileContents = gunzipSync(arrowFileContents);
             }
 
             table = tableFromIPC([arrowFileContents]);
