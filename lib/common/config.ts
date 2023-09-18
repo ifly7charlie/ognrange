@@ -38,7 +38,7 @@ export const ROLLUP_PERIOD_MINUTES = process.env.ROLLUP_PERIOD_MINUTES ? parseFl
 /* # how many databases we can process at once when doing a rollup, if
  * # your system drops the APRS connection when it is busy then you should
  * # set this number lower */
-export const MAX_SIMULTANEOUS_ROLLUPS = parseInt(process.env.MAX_SIMULTANEOUS_ROLLUPS ?? '') || 100;
+export const MAX_SIMULTANEOUS_ROLLUPS = Math.min(parseInt(process.env.MAX_SIMULTANEOUS_ROLLUPS ?? '') || 100, MAX_STATION_DBS * 0.9);
 
 // how much detail to collect, bigger numbers = more cells! goes up fast see
 // https://h3geo.org/docs/core-library/restable for what the sizes mean
