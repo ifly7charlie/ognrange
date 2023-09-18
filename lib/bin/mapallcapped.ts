@@ -57,14 +57,14 @@ function* arrayGenerator<T>(array: T[]): G<T> {
     const start = Date.now();
     let last = start;
     for (let index = 0; index < array.length; index++) {
+        const currentValue = array[index];
+        yield [currentValue, index, array];
         const now = Date.now();
-        if (now - last > 30) {
+        if (now - last > 30_000) {
             last = now;
             const elapsed = (now - start) / 1000;
             console.log(` ${((index * 100) / array.length).toFixed(0)}% [${index}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${(index / elapsed).toFixed(1)}/s`);
         }
-        const currentValue = array[index];
-        yield [currentValue, index, array];
     }
 }
 /*
