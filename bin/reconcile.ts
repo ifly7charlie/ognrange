@@ -205,7 +205,7 @@ async function reconcilePeriod(sa: any, period: string, station: string, db: DB,
         }
     }
 
-    if (differences && (fix || fixmeta)) {
+    if ((differences && fix) || fixmeta) {
         console.log('saving metadata');
         await saveAccumulatorMetadata(db as any, getCurrentAccumulatorFromDate(sa['day'].file), sa);
     }
