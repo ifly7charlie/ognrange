@@ -115,6 +115,7 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
     // of the global db or other actions.
     // it is worth running them in parallel as there is a lot of IO which would block
     let promise = mapAllCapped(
+        'rollup',
         allStationsDetails({includeGlobal: true}),
         async function (stationMeta) {
             const station = stationMeta.station;
@@ -187,6 +188,7 @@ export async function rollupStartupAll() {
     // it is worth running them in parallel as there is a lot of IO which would block
     promises.push(
         mapAllCapped(
+            'startup',
             allStations,
             async (stationMeta) => {
                 const station = stationMeta.station;

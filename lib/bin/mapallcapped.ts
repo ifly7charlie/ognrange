@@ -8,6 +8,8 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
+const status: Record<string, string> = {};
+
 //
 // This code is derived from  https://github.com/userpixel/cap-parallel
 // it has been simplified = it was a cool solution and implementation but we don't need it to be as cool :)
@@ -18,14 +20,16 @@ type CbFunctionType<T> = (currentValue: T, index: number, array: T[]) => Promise
 
 // Run a maximum number in parallel but don't return before all finished
 // return values and exceptions are ignored. Accepts normal Arrays or Set/Maps
-export async function mapAllCapped<T>(array: T[], mapFn: CbFunctionType<T>, limit: number) {
+export async function mapAllCapped<T>(id: string, array: T[], mapFn: CbFunctionType<T>, limit: number) {
     const length = array.length;
     if (length === 0 || !limit) {
         return;
     }
 
+    status[id] = 'starting';
+
     // Different iterator for sets/maps
-    const gen = arrayGenerator<T>(array);
+    const gen = arrayGenerator<T>(id, array);
 
     limit = Math.min(limit, length);
 
@@ -53,7 +57,7 @@ async function worker<T>(id: number, gen: G<T>, callback: CbFunctionType<T>) {
     }
 }
 
-function* arrayGenerator<T>(array: T[]): G<T> {
+function* arrayGenerator<T>(id: string, array: T[]): G<T> {
     const start = Date.now();
     let last = start;
     for (let index = 0; index < array.length; index++) {
@@ -63,9 +67,18 @@ function* arrayGenerator<T>(array: T[]): G<T> {
         if (now - last > 30_000) {
             last = now;
             const elapsed = (now - start) / 1000;
-            console.log(` ${((index * 100) / array.length).toFixed(0)}% [${index}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${(index / elapsed).toFixed(1)}/s`);
+            status[id] = ` ${((index * 100) / array.length).toFixed(0)}% [${index}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${(index / elapsed).toFixed(1)}/s`;
         }
     }
+    delete status[id];
+
+    const now = Date.now();
+    const elapsed = (now - start) / 1000;
+    console.log(`${id}:100% [${array.length}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${(array.length / elapsed).toFixed(1)}/s`);
+}
+
+export function getMapAllCappedStatus(): string[] {
+    return Object.keys(status).map((k) => `${k}: ${status[k]}`);
 }
 /*
 function* setMapGenerator(array) {

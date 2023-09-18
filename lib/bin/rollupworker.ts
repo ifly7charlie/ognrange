@@ -158,7 +158,7 @@ export async function backupDatabase(station: StationName, whatAccumulators: Acc
 }
 
 export function dumpRollupWorkerStatus() {
-    if (!worker) {
+    if (!worker || !Object.keys(promises).length) {
         return;
     }
     console.log('worker processing:', Object.keys(promises).join(','));
@@ -292,7 +292,9 @@ export async function rollupDatabaseStartup(
         // store the metadata for our iterator
         if (!hr.isMeta) {
             accumulatorsToPurge[hr.accumulator] = {accumulator: hr.accumulator, meta: null, typeName: hr.typeName, t: hr.type, b: hr.bucket};
-            console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
+            if (db.ognStationName === 'global') {
+                console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
+            }
             iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
             iteratorPromise = iterator.next();
             continue;

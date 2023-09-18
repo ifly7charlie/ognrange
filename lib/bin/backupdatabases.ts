@@ -30,6 +30,7 @@ export async function backupDatabases(processAccumulators: Accumulators): Promis
     };
 
     let promise = mapAllCapped(
+        'backup',
         allStationsDetails({includeGlobal: true}),
         async function (stationMeta: StationDetails) {
             const stats = await backupDatabase(stationMeta.station, processAccumulators);

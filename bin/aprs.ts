@@ -21,7 +21,8 @@ import {CoverageHeader} from '../lib/bin/coverageheader';
 
 import {gitVersion} from '../lib/bin/gitversion.js';
 
-import {backupDatabases} from '../lib/bin/backupdatabases';
+//import {backupDatabases} from '../lib/bin/backupdatabases';
+import {getMapAllCappedStatus} from '../lib/bin/mapallcapped';
 import {loadStationStatus, checkStationMoved, updateStationBeacon, closeStatusDb, getNextStationId, getStationDetails} from '../lib/bin/stationstatus';
 
 import {Epoch, StationName, StationId, Longitude, Latitude, H3} from '../lib/bin/types';
@@ -407,6 +408,7 @@ function displayStatus() {
     console.log(`total stations: ${getNextStationId() - 1}`);
     console.log(JSON.stringify(packetStats));
     dumpRollupWorkerStatus();
+    getMapAllCappedStatus().forEach(console.log);
 }
 
 class AprsLocationPacket extends aprsPacket {
