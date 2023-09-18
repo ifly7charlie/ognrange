@@ -161,7 +161,7 @@ export function dumpRollupWorkerStatus() {
     if (!worker) {
         return;
     }
-    console.log('worker processing:',Object.keys(promises).join(','))
+    console.log('worker processing:', Object.keys(promises).join(','));
 }
 
 // block startup from continuing - variable in worker thread only
@@ -206,8 +206,7 @@ if (!isMainThread) {
                         case 'startup':
                             out = !abortStartup ? await rollupDatabaseStartup(db, task) : {success: false};
                             if (out.success && !abortStartup) {
-                                const db = await getDb(task.station, {cache: true, open: true, throw: false});
-                                await db?.compactRange('0', 'Z');
+                                await db.compactRange('0', 'Z');
                                 out.datacompacted = true;
                             }
                             break;
@@ -252,7 +251,6 @@ async function purge(db: DB, hr: CoverageHeader) {
 
     // Now clear and compact
     await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
-    await db.compactRange('0', 'Z');
 
     // And provide a status update
     if (first100KeyCount) {
@@ -304,7 +302,7 @@ export async function rollupDatabaseStartup(
         // If it's a current and not OUR current then we need to
         // figure out what to do with it... We may merge it into rollup
         // accumulators if it was current when they last updated their meta
-        if (hr.typeName == 'current') {
+        if (hr.typeName === 'current') {
             if (hr.bucket != expectedCurrentAccumulatorBucket) {
                 hangingCurrents[hr.dbKey()] = meta;
             } else if (db.global) {
@@ -388,6 +386,8 @@ export async function rollupDatabaseStartup(
         }
     }
 
+    const purgePromises: Promise<void>[] = [];
+
     // This is more interesting, this is a current that could be rolled into one of the other
     // existing accumulators...
     if (hangingCurrents) {
@@ -419,16 +419,23 @@ export async function rollupDatabaseStartup(
             } else {
                 //                console.log(`${db.ognStationName}: purging hanging current accumulator ${JSON.stringify(hangingHeader)} and associated sub accumulators`);
                 // now we clear it
-                await purge(db, hangingHeader);
+                purgePromises.push(purge(db, hangingHeader));
                 datapurged = true;
             }
         }
     }
 
     // These are old accumulators we purge them because we aren't sure what else can be done
-    for (const key in accumulatorsToPurge) {
-        await purge(db, new CoverageHeader(key));
-        datapurged = true;
+    purgePromises.push(
+        ...Object.keys(accumulatorsToPurge).map((key) => {
+            datapurged = true;
+            return purge(db, new CoverageHeader(key));
+        })
+    );
+    await Promise.allSettled(purgePromises);
+
+    if (datapurged) {
+        console.log(`${db.ognStationName} purged: ${purgePromises.length} old accumulators`);
     }
 
     return {success: true, datapurged, datamerged, datachanged: datamerged || datapurged};
