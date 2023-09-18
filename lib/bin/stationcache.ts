@@ -28,7 +28,7 @@ const options = {
                 //            console.warn('closing global db on cache evict');
             }
             if (stationDbCache.getRemainingTTL(key) < H3_CACHE_FLUSH_PERIOD_MS / 1000) {
-                console.log(`Closing database ${key} while it's still needed. You should increase MAX_STATION_DBS in .env.local [db status ${db.status}]`);
+//                console.log(`Closing database ${key} while it's still needed. You should increase MAX_STATION_DBS in .env.local [db status ${db.status}]`);
             }
             db.close((e) => {
                 console.log('closed', db.ognStationName, e);

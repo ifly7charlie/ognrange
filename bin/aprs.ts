@@ -81,7 +81,7 @@ import {flushDirtyH3s, updateCachedH3, getH3CacheSize, unlockH3sForReads} from '
 
 // Rollup functions
 import {rollupAll, rollupStartupAll, rollupStats} from '../lib/bin/rollup';
-import {rollupAbortStartup, shutdownRollupWorker} from '../lib/bin/rollupworker';
+import {rollupAbortStartup, shutdownRollupWorker, dumpRollupWorkerStatus} from '../lib/bin/rollupworker';
 import {getAccumulator, getCurrentAccumulators, updateAndProcessAccumulators, initialiseAccumulators} from '../lib/bin/accumulators';
 
 // Get our git version
@@ -122,14 +122,18 @@ async function main() {
 
     // Check and process unflushed accumulators at the start
     // then we can increment the current number for each accumulator merge
-    await (startupPromise = backupDatabases(getCurrentAccumulators()!.accumulators).then(() => {
+    console.log('Backing up databases...');
+//    await (startupPromise = backupDatabases(getCurrentAccumulators()!.accumulators).then(() => {
         /**/
-    }));
-    await (startupPromise = rollupStartupAll());
+  //  }));
+    console.log('Performing startup rollup...');
+    await (startupPromise = rollupStartupAll()); 
+    console.log('Configuring accumulators...');
     await (startupPromise = updateAndProcessAccumulators());
     startupPromise = null;
 
     // Start listening to APRS and setup the regular housekeeping functions
+    console.log('Starting APRS...');
     startAprsListener();
     setupPeriodicFunctions();
 }
@@ -402,6 +406,7 @@ function displayStatus() {
     console.log(`elevation cache: ${getCacheSize()}, h3cache: ${getH3CacheSize()},  valid packets: ${packetStats.count} ${packetStats.pps}/s, all packets ${packetStats.rawCount} ${packetStats.rawPps}/s`);
     console.log(`total stations: ${getNextStationId() - 1}`);
     console.log(JSON.stringify(packetStats));
+    dumpRollupWorkerStatus();
 }
 
 class AprsLocationPacket extends aprsPacket {

@@ -157,6 +157,13 @@ export async function backupDatabase(station: StationName, whatAccumulators: Acc
     });
 }
 
+export function dumpRollupWorkerStatus() {
+    if (!worker) {
+        return;
+    }
+    console.log('worker processing:',Object.keys(promises).join(','))
+}
+
 // block startup from continuing - variable in worker thread only
 let abortStartup = false;
 
