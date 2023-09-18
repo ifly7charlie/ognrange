@@ -109,7 +109,7 @@ function getFilesForStation(station: string) {
             return {type: type ?? '', date: date ?? '', fileName: fn};
         })
         .filter((a) => !!a.type)
-        .sort((a, b) => a.fileName.localeCompare(b.fileName));
+        .sort((b, a) => a.fileName.localeCompare(b.fileName));
 
     const dayFile = files.find((x) => x.type === 'day');
     const monthFile = files.find((x) => x.type === 'month');
@@ -161,7 +161,6 @@ async function reconcilePeriod(sa: any, period: string, station: string, db: DB,
             delete json.h3hi;
 
             const ch = new CoverageHeader(0 as StationId, a.hr.type, a.hr.bucket, h3);
-            console.log(ch);
 
             // Look it up in the db
             let row: Uint8Array | undefined = undefined;
@@ -178,11 +177,12 @@ async function reconcilePeriod(sa: any, period: string, station: string, db: DB,
                 const difference = pickBy(dbAsArrow as any, (v, k) => json[k] !== v);
                 if (difference.length) {
                     console.log(h3, difference);
-                    //                    console.log(dbAsArrow, json);
                     differences++;
                     if (cr.count >= json.count) {
                         dofix = false;
                     }
+                } else {
+                    dofix = false;
                 }
             } else {
                 differences++;
