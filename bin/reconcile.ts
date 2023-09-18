@@ -31,6 +31,7 @@ async function getArgs() {
     const args = await yargs(process.argv.slice(2)) //
         .option('stations', {type: 'boolean'})
         .option('fix', {type: 'boolean', default: false, description: 'attempt to recover missing or low records'})
+        .option('fixmeta', {type: 'boolean', default: false, description: 'just fix missing metadata - uses arrow files'})
         .option('station', {alias: 's', type: 'string', default: 'global', description: 'Station'})
         .option('period', {alias: 'p', type: 'string', default: 'day,month,year', description: 'Type of file (accumulator)'})
         .help()
@@ -142,7 +143,7 @@ function getFilesForStation(station: string) {
 }
 
 // Check all arrow data is in the station
-async function reconcilePeriod(sa: any, period: string, station: string, db: DB, fix: boolean) {
+async function reconcilePeriod(sa: any, period: string, station: string, db: DB, fix: boolean, fixmeta: boolean) {
     const file = OUTPUT_PATH + station + '/' + station + '.' + period + '.arrow.gz';
     let differences = 0;
     let rows = 0;
@@ -204,7 +205,7 @@ async function reconcilePeriod(sa: any, period: string, station: string, db: DB,
         }
     }
 
-    if (differences && fix) {
+    if (differences && (fix || fixmeta)) {
         console.log('saving metadata');
         await saveAccumulatorMetadata(db as any, getCurrentAccumulatorFromDate(sa['day'].file), sa);
     }
@@ -236,7 +237,7 @@ async function reconcile() {
         } else if (sa.file > ga.file) {
             console.log(`data missing from global records for ${sa.file}`);
         } else {
-            reconcilePeriod(saccumulators, period, args.station, db, args.fix);
+            reconcilePeriod(saccumulators, period, args.station, db, args.fix, args.fixmeta);
         }
     }
 }
