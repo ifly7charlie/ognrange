@@ -4,6 +4,7 @@
     "scripts": {
         "dev": "NODE_OPTIONS='--inspect --enable-source-maps ' next dev",
         "aprs": "node --enable-source-maps dist/bin/aprs.js",
+        "aprs:syslog": "bin/aprssyslog.sh",
         "build": "yarn aprs:build && yarn next build",
         "aprs:build": "tsc --project tsconfig-bin.json",
         "dumpdb": "node --enable-source-maps dist/bin/dumpdb.js",
