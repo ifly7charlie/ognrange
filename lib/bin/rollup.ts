@@ -127,7 +127,7 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
             }
 
             // If a station is not valid we are clearing the data from it from the registers
-            if (needValidPurge && !validStations.has(stationMeta.id)) {
+            if (stationMeta.station != 'global' && needValidPurge && !validStations.has(stationMeta.id)) {
                 // empty the database... we could delete it but this is very simple and should be good enough
                 console.log(`clearing database for ${station} as it is not valid`);
                 await purgeDatabase(station);
