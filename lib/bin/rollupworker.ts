@@ -192,7 +192,7 @@ if (!isMainThread) {
 
             let db: DB | undefined = undefined;
             try {
-                db = await getDb(task.station, {cache: false, open: true, noMeta: true});
+                db = await getDb(task.station, {throw: true});
 
                 if (db) {
                     switch (task.action) {
@@ -218,6 +218,7 @@ if (!isMainThread) {
                             break;
                     }
                 }
+                db!.close();
             } catch (e) {
                 console.error(task, e);
             }
@@ -853,7 +854,7 @@ async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, buffer: U
                 return {type: 'put', key: h3k.dbKey(), value: buffer};
             });
 
-    await getDbThrow(station, {open: true, cache: true})
+    await getDbThrow(station)
         .then((db: DB) => getOperation(db))
         .then((operation) => {
             if (operation) {
@@ -880,7 +881,7 @@ async function flushH3DbOps(): Promise<{databases: number}> {
         promises.push(
             new Promise<void>((resolve) => {
                 //
-                getDb(station, {cache: true, open: true})
+                getDb(station)
                     .then((db) => {
                         if (!db) {
                             console.error(`unable to find db for ${station}, discarding ${v.length} operations`);
