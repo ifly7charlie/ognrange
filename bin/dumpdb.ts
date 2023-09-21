@@ -38,7 +38,7 @@ async function main() {
         db = new ClassicLevel<string, Uint8Array>(dbPath, {valueEncoding: 'view', createIfMissing: false});
         await db.open();
     } catch (e) {
-        console.log(args.db, 'error');
+        console.log(args.db, 'error', e);
         //        console.error(e);
         return;
     }
@@ -59,15 +59,13 @@ async function main() {
 
         if (!args.match || hr.dbKey().match(args.match)) {
             if (hr.isMeta) {
-                console.log(args.db);
-                return;
-                //                accumulators[hr.accumulator] = {hr: hr, meta: JSON.parse(String(value)), count: 0, size: 0};
-                //                console.log(hr.dbKey(), String(value));
-                //              if (args.size) {
-                //                db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
-                //                  accumulators[hr.accumulator].size = r;
-                //            });
-                //}
+                accumulators[hr.accumulator] = {hr: hr, meta: JSON.parse(String(value)), count: 0, size: 0};
+                console.log(hr.dbKey(), String(value));
+                if (args.size) {
+                    db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
+                        accumulators[hr.accumulator].size = r;
+                    });
+                }
             } else {
                 if (accumulators[hr.accumulator]) {
                     accumulators[hr.accumulator].count++;

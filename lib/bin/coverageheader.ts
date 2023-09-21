@@ -6,11 +6,12 @@
 //
 
 import {H3Index} from 'h3-js';
+
 import {prefixWithZeros} from '../common/prefixwithzeros';
 
-import {H3LockKey, StationId} from './types';
+import {H3LockKey, StationId, As} from './types';
 
-export type AccumulatorBucket = number;
+export type AccumulatorBucket = number & As<'AccumulatorBucket'>;
 
 export type AccumulatorTypeString = 'current' | 'day' | 'month' | 'year';
 export enum AccumulatorType {
@@ -31,9 +32,11 @@ export const accumulatorTypes: Record<AccumulatorTypeString, AccumulatorType> = 
 
 export const accumulatorNames = ['current', 'day', 'week', 'month', 'year'];
 
+export type AccumulatorTypeAndBucket = number & As<'AccumulatorTypeAndBucket'>;
+
 export class CoverageHeader {
     _h3: H3Index;
-    _tb: number;
+    _tb: AccumulatorTypeAndBucket;
     _dbid: StationId;
     _lockKey: string;
 
@@ -51,9 +54,9 @@ export class CoverageHeader {
             }
             this._dbid = sidOrKey;
             if (typeof t == 'string') {
-                this._tb = ((accumulatorTypes[t] & 0x0f) << 12) | (b & 0x0fff);
+                this._tb = (((accumulatorTypes[t] & 0x0f) << 12) | (b & 0x0fff)) as AccumulatorTypeAndBucket;
             } else {
-                this._tb = ((t & 0x0f) << 12) | (b & 0x0fff);
+                this._tb = (((t & 0x0f) << 12) | (b & 0x0fff)) as AccumulatorTypeAndBucket;
             }
             this._h3 = h;
             this._lockKey = this._dbid.toString(36) + '/' + prefixWithZeros(4, this._tb.toString(16)) + '/' + h;
@@ -62,13 +65,13 @@ export class CoverageHeader {
             const s = sidOrKey.toString('latin1');
             if ((s.length || 30) <= 20) {
                 this._dbid = 0 as StationId;
-                this._tb = parseInt(s.slice(0, 4), 16);
+                this._tb = parseInt(s.slice(0, 4), 16) as AccumulatorTypeAndBucket;
                 this._h3 = s.slice(5);
                 this._lockKey = '0/' + s;
             } else {
                 this._lockKey = s;
                 this._dbid = parseInt(this._lockKey.slice(0, -21), 36) as StationId;
-                this._tb = parseInt(this._lockKey.slice(-20, -16), 16);
+                this._tb = parseInt(this._lockKey.slice(-20, -16), 16) as AccumulatorTypeAndBucket;
                 this._h3 = this._lockKey.slice(-15);
             }
         }
@@ -106,8 +109,8 @@ export class CoverageHeader {
         return accumulatorNames[(this._tb >> 12) & 0x0f] as AccumulatorTypeString;
     }
 
-    get bucket() {
-        return Number(this._tb & 0x0fff);
+    get bucket(): AccumulatorBucket {
+        return Number(this._tb & 0x0fff) as AccumulatorBucket;
     }
 
     get dbid() {
@@ -164,7 +167,7 @@ export class CoverageHeader {
     fromDbKey(k: string | Buffer) {
         const s = k.toString('latin1');
         this._dbid = 0 as StationId;
-        this._tb = parseInt(s.slice(0, 4), 16);
+        this._tb = parseInt(s.slice(0, 4), 16) as AccumulatorTypeAndBucket;
         this._h3 = s.slice(5);
         this._lockKey = '0/' + s;
     }

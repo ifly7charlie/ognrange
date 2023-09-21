@@ -7,8 +7,8 @@ import {tableFromIPC, RecordBatchStreamReader} from 'apache-arrow/Arrow.node';
 import {ClassicLevel} from 'classic-level';
 
 import {CoverageRecord} from '../lib/bin/coveragerecord';
-import {CoverageHeader, AccumulatorTypeString} from '../lib/bin/coverageheader';
-import {CurrentAccumulator} from '../lib/bin/accumulators';
+import {CoverageHeader, AccumulatorTypeString, AccumulatorBucket} from '../lib/bin/coverageheader';
+import {Accumulators, whatAccumulators} from '../lib/bin/accumulators';
 import {saveAccumulatorMetadata} from '../lib/bin/rollupmetadata';
 
 import {StationId} from '../lib/bin/types';
@@ -60,7 +60,7 @@ async function openDb(args: Awaited<ReturnType<typeof getArgs>>): Promise<DB> {
 
     return db;
 }
-async function getAccumulatorsFromDb(db: DB) {
+/*async function getAccumulatorsFromDb(db: DB) {
     let n = db.iterator();
     let accumulators: Record<string, any> = {};
     let x = n.next();
@@ -76,7 +76,7 @@ async function getAccumulatorsFromDb(db: DB) {
         x = n.next();
     }
     return accumulators;
-}
+}*/
 
 function getAccumulatorsFromDisk(file: string) {
     const d = JSON.parse(readFileSync(file, {encoding: 'utf-8'}));
@@ -85,22 +85,19 @@ function getAccumulatorsFromDisk(file: string) {
         d.accumulators['day'].hr = CoverageHeader.getAccumulatorMeta('day' as AccumulatorTypeString, d.accumulators['day'].bucket);
         d.accumulators['month'].hr = CoverageHeader.getAccumulatorMeta('month' as AccumulatorTypeString, d.accumulators['month'].bucket);
         d.accumulators['year'].hr = CoverageHeader.getAccumulatorMeta('year' as AccumulatorTypeString, d.accumulators['year'].bucket);
+
+        // Ensure we have a current
+        if (!d.accumulators.current) {
+            const now = new Date().toISOString().startsWith(d.accumulators.day.file) ? new Date() : new Date(d.accumulators.day.file);
+            const a = whatAccumulators(now) as any;
+            d.accumulators.current = a.current;
+        }
     } catch (e) {
         console.log(`incomplete metagdata for ${file}`);
         return null;
     }
 
     return d.accumulators;
-}
-
-function getCurrentAccumulatorFromDate(date: string): CurrentAccumulator {
-    // If we are the same date then we will assume we are valid
-    const now = new Date().toISOString().startsWith(date) ? new Date() : new Date(date);
-
-    const rolloverperiod = Math.floor((now.getUTCHours() * 60 + now.getUTCMinutes()) / ROLLUP_PERIOD_MINUTES);
-    const newAccumulatorBucket = ((now.getUTCDate() & 0x1f) << 7) | (rolloverperiod & 0x7f);
-
-    return ['current', newAccumulatorBucket];
 }
 
 function getFilesForStation(station: string) {
@@ -120,21 +117,9 @@ function getFilesForStation(station: string) {
         throw new Error(`Arrow files are not consistent in dates ${dayFile}, ${monthFile} ${yearFile}`);
     }
 
-    const now = new Date(dayFile.date);
-    const n = {
-        d: prefixWithZeros(2, String(now.getUTCDate())),
-        m: prefixWithZeros(2, String(now.getUTCMonth() + 1)),
-        y: now.getUTCFullYear()
-    };
+    const now = new Date().toISOString().startsWith(dayFile.date) ? new Date() : new Date(dayFile.date);
 
-    const a: any = {
-        day: {
-            bucket: ((now.getUTCFullYear() & 0x07) << 9) | ((now.getUTCMonth() & 0x0f) << 5) | (now.getUTCDate() & 0x1f), //
-            file: `${n.y}-${n.m}-${n.d}`
-        },
-        month: {bucket: ((now.getUTCFullYear() & 0xff) << 4) | (now.getUTCMonth() & 0x0f), file: `${n.y}-${n.m}`},
-        year: {bucket: now.getUTCFullYear(), file: `${n.y}`}
-    };
+    const a = whatAccumulators(now) as any;
     a['day'].hr = CoverageHeader.getAccumulatorMeta('day' as AccumulatorTypeString, a['day'].bucket);
     a['month'].hr = CoverageHeader.getAccumulatorMeta('month' as AccumulatorTypeString, a['month'].bucket);
     a['year'].hr = CoverageHeader.getAccumulatorMeta('year' as AccumulatorTypeString, a['year'].bucket);
@@ -207,7 +192,7 @@ async function reconcilePeriod(sa: any, period: string, station: string, db: DB,
 
     if ((differences && fix) || fixmeta) {
         console.log('saving metadata');
-        await saveAccumulatorMetadata(db as any, getCurrentAccumulatorFromDate(sa['day'].file), sa);
+        await saveAccumulatorMetadata(db as any, sa);
     }
 
     console.log(`${a.file}: ${differences} differences, ${rows} rows from ${station} ${period}`);
@@ -238,7 +223,7 @@ async function reconcile() {
             console.log(`data missing from global records for ${sa.file}`);
         } else {
             if (!args.fix && args.fixmeta) {
-                await saveAccumulatorMetadata(db as any, getCurrentAccumulatorFromDate(saccumulators['day'].file), saccumulators);
+                await saveAccumulatorMetadata(db as any, saccumulators);
             } else {
                 reconcilePeriod(saccumulators, period, args.station, db, args.fix, args.fixmeta);
             }

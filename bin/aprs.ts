@@ -78,12 +78,12 @@ import {
 } from '../lib/common/config';
 
 // h3 cache functions
-import {flushDirtyH3s, updateCachedH3, getH3CacheSize, unlockH3sForReads} from '../lib/bin/h3cache';
+import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from '../lib/bin/h3cache';
 
 // Rollup functions
 import {rollupAll, rollupStartupAll, rollupStats} from '../lib/bin/rollup';
 import {rollupAbortStartup, shutdownRollupWorker, dumpRollupWorkerStatus} from '../lib/bin/rollupworker';
-import {getAccumulator, getCurrentAccumulators, updateAndProcessAccumulators, initialiseAccumulators} from '../lib/bin/accumulators';
+import {getCurrentAccumulators, updateAndProcessAccumulators, initialiseAccumulators} from '../lib/bin/accumulators';
 
 // Get our git version
 const gv = gitVersion().trim();
@@ -160,25 +160,29 @@ async function handleExit(signal: string) {
         console.log('waiting for startup to abort');
         await rollupAbortStartup();
         await startupPromise;
-    }
-
-    for (const i of intervals) {
-        clearInterval(i);
-    }
-    for (const i of Object.values(timeouts)) {
-        clearTimeout(i);
-    }
-    if (connection && connection.interval) {
-        clearInterval(connection.interval);
-    }
-
-    // Flush everything to disk
-    console.log(await flushDirtyH3s({allUnwritten: true}));
-    if (getCurrentAccumulators()) {
-        const current = getCurrentAccumulators();
-        await rollupAll({current: current!.currentAccumulator, processAccumulators: current!.accumulators});
     } else {
-        console.log(`unable to output a rollup as service still starting`);
+        for (const i of intervals) {
+            clearInterval(i);
+        }
+        for (const i of Object.values(timeouts)) {
+            clearTimeout(i);
+        }
+        if (connection && connection.interval) {
+            clearInterval(connection.interval);
+        }
+
+        // Flush everything to disk
+        const accumulators = getCurrentAccumulators();
+        if (accumulators) {
+            console.log(await flushDirtyH3s(accumulators, true));
+            if (signal === 'SIGUSR2') {
+                await rollupAll(accumulators);
+            } else {
+                console.log(`${signal}: skipping exit rollup - use SIGUSR2 to perform rollup on exit`);
+            }
+        } else {
+            console.log(`unable to output a rollup as service still starting`);
+        }
     }
 
     // Close all the databases and cleanly exit
@@ -199,13 +203,17 @@ process.on('SIGINFO', displayStatus);
 // dump out? not good idea really better to exit and restart
 process.on('SIGUSR1', async function () {
     console.log('-- data dump requested --');
-    await flushDirtyH3s({allUnwritten: true});
-    if (getCurrentAccumulators()) {
-        const current = getCurrentAccumulators();
-        await rollupAll({current: current!.currentAccumulator, processAccumulators: current!.accumulators});
+    const accumulators = getCurrentAccumulators();
+    if (accumulators) {
+        await flushDirtyH3s(accumulators, true);
+        await rollupAll(accumulators);
+    } else {
+        console.log(' -> no accumulators found');
     }
-    unlockH3sForReads();
 });
+
+// Terminate
+process.on('SIGUSR2', handleExit);
 
 //
 // Connect to the APRS Server
@@ -327,7 +335,7 @@ async function setupPeriodicFunctions() {
     intervals.push(
         setInterval(async function () {
             // Flush the cache
-            const flushStats = await flushDirtyH3s({allUnwritten: false});
+            const flushStats = await flushDirtyH3s();
 
             // Report some status on that
             const packets = packetStats.count - lastPacketCount;
@@ -338,9 +346,8 @@ async function setupPeriodicFunctions() {
             const h3delta = h3length - lastH3length;
             const h3expired = flushStats.expired;
             const h3written = flushStats.written;
-            console.log(`elevation cache: ${getCacheSize()}, valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s`);
-            console.log(`total stations: ${getNextStationId() - 1}`);
-            console.log(JSON.stringify(packetStats));
+            console.log(`elevation cache: ${getCacheSize()}, total stations: ${getNextStationId() - 1}`);
+            console.log(JSON.stringify(packetStats), `valid packets: ${packets} ${pps}/s, all packets ${rawPackets} ${rawPps}/s`);
             console.log(JSON.stringify(rollupStats));
             console.log(`h3s: ${h3length} delta ${h3delta} (${((h3delta * 100) / h3length).toFixed(0)}%): `, ` expired ${h3expired} (${((h3expired * 100) / h3length).toFixed(0)}%), written ${h3written} (${((h3written * 100) / h3length).toFixed(0)}%)[${flushStats.databases} stations]`, ` ${((h3written * 100) / packets).toFixed(1)}% ${(h3written / (H3_CACHE_FLUSH_PERIOD_MS / 1000)).toFixed(1)}/s ${(packets / h3written).toFixed(0)}:1`);
 
@@ -573,12 +580,9 @@ async function processPacket(packet: AprsLocationPacket) {
         // this reduces the amount of storage we need and means we aren't constantly parsing text
         // and printing text.
         async function mergeDataIntoDatabase(dbStationId: StationId, packetStationId: StationId, h3: H3) {
-            // Header details for our update
-            const h3k = new CoverageHeader(dbStationId, ...getAccumulator(), h3);
-
             // And tell the cache to fetch/update - this may block if it needs to read
             // and there is nothing yet available
-            updateCachedH3(h3k, altitude, agl, crc, signal, gap, packetStationId);
+            return updateCachedH3(h3, altitude, agl, crc, signal, gap, packetStationId, dbStationId);
         }
 
         // Merge into both the station db (name,0) and the global db (global,id) with the stationid we allocated
@@ -586,7 +590,6 @@ async function processPacket(packet: AprsLocationPacket) {
         // it gets used to build the list of stations that can see the cell in the global one so should be correct
         // there
         mergeDataIntoDatabase(stationDetails.id, 0 as StationId, h3id as H3);
-
         mergeDataIntoDatabase(0 as StationId, stationDetails.id, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL) as H3);
     }).catch((e) => {
         console.error(`exception calling getElevationOffset for ${station}, ${packet.latitude}, ${packet.longitude}, ${altitude}`, e);

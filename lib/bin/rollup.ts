@@ -11,12 +11,11 @@ import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from '
 
 import {allStationsDetails, updateStationStatus} from './stationstatus';
 
-import {CurrentAccumulator, Accumulators, getCurrentAccumulators, AccumulatorTypeString} from './accumulators';
+import {Accumulators, getCurrentAccumulators} from './accumulators';
 
 import {gzipSync, createGzip} from 'zlib';
 
 import {Epoch, StationName, StationId} from './types';
-import {CoverageHeader} from './coverageheader';
 
 import {
     MAX_SIMULTANEOUS_ROLLUPS, //
@@ -46,7 +45,7 @@ export let rollupStats: RollupStats = {completed: 0, elapsed: 0};
 
 //
 // This iterates through all open databases and rolls them up.
-export async function rollupAll({current, processAccumulators}: {current: CurrentAccumulator; processAccumulators: Accumulators}): Promise<RollupStats> {
+export async function rollupAll(accumulators: Accumulators): Promise<RollupStats> {
     //
     // Make sure we have updated validStations
     const nowDate = new Date();
@@ -84,9 +83,8 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
     rollupStats.invalidStations = invalidStations;
 
     let commonArgs: RollupDatabaseArgs = {
-        current,
         now: nowEpoch,
-        processAccumulators,
+        accumulators,
         validStations,
         needValidPurge,
         stationMeta: undefined
@@ -161,14 +159,13 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
     rollupStats.elapsed += rollupStats.lastElapsed;
     rollupStats.completed++;
     rollupStats.lastStart = nowDate.toISOString();
-    console.log(`rollup of ${current.join('/')} completed`, JSON.stringify(rollupStats));
+    console.log(`rollup of ${accumulators.current.bucket} completed: ${JSON.stringify(rollupStats)}`);
 
     return rollupStats;
 }
 
 export async function rollupStartupAll() {
     const current = getCurrentAccumulators() || superThrow('no accumulators on startup');
-    const common = {current: current.currentAccumulator, processAccumulators: current.accumulators};
 
     const allStations = allStationsDetails();
     console.log(`performing startup rollup and output of ${allStations.length} stations + global stations`);
@@ -177,7 +174,7 @@ export async function rollupStartupAll() {
     let promises = [];
     promises.push(
         new Promise<void>(async function (resolve) {
-            await rollupStartup('global' as StationName, common);
+            await rollupStartup('global' as StationName, current);
             resolve();
         })
     );
@@ -192,7 +189,7 @@ export async function rollupStartupAll() {
             allStations,
             async (stationMeta) => {
                 const station = stationMeta.station;
-                await rollupStartup(station, common, stationMeta);
+                await rollupStartup(station, current, stationMeta);
             },
             MAX_SIMULTANEOUS_ROLLUPS
         )

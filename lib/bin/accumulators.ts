@@ -11,19 +11,13 @@ import {flushDirtyH3s} from './h3cache';
 import {rollupAll} from './rollup';
 import {backupDatabases} from './backupdatabases';
 
-export type {AccumulatorTypeString} from './coverageheader';
-import {AccumulatorTypeString} from './coverageheader';
+export type {AccumulatorTypeString, AccumulatorBucket} from './coverageheader';
+import {AccumulatorTypeString, AccumulatorBucket} from './coverageheader';
 
 //
-// What accumulators we are operating on these are internal
-export type CurrentAccumulator = [AccumulatorTypeString, number];
-let currentAccumulator: CurrentAccumulator | undefined = undefined;
-
-//const primaryBufferVersions: {[P in bufferTypes | number]?: primaryVersionTypes} = {
-
 export type Accumulators = {
-    [key in AccumulatorTypeString]?: {
-        bucket: number;
+    [key in AccumulatorTypeString]: {
+        bucket: AccumulatorBucket;
         file: string;
     };
 };
@@ -34,24 +28,15 @@ let accumulators: Accumulators;
 // Helper for getting current accumulator used as  ...getAccumulator() in
 // calls to CoverageHeader
 
-export function getAccumulator(): CurrentAccumulator {
-    if (!currentAccumulator) {
-        throw new Error('getAccumulator() called before an acculumator is ready');
+export function getAccumulator(): AccumulatorBucket {
+    if (!accumulators) {
+        throw new Error('getAccumulator() called before an accumulator is ready');
     }
-    return currentAccumulator;
+    return accumulators.current.bucket;
 }
-/*
-export function getAccumulatorForType(t) : currentAccumulatorHeader {
-    if (t == 'current') {
-        return currentAccumulator;
-    } else {
-        return [t, accumulators[t].bucket];
-    }
-}
-*/
 
-export function getCurrentAccumulators(): null | {currentAccumulator: CurrentAccumulator; accumulators: Accumulators} {
-    return currentAccumulator ? {currentAccumulator, accumulators} : null;
+export function getCurrentAccumulators(): undefined | Accumulators {
+    return accumulators;
 }
 
 // Calculate the bucket and short circuit if it's not changed - we need to change
@@ -71,7 +56,7 @@ export function getCurrentAccumulators(): null | {currentAccumulator: CurrentAcc
 //
 // this takes effect immediately so all new packets will move to the new accumulator
 // rolling over is maximum of 12 times an hour...
-export function whatAccumulators(now: Date): {current: number; accumulators: Accumulators} {
+export function whatAccumulators(now: Date): Accumulators {
     const rolloverperiod = Math.floor((now.getUTCHours() * 60 + now.getUTCMinutes()) / ROLLUP_PERIOD_MINUTES);
     const newAccumulatorBucket = ((now.getUTCDate() & 0x1f) << 7) | (rolloverperiod & 0x7f);
     const n = {
@@ -80,41 +65,41 @@ export function whatAccumulators(now: Date): {current: number; accumulators: Acc
         y: now.getUTCFullYear()
     };
     accumulators = {
+        current: {
+            bucket: newAccumulatorBucket as AccumulatorBucket,
+            file: ''
+        },
         day: {
-            bucket: ((now.getUTCFullYear() & 0x07) << 9) | ((now.getUTCMonth() & 0x0f) << 5) | (now.getUTCDate() & 0x1f), //
+            bucket: (((now.getUTCFullYear() & 0x07) << 9) | ((now.getUTCMonth() & 0x0f) << 5) | (now.getUTCDate() & 0x1f)) as AccumulatorBucket, //
             file: `${n.y}-${n.m}-${n.d}`
         },
-        month: {bucket: ((now.getUTCFullYear() & 0xff) << 4) | (now.getUTCMonth() & 0x0f), file: `${n.y}-${n.m}`},
-        year: {bucket: now.getUTCFullYear(), file: `${n.y}`}
+        month: {bucket: (((now.getUTCFullYear() & 0xff) << 4) | (now.getUTCMonth() & 0x0f)) as AccumulatorBucket, file: `${n.y}-${n.m}`},
+        year: {bucket: now.getUTCFullYear() as AccumulatorBucket, file: `${n.y}`}
     };
-    return {current: newAccumulatorBucket, accumulators};
+    return accumulators;
 }
 
 export function initialiseAccumulators() {
-    const {current: newAccumulatorBucket, accumulators: newAccumulators} = whatAccumulators(new Date());
-    currentAccumulator = ['current', newAccumulatorBucket];
-    accumulators = newAccumulators;
+    accumulators = whatAccumulators(new Date());
 }
 
 export async function updateAndProcessAccumulators() {
     const now = new Date();
 
-    // Make a copy
-    const oldAccumulators = _clonedeep(accumulators);
-    const oldAccumulator = _clonedeep(currentAccumulator);
-
     // Calculate the bucket and short circuit if it's not changed - we need to change
-    const {current: newAccumulatorBucket, accumulators: newAccumulators} = whatAccumulators(now);
-    if (currentAccumulator?.[1] == newAccumulatorBucket) {
+    const newAccumulators = whatAccumulators(now);
+    if (accumulators.current.bucket == newAccumulators.current.bucket) {
         return;
     }
 
+    // Make a copy
+    const oldAccumulators = _clonedeep(accumulators);
+
     // Update the live ones
-    currentAccumulator = ['current', newAccumulatorBucket];
     accumulators = newAccumulators;
 
     // If we have a new accumulator (ignore startup when old is null)
-    if (oldAccumulator) {
+    if (oldAccumulators) {
         console.log(`accumulator rotation:`);
         console.log(JSON.stringify(oldAccumulators));
         console.log('----');
@@ -123,7 +108,7 @@ export async function updateAndProcessAccumulators() {
         // Now we need to make sure we have flushed our H3 cache and everything
         // inflight has finished before doing this. we could purge cache
         // but that doesn't ensure that all the inflight has happened
-        const s = await flushDirtyH3s({allUnwritten: true});
+        const s = flushDirtyH3s(oldAccumulators, true);
         console.log(`accumulator rotation happening`, s);
 
         // If we are chaging the day then we will do a backup before
@@ -135,9 +120,9 @@ export async function updateAndProcessAccumulators() {
             await backupDatabases(oldAccumulators);
         }
 
-        await rollupAll({current: oldAccumulator, processAccumulators: oldAccumulators});
+        await rollupAll(oldAccumulators);
 
-        // We also do it after with the new date which is fully rolled up
+        // We also backup after with the new date which is fully rolled up
         if (doBackup) {
             await backupDatabases(accumulators);
         }

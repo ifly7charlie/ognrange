@@ -17,7 +17,7 @@ import {sortBy as _sortby} from 'lodash';
 
 import {UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
-import {StationId} from './types';
+import {StationId, superThrow} from './types';
 
 // Global mapping structure
 //   HEADER
@@ -156,10 +156,6 @@ interface StationMap {
     si?: number | undefined;
     di?: number | undefined;
     i?: number | undefined;
-}
-
-function superThrow(t: string): never {
-    throw new Error(t);
 }
 export class CoverageRecord {
     _sh: primaryVersionTypes;

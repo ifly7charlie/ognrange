@@ -18,3 +18,7 @@ export type H3 = string & As<'H3'>;
 export type H3LockKey = string & As<'H3LockKey'>;
 
 export type TZ = string & As<'TZ'>;
+
+export function superThrow(t: string): never {
+    throw new Error(t);
+}
