@@ -184,9 +184,7 @@ if (!isMainThread) {
                     parentPort!.postMessage({action: task.action, h3lockkey: task.h3lockkey, success: true});
                     return;
                 case 'flushPending':
-                    console.log('+flushPending');
                     out = await flushH3DbOps(task.accumulators);
-                    console.log('~flushPending', out);
                     parentPort!.postMessage({action: task.action, ...out, success: true});
                     return;
                 case 'shutdown':
@@ -833,8 +831,6 @@ async function flushH3DbOps(accumulators: Accumulators): Promise<{databases: num
 
     const outputOps = h3dbOps;
     h3dbOps = new Map<StationName, BatchOperation[]>();
-
-    console.log(`flushH3DbOps :${outputOps.size} h3s`);
 
     // Now push these to the database
     for (const [station, v] of outputOps) {
