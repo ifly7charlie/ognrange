@@ -64,7 +64,7 @@ export function whatAccumulators(now: Date): Accumulators {
         m: prefixWithZeros(2, String(now.getUTCMonth() + 1)),
         y: now.getUTCFullYear()
     };
-    accumulators = {
+    return {
         current: {
             bucket: newAccumulatorBucket as AccumulatorBucket,
             file: ''
@@ -76,7 +76,6 @@ export function whatAccumulators(now: Date): Accumulators {
         month: {bucket: (((now.getUTCFullYear() & 0xff) << 4) | (now.getUTCMonth() & 0x0f)) as AccumulatorBucket, file: `${n.y}-${n.m}`},
         year: {bucket: now.getUTCFullYear() as AccumulatorBucket, file: `${n.y}`}
     };
-    return accumulators;
 }
 
 export function initialiseAccumulators() {
@@ -99,7 +98,7 @@ export async function updateAndProcessAccumulators() {
     accumulators = newAccumulators;
 
     // If we have a new accumulator (ignore startup when old is null)
-    if (oldAccumulators) {
+    if (oldAccumulators && oldAccumulators !== newAccumulators) {
         console.log(`accumulator rotation:`);
         console.log(JSON.stringify(oldAccumulators));
         console.log('----');
@@ -108,7 +107,7 @@ export async function updateAndProcessAccumulators() {
         // Now we need to make sure we have flushed our H3 cache and everything
         // inflight has finished before doing this. we could purge cache
         // but that doesn't ensure that all the inflight has happened
-        const s = flushDirtyH3s(oldAccumulators, true);
+        const s = await flushDirtyH3s(oldAccumulators, true);
         console.log(`accumulator rotation happening`, s);
 
         // If we are chaging the day then we will do a backup before
