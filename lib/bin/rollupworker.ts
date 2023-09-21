@@ -261,15 +261,15 @@ async function postMessage(command: RollupWorkerCommands): Promise<any> {
 // Clear data from the db
 async function purge(db: DB, hr: CoverageHeader) {
     // See if there are actually data entries
-    const first100KeyCount = (await db.keys({...CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, false), limit: 50}).all()).length;
+    //    const first100KeyCount = (await db.keys({...CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, false), limit: 50}).all()).length;
 
     // Now clear and compact
     await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
 
     // And provide a status update
-    if (first100KeyCount) {
-        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.dbKey()} purged [${first100KeyCount > 49 ? '>49' : first100KeyCount}] entries successfully`);
-    }
+    //    if (first100KeyCount) {
+    //        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.dbKey()} purged [${first100KeyCount > 49 ? '>49' : first100KeyCount}] entries successfully`);
+    //    }
 }
 
 import type {DBMetaRecord} from './rollupmetadata';
@@ -363,11 +363,16 @@ export async function rollupDatabaseStartup(
 
         // If we have a current then we roll it up regardless of the rest
         const missingBuckets = Object.keys(hangingAccumulators).filter((a) => !hangingAccumulators[a as AccumulatorTypeString].found);
+        const destinationFiles = Object.values(hangingAccumulators)
+            .map((a) => a.file)
+            .filter((a) => !!a)
+            .join(',');
+
         if (hangingAccumulators.current.found) {
             const rollupResult = await rollupDatabaseInternal(db, {accumulators: hangingAccumulators, now, needValidPurge: false, stationMeta, historical: true});
             console.log(
                 `${db.ognStationName}: rolled up hanging current accumulator ${key} ` + //
-                    `into ${JSON.stringify(hangingAccumulators)}: ${JSON.stringify(rollupResult)}, ${missingBuckets.join(',')} were missing`
+                    `into ${destinationFiles}: ${JSON.stringify(rollupResult)}, ${missingBuckets.join(',')} were missing`
             );
             datamerged = true;
         }
@@ -687,6 +692,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
             } catch (e) {}
             try {
                 renameSync(arrowName + '.gz', arrowName + 'gz.1');
+                console.log(`${name}: output file ${arrowName} already exists and we are putting historical data in it, this is potentially a loss of data situation`);
             } catch (e) {}
         }
 
