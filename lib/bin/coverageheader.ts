@@ -100,7 +100,7 @@ export class CoverageHeader {
         return (BigInt(h[1]) << BigInt(32)) | BigInt(h[0]);
     }
 
-    get h3splitlong() {
+    get h3splitlong(): [number, number] {
         return [parseInt(this._h3.slice(-8), 16), parseInt(this._h3.slice(0, -8), 16)];
     }
 
