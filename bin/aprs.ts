@@ -18,7 +18,7 @@ import {ignoreStation} from '../lib/bin/ignorestation.js';
 
 import {gitVersion} from '../lib/bin/gitversion.js';
 
-//import {backupDatabases} from '../lib/bin/backupdatabases';
+import {backupDatabases} from '../lib/bin/backupdatabases';
 import {getMapAllCappedStatus} from '../lib/bin/mapallcapped';
 import {loadStationStatus, checkStationMoved, updateStationBeacon, closeStatusDb, getNextStationId, getStationDetails} from '../lib/bin/stationstatus';
 
@@ -70,6 +70,7 @@ import {
     H3_GLOBAL_CELL_LEVEL,
     DB_PATH,
     OUTPUT_PATH,
+    DO_BACKUPS,
     BACKUP_PATH,
     MAX_STATION_DBS
 } from '../lib/common/config';
@@ -115,15 +116,17 @@ async function main() {
     }
 
     // Open our databases
-    initialiseAccumulators();
+    const ca = initialiseAccumulators();
     await loadStationStatus();
 
     // Check and process unflushed accumulators at the start
     // then we can increment the current number for each accumulator merge
-    console.log('Backing up databases...');
-    //    await (startupPromise = backupDatabases(getCurrentAccumulators()!.accumulators).then(() => {
-    /**/
-    //  }));
+    if (DO_BACKUPS) {
+        console.log('Backing up databases...');
+        await (startupPromise = backupDatabases(ca).then(() => {
+            /**/
+        }));
+    }
     console.log('Performing startup rollup...');
     await (startupPromise = rollupStartupAll());
     console.log('Configuring accumulators...');
