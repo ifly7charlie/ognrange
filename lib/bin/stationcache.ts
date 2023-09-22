@@ -68,7 +68,7 @@ export class DB extends ClassicLevel<string, Uint8Array> {
         }
 
         stationDbCache.delete(this.ognStationName);
-        return super.close();
+        //        return super.close();
     }
 
     private manuallyClosed: boolean;
