@@ -30,10 +30,7 @@ const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mo
 import Router from 'next/router';
 import {Dock} from 'react-dock';
 
-import _debounce from 'lodash.debounce';
-import _map from 'lodash.map';
-import _find from 'lodash.find';
-import _filter from 'lodash.filter';
+import {debounce as _debounce, map as _map, find as _find, filter as _filter} from 'lodash';
 
 export function IncludeJavascript() {
     return (

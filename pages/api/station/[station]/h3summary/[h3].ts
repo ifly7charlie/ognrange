@@ -11,9 +11,7 @@ import {MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
 import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
-import _map from 'lodash.map';
-import _reduce from 'lodash.reduce';
-import _sortBy from 'lodash.sortby';
+import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
 export default async function getH3Details(req, res) {
     // Top level
