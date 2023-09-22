@@ -26,7 +26,7 @@ interface BackupMessageType {
 
 //
 // Make an Arrow backup of the database
-export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccumulators: Accumulators; now: Epoch}): Promise<{elapsed: EpochMS; rows: number}> {
+export async function backupDatabase(db: DB, {accumulators, now}: {accumulators: Accumulators; now: Epoch}): Promise<{elapsed: EpochMS; rows: number}> {
     //
     //
     const startTime = Date.now();
@@ -39,9 +39,9 @@ export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccum
     // Finally if we have rollups with data after us then we need to update their invalidstations
     // now we go through them in step form
     const allRecords = async function* (): AsyncGenerator<BackupMessageType> {
-        for (const accumulator of Object.keys(whatAccumulators)) {
+        for (const accumulator of Object.keys(accumulators)) {
             const r = accumulator as AccumulatorTypeString;
-            const par = whatAccumulators[r];
+            const par = accumulators[r];
             const iterator = db.iterator(CoverageHeader.getDbSearchRangeForAccumulator(r, par!.bucket));
 
             for await (const [prefixedh3r, rollupValue] of iterator) {
@@ -59,7 +59,7 @@ export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccum
 
     const builderOptions: IterableBuilderOptions<typeof message_type> = {
         type: message_type,
-        nullValues: [null, 'n/a', undefined],
+        nullValues: null,
         highWaterMark: 3000,
         queueingStrategy: 'count'
     };
@@ -75,10 +75,6 @@ export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccum
         }
     };
 
-    //    const pt = new PassThrough({objectMode: true});
-    //    pt.pipe(createGzip()).pipe(createWriteStream(fileName + '.gz'));
-    //    pt.end();
-
     await new Promise((resolve) =>
         pipeline(
             //
@@ -88,7 +84,9 @@ export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccum
             createWriteStream(fileName + '.gz'),
             resolve
         )
-    );
+    ).catch((e) => {
+        console.error('backup failed', db.ognStationName, e);
+    });
 
     return {elapsed: (Date.now() - startTime) as EpochMS, rows};
 }
