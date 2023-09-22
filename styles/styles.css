@@ -38,7 +38,8 @@ a {
     padding: 5px;
 }
 
-# see lib/react/progressFetch for details and licence .loading .progress-bar {
+/* see lib/react/progressFetch for details and licence */
+.loading .progress-bar {
     opacity: 1;
 }
 

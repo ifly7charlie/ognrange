@@ -5,15 +5,12 @@ import Head from 'next/head';
 import useSWR from 'swr';
 import {useState, useRef, useMemo, useEffect} from 'react';
 
-// Helpers for loading contest information etc
-import {Nbsp, Icon} from '../lib/react/htmlhelper';
 import Select from 'react-select';
 import AsyncSelect from 'react-select/async';
 
 import {Settings} from '../lib/react/settings';
 
-// And connect to websockets...
-import {stationMeta} from '../lib/react/deckgl';
+import {stationMeta} from '../lib/react/stationMeta';
 import {CoverageDetails} from '../lib/react/CoverageDetails';
 
 const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mod.CoverageMap), {
@@ -21,13 +18,12 @@ const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mo
     loading: () => (
         <div style={{width: '100vw', marginTop: '20vh', position: 'absolute'}}>
             <div style={{display: 'block', margin: 'auto', width: '100px'}}>
-                <img width="100" height="100" src="http://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />
+                <img width="100" height="100" src="https://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />
             </div>
         </div>
     )
 });
 
-import Router from 'next/router';
 import {Dock} from 'react-dock';
 
 import {debounce as _debounce, map as _map, find as _find, filter as _filter} from 'lodash';
@@ -35,8 +31,7 @@ import {debounce as _debounce, map as _map, find as _find, filter as _filter} fr
 export function IncludeJavascript() {
     return (
         <>
-            <link rel="stylesheet" href="/bootstrap/css/font-awesome.min.css" />
-            <link href="//api.mapbox.com/mapbox-gl-js/v1.11.0/mapbox-gl.css" rel="stylesheet" />
+            <link href="//api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
         </>
     );
 }
@@ -262,13 +257,11 @@ export default function CombinePage(props) {
     return (
         <>
             <Head>
-                <title>OGN Range (Beta)</title>
-                <meta name="viewport" content="width=device-width, minimal-ui" />
-                <IncludeJavascript />
+                <title>OGN Range</title>
             </Head>
 
             <div>
-                <div>
+                <div style={{width: '100vw', height: '100vh'}}>
                     <CoverageMap //
                         station={station}
                         file={file}
@@ -284,7 +277,7 @@ export default function CombinePage(props) {
                         setDetails={setDetails}
                     ></CoverageMap>
                 </div>
-                {router.isReady && (
+                {router.isReady ? (
                     <Dock isVisible={expanded && process.browser} size={size} style={{border: '10px solid black'}} dimMode="none" position={dockPosition} onVisibleChange={onDockVisibleChange} onSizeChange={onDockResize}>
                         <div>
                             <span style={{padding: '0px', border: '5px solid white'}}>
@@ -318,7 +311,7 @@ export default function CombinePage(props) {
                         </div>
                         <Settings />
                     </Dock>
-                )}
+                ) : null}
             </div>
         </>
     );
