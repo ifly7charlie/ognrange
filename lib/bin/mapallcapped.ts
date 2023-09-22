@@ -18,6 +18,10 @@ const status: Record<string, string> = {};
 
 type CbFunctionType<T> = (currentValue: T, index: number, array: T[]) => Promise<void>;
 
+function speed(number: number, elapsed: number): string {
+    return number >= elapsed ? (number / elapsed).toFixed(1) + '/s' : (elapsed / number).toFixed(1) + 's/each';
+}
+
 // Run a maximum number in parallel but don't return before all finished
 // return values and exceptions are ignored. Accepts normal Arrays or Set/Maps
 export async function mapAllCapped<T>(id: string, array: T[], mapFn: CbFunctionType<T>, limit: number) {
@@ -26,6 +30,7 @@ export async function mapAllCapped<T>(id: string, array: T[], mapFn: CbFunctionT
         return;
     }
 
+    const start = Date.now();
     status[id] = 'starting';
 
     // Different iterator for sets/maps
@@ -39,6 +44,12 @@ export async function mapAllCapped<T>(id: string, array: T[], mapFn: CbFunctionT
     }
 
     await Promise.allSettled(workers);
+
+    // Wait till all actually completed for the final status
+    const now = Date.now();
+    const elapsed = (now - start) / 1000;
+    console.log(`${id}:100% [${array.length}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${speed(array.length, elapsed)}`);
+    delete status[id];
 }
 
 export type G<T> = Generator<[T, number, T[]], void, void>;
@@ -67,14 +78,9 @@ function* arrayGenerator<T>(id: string, array: T[]): G<T> {
         if (now - last > 30_000) {
             last = now;
             const elapsed = (now - start) / 1000;
-            status[id] = ` ${((index * 100) / array.length).toFixed(0)}% [${index}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${(index / elapsed).toFixed(1)}/s`;
+            status[id] = ` ${((index * 100) / array.length).toFixed(0)}% [${index}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${speed(index, elapsed)}`;
         }
     }
-    delete status[id];
-
-    const now = Date.now();
-    const elapsed = (now - start) / 1000;
-    console.log(`${id}:100% [${array.length}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${(array.length / elapsed).toFixed(1)}/s`);
 }
 
 export function getMapAllCappedStatus(): string[] {

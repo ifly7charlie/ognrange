@@ -13,7 +13,7 @@ import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
 import {Worker, parentPort, isMainThread, SHARE_ENV} from 'node:worker_threads';
 
-import {Accumulators, AccumulatorTypeString} from './accumulators';
+import {Accumulators, AccumulatorTypeString, describeAccumulators} from './accumulators';
 import {StationDetails} from './stationstatus';
 
 import {backupDatabase as backupDatabaseInternal} from './backupdatabase';
@@ -66,6 +66,8 @@ type RollupWorkerCommands =
 interface RollupResult extends RollupWorkerResult {
     elapsed: number;
     operations: number;
+    recordsRemoved: number;
+    retiredBuckets: number;
 }
 
 interface RollupFlushResult extends RollupWorkerResult {
@@ -79,6 +81,8 @@ export interface RollupDatabaseArgs {
     needValidPurge: boolean;
     stationMeta: StationDetails | undefined;
     historical?: boolean;
+    wasMissing?: AccumulatorTypeString[];
+    retiredAccumulators?: AccumulatorTypeString[]; // if we are rotating then this should be set
 }
 
 //
@@ -195,35 +199,32 @@ if (!isMainThread) {
 
             let db: DB | undefined = undefined;
             try {
-                db = await getDb(task.station, {throw: true});
-
-                if (db) {
-                    switch (task.action) {
-                        case 'rollup':
-                            out = await rollupDatabaseInternal(db, task);
-                            break;
-                        case 'abortstartup':
-                            out = {success: true};
-                            abortStartup = true;
-                            break;
-                        case 'startup':
-                            out = !abortStartup ? await rollupDatabaseStartup(db, task) : {success: false};
-                            if (out.success && !abortStartup) {
-                                await db.compactRange('0', 'Z');
-                                out.datacompacted = true;
-                            }
-                            break;
-                        case 'purge':
-                            await purgeDatabaseInternal(db, 'purge');
-                            break;
-                        case 'backup':
-                            out = await backupDatabaseInternal(db, task);
-                            break;
-                    }
+                db = await getDbThrow(task.station);
+                switch (task.action) {
+                    case 'rollup':
+                        out = await rollupDatabaseInternal(db, task.commonArgs);
+                        break;
+                    case 'abortstartup':
+                        out = {success: true};
+                        abortStartup = true;
+                        break;
+                    case 'startup':
+                        out = !abortStartup ? await rollupDatabaseStartup(db, task) : {success: false};
+                        if (out.success && !abortStartup) {
+                            await db.compactRange('0', 'Z');
+                            out.datacompacted = true;
+                        }
+                        break;
+                    case 'purge':
+                        await purgeDatabaseInternal(db, 'purge');
+                        break;
+                    case 'backup':
+                        out = await backupDatabaseInternal(db, task);
+                        break;
                 }
                 db!.close();
             } catch (e) {
-                console.error(task, e);
+                console.error(e, '->', JSON.stringify(task, null, 4));
             }
             parentPort!.postMessage({action: task.action, station: task.station, ...out});
         } catch (e) {
@@ -276,7 +277,7 @@ import type {DBMetaRecord} from './rollupmetadata';
 
 export type AccumulatorsExtended = {
     [key in AccumulatorTypeString]: {
-        found?: true;
+        found?: boolean;
     };
 };
 
@@ -299,6 +300,7 @@ export async function rollupDatabaseStartup(
     {now, accumulators: expectedAccumulators, stationMeta}: {now: number; accumulators: Accumulators; stationMeta: any}
 ) {
     const accumulatorsToPurge: Record<string, string> = {}; // purge no other action
+    const allAccumulators: Record<string, CoverageHeader> = {};
     const hangingRollups: Record<string, Accumulators & AccumulatorsExtended> = {};
     let datapurged = false;
     let datamerged = false;
@@ -323,28 +325,28 @@ export async function rollupDatabaseStartup(
         }
 
         const unrefinedMeta = JSON.parse(String(value));
-        if (unrefinedMeta && !('currentAccumulator' in unrefinedMeta)) {
-            unrefinedMeta.currentAccumulator = unrefinedMeta?.accumulators?.current?.bucket;
-        }
-        if (unrefinedMeta && typeof unrefinedMeta.currentAccumulator === 'object') {
-            unrefinedMeta.currentAccumulator = unrefinedMeta.currentAccumulator.current.bucket;
-            console.log('** fixing accumulators');
-        }
         const meta: DBMetaRecord = unrefinedMeta as DBMetaRecord;
 
         // accumulator TYPE not configured on this machine - purge with no other action
-        if (!unrefinedMeta || !(hr.typeName in expectedAccumulators) || !('accumulators' in meta) || !('currentAccumulator' in meta)) {
-            console.log(`${db.ognStationName}: invalid accumulator or missing metadata for ${hr.dbKey()}, ${String(value)}`);
-            accumulatorsToPurge[hr.dbKey()] = meta?.accumulators?.[hr.typeName]?.file ?? hr.typeName;
+        if (
+            !unrefinedMeta || //
+            !(hr.typeName in expectedAccumulators) ||
+            !('accumulators' in meta) ||
+            (hr.typeName !== 'current' && !meta?.accumulators?.[hr.typeName]?.file)
+        ) {
+            console.log(`${db.ognStationName}: invalid accumulator or missing metadata for ${hr.dbKey()}, ${String(value)}, file:${meta?.accumulators?.[hr.typeName]?.file}`);
+            accumulatorsToPurge[hr.dbKey()] = meta?.accumulators?.[hr.typeName]?.file ?? hr.accumulator;
         } else {
-            // Capture all of the accumulators so we can figure out what is complete and
-            // perform a rollup.
-            //            console.log(db.ognStationName, hr.typeName, hr.bucket, meta.currentAccumulator, meta.accumulators, String(value));
-            //            console.log(hangingRollups[meta.currentAccumulator]);
-            if (!(meta.currentAccumulator in hangingRollups)) {
-                hangingRollups[meta.currentAccumulator] = meta.accumulators;
+            // currents are the only ones that can start a rollup
+            if (hr.typeName === 'current') {
+                const currentBucket = meta.currentAccumulator ?? meta.accumulators.current.bucket;
+                hangingRollups[currentBucket] = meta.accumulators;
             }
-            Object.assign(hangingRollups[meta.currentAccumulator][hr.typeName], {found: true});
+            // Otherwise it's a target and we need to capture them so we know if they are valid
+            else {
+                //
+                allAccumulators[meta?.accumulators?.[hr.typeName]?.file] = hr;
+            }
         }
 
         // Done with this one lets skip forward
@@ -353,7 +355,10 @@ export async function rollupDatabaseStartup(
     }
 
     const hangingHeaders: string[] = [];
-    const purgePromises: Promise<void>[] = [];
+
+    if (db.ognStationName === '4AVIA4') {
+        console.log('4AVIA4', hangingRollups);
+    }
 
     // This is more interesting, this is a current that could be rolled into one of the other
     // existing accumulators... Current's are a "buffering" of the points until they get
@@ -362,37 +367,49 @@ export async function rollupDatabaseStartup(
         const hangingAccumulators = hangingRollups[key];
 
         // If we have a current then we roll it up regardless of the rest
-        const missingBuckets = Object.keys(hangingAccumulators).filter((a) => !hangingAccumulators[a as AccumulatorTypeString].found);
-        const destinationFiles = Object.values(hangingAccumulators)
-            .map((a) => a.file)
-            .filter((a) => !!a)
-            .join(',');
+        const missingBuckets = Object.keys(hangingAccumulators) //
+            .filter((a) => a !== 'current')
+            .filter((a) => !(hangingAccumulators[a as AccumulatorTypeString].file in allAccumulators)) as AccumulatorTypeString[];
 
-        if (hangingAccumulators.current.found) {
-            const rollupResult = await rollupDatabaseInternal(db, {accumulators: hangingAccumulators, now, needValidPurge: false, stationMeta, historical: true});
-            console.log(
-                `${db.ognStationName}: rolled up hanging current accumulator ${key} ` + //
-                    `into ${destinationFiles}: ${JSON.stringify(rollupResult)}, ${missingBuckets.join(',')} were missing`
-            );
-            datamerged = true;
-        }
+        const [currentStart, destinationFiles] = describeAccumulators(hangingAccumulators);
 
-        // And we then need to purge anything that is no longer current
-        Object.keys(hangingAccumulators)
-            .filter((type) => hangingAccumulators[type as AccumulatorTypeString].found)
-            .filter((type) => expectedAccumulators[type as AccumulatorTypeString].bucket != hangingAccumulators[type as AccumulatorTypeString].bucket)
-            .forEach((type) => {
-                purgePromises.push(purge(db, new CoverageHeader(0 as StationId, type as AccumulatorTypeString, hangingAccumulators[type as AccumulatorTypeString].bucket, '')));
+        // As long as we have a single bucket then we can proceed
+        if (missingBuckets.length < 3) {
+            Object.values(hangingAccumulators).forEach((v) => delete v.found);
+            const rollupResult = await rollupDatabaseInternal(db, {
+                //
+                accumulators: hangingAccumulators,
+                now,
+                needValidPurge: false,
+                stationMeta,
+                historical: true,
+                wasMissing: missingBuckets
             });
+            if (hangingAccumulators.current.bucket !== expectedAccumulators.current.bucket) {
+                console.log(
+                    `${db.ognStationName}: rolled up hanging current accumulator ${key}(${currentStart}) into ${destinationFiles}: ${JSON.stringify(rollupResult)}` + //
+                        (missingBuckets.length ? `${missingBuckets.join(',')} were missing` : '')
+                );
+            }
+            datamerged = true;
+        } else {
+            console.log(`${db.ognStationName}: DROPPING hanging current accumulator ${key}(${currentStart}) for ${destinationFiles}: ${missingBuckets.join(',')} were missing`);
+        }
     }
 
-    // These are old accumulators we purge them because we aren't sure what else can be done
-    purgePromises.push(
+    const purgePromises: Promise<void>[] = [
+        // And we then need to purge anything that is no longer current (ie isn't
+        // in expected)
+        ...Object.values(allAccumulators)
+            .filter((ch) => expectedAccumulators[ch.typeName].bucket != ch.bucket)
+            .map((hr) => purge(db, hr)),
+
+        // These are old accumulators we purge them because we aren't sure what else can be done
         ...Object.keys(accumulatorsToPurge).map((key) => {
             datapurged = true;
             return purge(db, new CoverageHeader(key));
         })
-    );
+    ];
     const purgedAccumulators = Object.values(accumulatorsToPurge).join(',');
 
     // Wait for it to finish
@@ -402,7 +419,7 @@ export async function rollupDatabaseStartup(
         console.log(`${db.ognStationName} purged: ${purgedAccumulators}, hanging: ${hangingHeaders.join(',')}`);
     }
 
-    return {success: true, datapurged, datamerged, datachanged: datamerged || datapurged};
+    return {success: true, datapurged, datamerged, datachanged: datamerged || datapurged, purged: purgePromises.length};
 }
 
 async function purgeDatabaseInternal(db: DB, reason: string) {
@@ -417,7 +434,7 @@ async function purgeDatabaseInternal(db: DB, reason: string) {
 // we do this by iterating through each database looking for things in default
 // aggregator (which is always just the raw h3id)
 //
-async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators, needValidPurge, stationMeta, historical}: RollupDatabaseArgs): Promise<RollupResult> {
+async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators, needValidPurge, stationMeta, historical, wasMissing, retiredAccumulators}: RollupDatabaseArgs): Promise<RollupResult> {
     //
     //
     const nowEpoch = Math.floor(now / 1000) as Epoch;
@@ -450,12 +467,13 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
                 file: par!.file,
                 meta: {rollups: []},
                 stats: {
-                    h3missing: 0,
-                    h3noChange: 0,
-                    h3updated: 0,
-                    h3emptied: 0,
-                    h3stationsRemoved: 0,
-                    h3extra: 0
+                    h3added: 0, // missing from dest (ie was added unchanged)
+                    h3noChange: 0, // unchanged in dest (no disk op required)
+                    h3updated: 0, // updated (changed accumulators or station list)
+                    h3emptied: 0, // emptied (no valid stations any longer)
+                    h3stationsRemoved: 0, // some station removed
+                    h3disk: 0, // read from disk
+                    h3extra: 0 // on disk but after the end of the accumulator (included in emptied/updated if station invalid, and noChange otherwise)
                 },
                 iterator: db.iterator(CoverageHeader.getDbSearchRangeForAccumulator(r, par!.bucket)),
                 arrow: CoverageRecord.initArrow(db.global ? bufferTypes.global : bufferTypes.station)
@@ -520,7 +538,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
                         dbOps.push({type: 'put', key: h3kr.dbKey(), value: currentBr.buffer()});
                         currentBr.appendToArrow(h3kr, r.arrow);
                         r.lastCopiedH3p = h3p.h3;
-                        r.stats.h3missing++;
+                        r.stats.h3added++;
                     }
 
                     // We need to cleanup when we are done
@@ -555,7 +573,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
                         dbOps.push({type: 'put', key: h3kr.dbKey(), value: currentBr.buffer()});
                         currentBr.appendToArrow(h3kr, r.arrow);
                         r.lastCopiedH3p = h3p.h3;
-                        r.stats.h3missing++;
+                        r.stats.h3added++;
                     }
                     continue;
                 }
@@ -594,7 +612,10 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
                         dbOps.push({type: 'del', key: prefixedh3r});
                         r.stats.h3emptied++;
                     } else {
-                        r.stats.h3updated++;
+                        if (changed) {
+                            // only count if it isn't a station removal otherwise stats don't add up
+                            r.stats.h3updated++;
+                        }
                         dbOps.push({type: 'put', key: prefixedh3r, value: updatedBr.buffer()});
                     }
                 } else {
@@ -609,6 +630,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
                 // Move us to the next one, allow
                 r.n = r.iterator.next();
                 r.current = null;
+                r.stats.h3disk++;
             }
         } while (!advancePrimary);
 
@@ -628,6 +650,8 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
                 const h3kr = new CoverageHeader(prefixedh3r);
                 let br = new CoverageRecord(rollupValue);
 
+                r.stats.h3disk++;
+
                 let updatedBr = validStations ? br.removeInvalidStations(validStations) : br;
 
                 // Check to see what we need to do with the database
@@ -638,7 +662,7 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
                         r.stats.h3emptied++;
                     } else {
                         dbOps.push({type: 'put', key: prefixedh3r, value: updatedBr.buffer()});
-                        r.stats.h3updated++;
+                        //                        r.stats.h3updated++;
                     }
                 } else {
                     r.stats.h3noChange++;
@@ -678,12 +702,16 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
         r.stats.h3source = h3source;
         r.meta.rollups.push({source: currentMeta, stats: r.stats, file: accumulatorName});
 
-        if (r.stats.h3source != r.stats.h3missing + r.stats.h3updated) {
+        if (r.stats.h3source != r.stats.h3added + r.stats.h3updated) {
             console.error("********* stats don't add up ", rType, r.bucket.toString(16), JSON.stringify({m: r.meta, s: r.stats}));
         }
 
         // May not have a directory if new station
-        mkdirSync(OUTPUT_PATH + name, {recursive: true});
+        try {
+            mkdirSync(OUTPUT_PATH + name, {recursive: true});
+        } catch (e) {
+            console.log(`unable to make output path ${OUTPUT_PATH + name}: ${e}`);
+        }
 
         const arrowName = OUTPUT_PATH + accumulatorName + '.arrow';
         if (historical) {
@@ -692,7 +720,9 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
             } catch (e) {}
             try {
                 renameSync(arrowName + '.gz', arrowName + 'gz.1');
-                console.log(`${name}: output file ${arrowName} already exists and we are putting historical data in it, this is potentially a loss of data situation`);
+                if (wasMissing?.some((s) => s == rType)) {
+                    console.log(`${name}: output file ${arrowName} already exists and we are putting incomplete historical data in it, this is potentially a loss of data situation`);
+                }
             } catch (e) {}
         }
 
@@ -754,11 +784,11 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
     // If we have a new accumulator then we need to purge the old meta data records - we
     // have already purged the data above
     dbOps.push({type: 'del', key: CoverageHeader.getAccumulatorMeta('current', accumulators.current.bucket).dbKey()});
-    const countToDelete = dbOps.filter((o) => o.type === 'del').length - 1;
+    const recordsRemoved = dbOps.filter((o) => o.type === 'del').length - 1;
     //if (db.global) {
-    if (countToDelete > 0) {
-        console.log(`rollup: ${db.ognStationName}: current bucket ${[accumulators.current.bucket]} completed, removing ${countToDelete} records`);
-    }
+    //    if (countToDelete > 0) {
+    //        console.log(`rollup: ${db.ognStationName}: current bucket ${[accumulators.current.bucket]} completed, removing ${countToDelete} records`);
+    //    }
 
     // Is this actually beneficial? - feed operations to the database in key type sorted order
     // so it can just process them. Keys should be stored clustered so theoretically this will
@@ -769,11 +799,21 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
     // Finally execute all the operations on the database
     await db.batch(dbOps);
 
+    const retired = {retiredBuckets: 1};
+    if (retiredAccumulators) {
+        // And we then need to purge anything that is no longer current
+        await Promise.allSettled(
+            retiredAccumulators //
+                .map((type) => purge(db, new CoverageHeader(0 as StationId, type as AccumulatorTypeString, accumulators[type as AccumulatorTypeString].bucket, '')))
+        );
+        retired.retiredBuckets += retiredAccumulators.length;
+    }
+
     // Purge everything from the current accumulator, this should just do a compact as we
     // have already deleted in the batch above
     await purge(db, CoverageHeader.getAccumulatorMeta('current', accumulators.current.bucket));
 
-    return {elapsed: Date.now() - startTime, operations: dbOps.length};
+    return {elapsed: Date.now() - startTime, operations: dbOps.length, recordsRemoved, ...retired};
 }
 
 function symlink(src: string, dest: string) {
@@ -825,7 +865,6 @@ async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, buffer: U
                 existingOperation.push(operation);
             }
         })
-
         .catch((e) => {
             console.error(`unable to find db for id ${h3k.dbid}/${station}, ${e}`);
         });

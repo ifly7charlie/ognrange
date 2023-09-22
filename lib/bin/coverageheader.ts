@@ -34,6 +34,12 @@ export const accumulatorNames = ['current', 'day', 'week', 'month', 'year'];
 
 export type AccumulatorTypeAndBucket = number & As<'AccumulatorTypeAndBucket'>;
 
+//
+export function formAccumulator(t: AccumulatorType, b: AccumulatorBucket): string {
+    const tb = (((t & 0x0f) << 12) | (b & 0x0fff)) as AccumulatorTypeAndBucket;
+    return prefixWithZeros(4, tb.toString(16));
+}
+
 export class CoverageHeader {
     _h3: H3Index;
     _tb: AccumulatorTypeAndBucket;

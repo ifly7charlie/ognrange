@@ -16,16 +16,13 @@ import {mkdirSync, existsSync} from 'fs';
 
 import {ignoreStation} from '../lib/bin/ignorestation.js';
 
-// DB Structure
-import {CoverageHeader} from '../lib/bin/coverageheader';
-
 import {gitVersion} from '../lib/bin/gitversion.js';
 
 //import {backupDatabases} from '../lib/bin/backupdatabases';
 import {getMapAllCappedStatus} from '../lib/bin/mapallcapped';
 import {loadStationStatus, checkStationMoved, updateStationBeacon, closeStatusDb, getNextStationId, getStationDetails} from '../lib/bin/stationstatus';
 
-import {Epoch, StationName, StationId, Longitude, Latitude, H3} from '../lib/bin/types';
+import {Epoch, StationName, StationId, Longitude, Latitude, H3, EpochMS} from '../lib/bin/types';
 
 import {normaliseCase} from '../lib/bin/caseinsensitive';
 
@@ -392,20 +389,18 @@ async function setupPeriodicFunctions() {
 
     // Make sure our accumulator is correct, this will also
     // ensure we rollover and produce output files correctly
-    const now = new Date();
-    const nextRollup = ROLLUP_PERIOD_MINUTES - ((now.getUTCHours() * 60 + now.getUTCMinutes()) % ROLLUP_PERIOD_MINUTES);
-    console.log(`first rollup will be in ${nextRollup} minutes at ${new Date(Date.now() + nextRollup * 60000 + 500).toISOString()}`);
-    timeouts['rollup'] = setTimeout(async function () {
-        delete timeouts['rollup'];
-        intervals.push(
-            setInterval(async function () {
-                console.log(`next rollup will be in ${ROLLUP_PERIOD_MINUTES} minutes at ` + `${new Date(Date.now() + ROLLUP_PERIOD_MINUTES * 60000).toISOString()}`);
-                await updateAndProcessAccumulators();
-            }, ROLLUP_PERIOD_MINUTES * 60 * 1000)
-        );
-        // this shouldn't drift because it's an interval...
-        updateAndProcessAccumulators(); // do the first one, then let the interval do them afterwards
-    }, nextRollup * 60 * 1000 + 500);
+    const nextRollupDelay = (): EpochMS => {
+        const now = new Date();
+        const nextRollup = ROLLUP_PERIOD_MINUTES - ((now.getUTCHours() * 60 + now.getUTCMinutes()) % ROLLUP_PERIOD_MINUTES);
+        const delayTime = (nextRollup * 60 - now.getUTCSeconds()) * 1000 + 500 - now.getUTCMilliseconds();
+        console.log(`rollup will be in ${nextRollup} minutes at ${new Date(now.getTime() + delayTime).toISOString()}`);
+        return delayTime as EpochMS;
+    };
+    const doTimedRollup = async (): Promise<void> => {
+        await updateAndProcessAccumulators();
+        timeouts['rollup'] = setTimeout(doTimedRollup, nextRollupDelay() * 60_1000);
+    };
+    timeouts['rollup'] = setTimeout(doTimedRollup, nextRollupDelay());
     // how long till they roll over, delayed 1/2 a second + whatever remainder was left in getUTCSeconds()...
     // better a little late than too early as it won't rollover then and we will wait a whole period to pick it up
 }

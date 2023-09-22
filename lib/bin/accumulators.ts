@@ -11,14 +11,17 @@ import {flushDirtyH3s} from './h3cache';
 import {rollupAll} from './rollup';
 import {backupDatabases} from './backupdatabases';
 
+import type {Epoch} from './types';
+
 export type {AccumulatorTypeString, AccumulatorBucket} from './coverageheader';
-import {AccumulatorTypeString, AccumulatorBucket} from './coverageheader';
+import {AccumulatorType, AccumulatorTypeString, AccumulatorBucket, formAccumulator} from './coverageheader';
 
 //
 export type Accumulators = {
     [key in AccumulatorTypeString]: {
         bucket: AccumulatorBucket;
         file: string;
+        effectiveStart?: Epoch;
     };
 };
 
@@ -67,19 +70,44 @@ export function whatAccumulators(now: Date): Accumulators {
     return {
         current: {
             bucket: newAccumulatorBucket as AccumulatorBucket,
-            file: ''
+            file: '',
+            effectiveStart: Math.trunc(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000 + rolloverperiod * ROLLUP_PERIOD_MINUTES * 60) as Epoch
         },
         day: {
             bucket: (((now.getUTCFullYear() & 0x07) << 9) | ((now.getUTCMonth() & 0x0f) << 5) | (now.getUTCDate() & 0x1f)) as AccumulatorBucket, //
-            file: `${n.y}-${n.m}-${n.d}`
+            file: `${n.y}-${n.m}-${n.d}`,
+            effectiveStart: Math.trunc(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000) as Epoch
         },
-        month: {bucket: (((now.getUTCFullYear() & 0xff) << 4) | (now.getUTCMonth() & 0x0f)) as AccumulatorBucket, file: `${n.y}-${n.m}`},
-        year: {bucket: now.getUTCFullYear() as AccumulatorBucket, file: `${n.y}`}
+        month: {
+            bucket: (((now.getUTCFullYear() & 0xff) << 4) | (now.getUTCMonth() & 0x0f)) as AccumulatorBucket, //
+            file: `${n.y}-${n.m}`,
+            effectiveStart: Math.trunc(Date.UTC(now.getUTCFullYear(), now.getUTCMonth()) / 1000) as Epoch
+        },
+        year: {
+            bucket: now.getUTCFullYear() as AccumulatorBucket, //
+            file: `${n.y}`,
+            effectiveStart: Math.trunc(Date.UTC(now.getUTCFullYear(), 0) / 1000) as Epoch
+        }
     };
 }
 
 export function initialiseAccumulators() {
     accumulators = whatAccumulators(new Date());
+    console.log(accumulators);
+}
+
+export function describeAccumulators(a: Accumulators): [string, string] {
+    const currentStart = new Date((a.current?.effectiveStart ?? 0) * 1000);
+    const currentText = currentStart //
+        ? prefixWithZeros(2, currentStart.getUTCHours().toString()) + ':' + prefixWithZeros(2, currentStart.getUTCMinutes().toString())
+        : formAccumulator(AccumulatorType.current, a.current.bucket);
+
+    const destinationFiles = Object.values(a)
+        .map((a) => a.file)
+        .filter((a) => !!a)
+        .join(',');
+
+    return [currentText, destinationFiles];
 }
 
 export async function updateAndProcessAccumulators() {
@@ -99,16 +127,14 @@ export async function updateAndProcessAccumulators() {
 
     // If we have a new accumulator (ignore startup when old is null)
     if (oldAccumulators && oldAccumulators !== newAccumulators) {
-        console.log(`accumulator rotation:`);
-        console.log(JSON.stringify(oldAccumulators));
-        console.log('----');
-        console.log(JSON.stringify(accumulators));
+        console.log(`--------[ accumulator rotation ]--------`);
+        console.log(describeAccumulators(oldAccumulators).join('/'), ' => ', describeAccumulators(accumulators).join('/'));
 
         // Now we need to make sure we have flushed our H3 cache and everything
         // inflight has finished before doing this. we could purge cache
         // but that doesn't ensure that all the inflight has happened
         const s = await flushDirtyH3s(oldAccumulators, true);
-        console.log(`accumulator rotation happening`, s);
+        console.log(`h3cache flushed written ${s.written} records for ${s.databases} stations`);
 
         // If we are chaging the day then we will do a backup before
         // a rollup - this could lose some data in a restore as it doesn't
@@ -119,7 +145,7 @@ export async function updateAndProcessAccumulators() {
             await backupDatabases(oldAccumulators);
         }
 
-        await rollupAll(oldAccumulators);
+        await rollupAll(oldAccumulators, newAccumulators);
 
         // We also backup after with the new date which is fully rolled up
         if (doBackup) {
