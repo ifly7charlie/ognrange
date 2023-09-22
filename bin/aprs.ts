@@ -398,7 +398,7 @@ async function setupPeriodicFunctions() {
     };
     const doTimedRollup = async (): Promise<void> => {
         await updateAndProcessAccumulators();
-        timeouts['rollup'] = setTimeout(doTimedRollup, nextRollupDelay() * 60_1000);
+        timeouts['rollup'] = setTimeout(doTimedRollup, nextRollupDelay());
     };
     timeouts['rollup'] = setTimeout(doTimedRollup, nextRollupDelay());
     // how long till they roll over, delayed 1/2 a second + whatever remainder was left in getUTCSeconds()...
