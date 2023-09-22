@@ -90,7 +90,7 @@ export function getStationDetails(stationName: StationName, serialise = true): S
         details = {station: stationName, id: (stationid = Atomics.add(nextStation, 0, 1) as StationId)};
         stations.set(stationName, details);
         stationIds.set(stationid, stationName);
-        console.log(`allocated id ${stationid} to ${stationName}, ${Object.keys(stations).length} in hash`);
+        console.log(`allocated id ${stationid} to ${stationName}, ${stations.size} have metadata`);
 
         if (serialise && statusDb !== undefined) {
             statusDb.put(stationName, details);
