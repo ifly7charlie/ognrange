@@ -736,7 +736,6 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
 
         // Finalise the arrow table and serialise it to the disk
         arrowRecords += r.stats.arrowRecords = await r.arrow.finalize();
-        console.log(`${name}:${r.type}:${arrowRecords}`);
 
         try {
             writeFileSync(OUTPUT_PATH + accumulatorName + '.json', JSON.stringify(r.meta, null, 2));
