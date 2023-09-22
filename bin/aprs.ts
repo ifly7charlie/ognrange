@@ -444,9 +444,13 @@ async function processPacket(packet: AprsLocationPacket) {
     // Lookup the altitude adjustment for the
     const station = normaliseCase(packet.digipeaters?.pop()?.callsign || 'unknown') as StationName;
 
-    // Obvious reasons to ignore stations
+    // Obvious reasons to ignore stations - including invalid names, no timestamp and relayed transmissions
     if (ignoreStation(station)) {
         packetStats.ignoredStation++;
+        return;
+    }
+    if (!packet.timestamp) {
+        packetStats.invalidTracker++;
         return;
     }
     if (packet.destCallsign == 'OGNTRK' && packet.digipeaters?.[0]?.callsign?.slice(0, 2) != 'qA') {
