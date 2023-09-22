@@ -1,35 +1,23 @@
 import React, {useState, useCallback, useMemo, useRef} from 'react';
+import {MapboxOverlay, MapboxOverlayProps} from '@deck.gl/mapbox';
 
-import DGL from '@deck.gl/react';
-import {IconLayer, MapView, ColumnLayer} from '@deck.gl/layers';
+import Map, {Source, Layer, LayerProps, useControl, NavigationControl, ScaleControl} from 'react-map-gl';
+
+import {IconLayer, ColumnLayer} from '@deck.gl/layers';
 import {H3HexagonLayer} from '@deck.gl/geo-layers';
 
-import {FlyToInterpolator} from '@deck.gl/core';
-import {StaticMap, Source, Layer} from 'react-map-gl';
-import {LngLat} from 'mapbox-gl';
-import {MercatorCoordinate} from 'mapbox-gl';
-import {MapboxLayer} from '@deck.gl/mapbox';
 import {AttributionControl} from 'react-map-gl';
-import {Matrix4} from '@math.gl/core';
 
 import {ArrowLoader} from '@loaders.gl/arrow';
 import {JSONLoader} from '@loaders.gl/json';
 
 import ReactDOMServer from 'react-dom/server';
 
-import Link from 'next/link';
 import {useRouter} from 'next/router';
 
 import {progressFetch} from './progressFetch';
 
-import _map from 'lodash.map';
-import _reduce from 'lodash.reduce';
-import _chunk from 'lodash.chunk';
-import _zip from 'lodash.zip';
-import _keyby from 'lodash.keyby';
-import _filter from 'lodash.filter';
-import _find from 'lodash.find';
-import _debounce from 'lodash.debounce';
+import {map as _map, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, find as _find, debounce as _debounce} from 'lodash';
 
 import {CoverageDetails} from './CoverageDetails';
 
@@ -45,8 +33,18 @@ const altitudeFunctions = {
     minAgl: (f) => f.g
 };
 
-export let stationMeta = undefined;
+import {stationMeta, setStationMeta} from './stationMeta';
 let maxCount = 0;
+
+function DeckGLOverlay(
+    props: MapboxOverlayProps & {
+        interleaved?: boolean;
+    }
+) {
+    const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay(props));
+    overlay.setProps(props);
+    return null;
+}
 
 //
 // Responsible for generating the deckGL layers
@@ -136,21 +134,25 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
         id: (station || 'global') + (file || 'year'),
         data: `${NEXT_PUBLIC_DATA_URL}${station || 'global'}/${station || 'global'}.${file || 'year'}.arrow`,
         loadOptions: {
-            fetch: (...o) => {
-                return fetch(...o).then(progressFetch(setProgress));
+            fetch: (input, init) => {
+                return fetch(input, init).then(progressFetch(setProgress));
             }
         },
         loaders: ArrowLoader,
-        dataTransform: (d) => {
+        dataTransform: (d: any & {count: number[]}) => {
+            console.log('h3lo' in d ? 'new format' : 'old format');
             // Get the h3ids in the correct format for display
-            const h3s =
+            /*            const h3s =
                 'h3lo' in d
                     ? _map(d.h3lo, (p, i) => [p, d.h3hi[i]]) // new file format
                     : _map(_chunk(d.h3, 2), (p) => [p[0], p[1]]); // old file format
 
-            // Calculate the maximum number of points in a cell and store as a log2
-            maxCount = Math.log2(_reduce(d.count, (r, v) => (r = Math.max(r, v)), 0));
-            return {length: d.avgSig.length, d, h3s};
+                    // Calculate the maximum number of points in a cell and store as a log2 */
+            maxCount = 0;
+            for (const v of d.count) {
+                maxCount = Math.max(maxCount, v);
+            }
+            return {length: d.avgSig.length, d, maxCount: Math.log2(maxCount)};
         },
         pickable: true,
         wireframe: false,
@@ -158,7 +160,7 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
         stroked: false,
         extruded: false,
         elevationScale: 0,
-        getHexagon: (d, {index, data}) => data.h3s[index],
+        getHexagon: (d, {index, data}) => [data.d.h3lo[index], data.d.h3hi[index]], //.data.h3s[index],
         getFillColor: (d, {index, data}) => visualisationFunction(data.d, index),
         getElevation: map2d ? (d) => 0 : (d) => altitudeFunction(d),
         updateTriggers: {
@@ -185,7 +187,7 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
             loaders: [JSONLoader],
             dataTransform: (d) => {
                 if (d) {
-                    stationMeta = _keyby(d, 'id');
+                    setStationMeta(_keyby(d, 'id'));
                 }
                 return d;
             },
@@ -220,7 +222,7 @@ function getObjectFromIndex(i, layer) {
     const d = layer?.props?.data.d;
     return d
         ? {
-              h: layer.props.data.h3s[i],
+              h: [d.h3lo[i], d.h3hi[i]], //layer.props.data.h3s[i],
               a: d.avgSig[i],
               b: d.minAlt[i],
               c: d.count[i],
@@ -237,7 +239,19 @@ function getObjectFromIndex(i, layer) {
         : null;
 }
 
-export function CoverageMap(props) {
+export function CoverageMap(props: {
+    //
+    mapType: number;
+    setDetails: (d: any) => void;
+    setHighlightStations: (h: any) => void;
+    station?: string;
+    visualisation: string;
+    setStation: (s: any) => void;
+    highlightStations?: any;
+    file?: string;
+    tooltips: boolean;
+    viewport: any;
+}) {
     const router = useRouter();
     const [lockedH3, setLockedH3] = useState(null);
     const [isLoaded, setLoaded] = useState(null);
@@ -266,21 +280,18 @@ export function CoverageMap(props) {
         [lockedH3]
     );
 
-    const colourMaps = useMemo(
-        (_) => {
-            const f = router.query.fromColour || defaultFromColour;
-            const t = router.query.toColour || defaultToColour;
-            return _zip(
-                progression(f, t, 0), // R
-                progression(f, t, 1), // G
-                progression(f, t, 2), // B
-                progression(f, t, 3)
-            ); // A
-        },
-        [router.isReady, router.query.fromColour, router.query.toColour]
-    );
+    const colourMaps = useMemo(() => {
+        const f = router.query.fromColour || defaultFromColour;
+        const t = router.query.toColour || defaultToColour;
+        return _zip(
+            progression(f, t, 0), // R
+            progression(f, t, 1), // G
+            progression(f, t, 2), // B
+            progression(f, t, 3)
+        ); // A
+    }, [router.isReady, router.query.fromColour, router.query.toColour]);
 
-    const colourise = (v) => {
+    const colourise = (v: number): [number, number, number, number] => {
         if (v > 255) {
             console.log(v);
         }
@@ -291,7 +302,7 @@ export function CoverageMap(props) {
     // Generate the deckGL layers
     // We don't need to do this unless parameters change
     const {layers} = useMemo(
-        (_) =>
+        () =>
             makeLayers(
                 props.station,
                 props.file,
@@ -304,45 +315,10 @@ export function CoverageMap(props) {
                 setLoaded,
                 () => isLoaded,
                 colourise,
-                fromColour + toColour
+                fromColour.toString() + toColour.toString()
             ),
         [props.station, props.file, map2d, props.visualisation, props.highlightStations, lockedH3, fromColour, toColour]
     );
-
-    const onMapLoad = useCallback(
-        (evt) => {
-            console.log('onMapLoad', map2d);
-            if (!map2d) {
-                const map = evt.target;
-                console.log(map);
-                map.setTerrain({source: 'mapbox-dem'});
-            }
-        },
-        [map2d]
-    );
-
-    // Update the view and synchronise with mapbox
-    const onViewStateChange = ({viewState}) => {
-        if (map2d) {
-            viewState.minPitch = 0;
-            viewState.maxPitch = 0;
-        } else {
-            viewState.minPitch = 0;
-            viewState.maxPitch = 85;
-        }
-
-        const map = mapRef?.current?.getMap();
-        if (map && map.transform.elevation && !map2d) {
-            const mapbox_elevation = map.transform.elevation.getAtPoint(MercatorCoordinate.fromLngLat(map.getCenter()));
-            //const mapbox_elevation = map.transform.elevation.getAtPoint(MercatorCoordinate.fromLngLat(new LngLat(viewState.longitude, viewState.latitude)));
-            props.setViewport({
-                ...viewState,
-                ...{position: [0, 0, mapbox_elevation]}
-            });
-        } else {
-            props.setViewport(viewState);
-        }
-    };
 
     let attribution = `<a href="//www.glidernet.org/">Data from OGN</a> | `;
     if (props.station) {
@@ -353,55 +329,55 @@ export function CoverageMap(props) {
 
     //
     // Generate tooltip text, and update side panel
-    function useToolTipSelection({index: i, layer, picked}) {
-        if (lockedH3) {
-            if (object?.station) {
-                return {html: object.station};
+    const useToolTipSelection = useCallback(
+        ({index: i, layer, picked}) => {
+            if (lockedH3) {
+                return null;
             }
-            return null;
-        }
-
-        if (!picked) {
-            if (props.highlightStations) {
-                props.setHighlightStations({});
+            if (!picked) {
+                if (props.highlightStations) {
+                    props.setHighlightStations({});
+                }
+                props.setDetails(null);
+                return null;
             }
-            props.setDetails(null);
-            return null;
-        }
 
-        const object = getObjectFromIndex(i, layer);
+            const object = getObjectFromIndex(i, layer);
 
-        if (object) {
-            props.setDetails(object);
+            if (object) {
+                props.setDetails(object);
 
-            if (!props.tooltip && object.s) {
-                const parts = object.s.split(',');
-                props.setHighlightStations(
-                    _reduce(
-                        parts,
-                        (acc, x) => {
-                            const sid = parseInt(x, 36) >> 4;
-                            acc[sid] = !!stationMeta[sid]?.lat;
-                            return acc;
-                        },
-                        {}
-                    )
+                if (!props.tooltips && object.s) {
+                    const parts = object.s.split(',');
+                    props.setHighlightStations(
+                        _reduce(
+                            parts,
+                            (acc, x) => {
+                                const sid = parseInt(x, 36) >> 4;
+                                acc[sid] = !!stationMeta[sid]?.lat;
+                                return acc;
+                            },
+                            {}
+                        )
+                    );
+                }
+            }
+
+            if (props.tooltips) {
+                const html = ReactDOMServer.renderToStaticMarkup(
+                    <CoverageDetails
+                        details={object} //
+                        station={props.station}
+                        highlightStations={props.highlightStations}
+                        setHighlightStations={props.setHighlightStations}
+                        file={props.file}
+                    />
                 );
+                return {html};
             }
-        }
-
-        if (props.tooltips) {
-            const html = ReactDOMServer.renderToStaticMarkup(
-                <CoverageDetails
-                    details={object} //
-                    station={props.station}
-                    highlightStations={props.highlightStations}
-                    setHighlightStations={props.setHighlightStations}
-                />
-            );
-            return {html};
-        }
-    }
+        },
+        [props.tooltips]
+    );
 
     const loadingLayer = isLoaded ? (
         <div className="progress-bar">
@@ -416,44 +392,40 @@ export function CoverageMap(props) {
         source: 'airspace'
     };
 
+    const viewOptions = map2d ? {minPitch: 0, maxPitch: 0, pitch: 0} : {minPitch: 0, maxPitch: 85, pitch: 70};
+
+    console.log(props.viewport);
     return (
-        <div>
-            <DGL //
-                viewState={props.viewport}
-                controller={{scrollZoom: {smooth: false}, touchRotate: true}}
-                onViewStateChange={(e) => onViewStateChange(e)}
-                getTooltip={(x) => useToolTipSelection(x)}
-                onClick={onClick}
-                layers={layers}
+        <>
+            <Map
+                mapStyle={'mapbox://styles/' + (router.query.mapStyle || defaultBaseMap)}
+                //        mapStyle={'mapbox://styles/ifly7charlie/clmbzpceq01au01r7abhp42mm'}
+                ref={mapRef}
+                initialViewState={{...props.viewport, ...viewOptions}}
+                mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN}
+                reuseMaps={true}
+                attributionControl={false}
             >
-                <StaticMap
-                    mapboxApiAccessToken={process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN} //
-                    mapStyle={'mapbox://styles/' + (router.query.mapStyle || defaultBaseMap)}
-                    onLoad={onMapLoad}
-                    ref={mapRef}
-                    attributionControl={false}
-                >
-                    {!map2d && (
-                        <>
-                            <Source id="mapbox-dem" type="raster-dem" url="mapbox://mapbox.mapbox-terrain-dem-v1" tileSize={512} maxzoom={14} />
-                            <Layer {...hillshade} />
-                            <Layer {...skyLayer} />
-                        </>
-                    )}
-                    {router.query?.airspace == '1' && (
-                        <>
-                            <Source id="airspace" type="raster" tiles={['https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=760e6a3ccde9c9f277f3de723169934b']} maxzoom={14} tileSize={256} />
-                            <Layer {...airspaceLayer} minzoom={0} maxzoom={14} />
-                        </>
-                    )}
-                    <AttributionControl key={props.station} customAttribution={attribution} style={attributionStyle} />
-                </StaticMap>
-            </DGL>
+                <DeckGLOverlay
+                    getTooltip={useToolTipSelection}
+                    onClick={onClick}
+                    layers={layers} //
+                    interleaved={true}
+                />
+                {router.query?.airspace == '1' ? (
+                    <>
+                        <Source id="airspace" type="raster" tiles={['https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=760e6a3ccde9c9f277f3de723169934b']} maxzoom={14} tileSize={256} />
+                        <Layer {...airspaceLayer} minzoom={0} maxzoom={14} />
+                    </>
+                ) : null}
+                <AttributionControl key={props.station} customAttribution={attribution} style={attributionStyle} />
+                <ScaleControl position="bottom-left" />
+                <NavigationControl showCompass showZoom position="bottom-left" />
+            </Map>
             {loadingLayer}
-        </div>
+        </>
     );
 }
-
 //
 // Produce the array of colours for the display
 function progression(f, t, offset) {
