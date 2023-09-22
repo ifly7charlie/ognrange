@@ -3,19 +3,7 @@
 // as they are stored in ram and also ON DISK
 //
 
-import {Utf8, Uint8, Uint16, Uint32, makeBuilder, Table, makeTable, RecordBatchWriter, Uint8Builder, Utf8Builder, Uint16Builder, Uint32Builder} from 'apache-arrow/Arrow.node';
-import {TypedArray} from 'apache-arrow/interfaces';
-
-import {createWriteStream} from 'fs';
-import {PassThrough} from 'stream';
-
-import {CoverageHeader} from './coverageheader';
-
-import {createGzip} from 'node:zlib';
-
 import {sortBy as _sortby} from 'lodash';
-
-import {UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
 import {StationId, superThrow} from './types';
 
@@ -121,23 +109,6 @@ const allBufferVersions: Record<bufferTypes, nestedVersionTypes | primaryVersion
     2: globalNestedStation
 };
 
-interface ArrowType {
-    readonly [index: string]: Uint8Builder | Uint16Builder | Uint32Builder | Utf8Builder | undefined;
-    h3lo: Uint32Builder;
-    h3hi: Uint32Builder;
-    minAgl: Uint16Builder;
-    minAlt: Uint16Builder;
-    minAltSig: Uint8Builder;
-    maxSig: Uint8Builder;
-    avgSig: Uint8Builder;
-    avgCrc: Uint8Builder;
-    count: Uint32Builder;
-    avgGap: Uint8Builder;
-    stations?: Utf8Builder;
-    expectedGap?: Uint8Builder;
-    numStations?: Uint8Builder;
-}
-
 class ExtensionAllocationOptions {
     type: bufferTypes;
     length: number;
@@ -146,6 +117,22 @@ class ExtensionAllocationOptions {
         this.type = type;
         this.length = length;
     }
+}
+
+export interface ArrowType {
+    h3lo: number;
+    h3hi: number;
+    minAgl: number;
+    minAlt: number;
+    minAltSig: number;
+    maxSig: number;
+    avgSig: number;
+    avgCrc: number;
+    count: number;
+    avgGap: number;
+    stations?: string;
+    expectedGap?: number;
+    numStations?: number;
 }
 
 export type CoverageRecordOut = Record<string, number | undefined | CoverageRecordOut[]>;
@@ -301,117 +288,12 @@ export class CoverageRecord {
 
     //
     // Create an arrow that can support specified format
-    static initArrow(type: bufferTypes) {
-        let arrow: ArrowType = {
-            h3lo: makeBuilder({type: new Uint32()}),
-            h3hi: makeBuilder({type: new Uint32()}),
-            minAgl: makeBuilder({type: new Uint16()}),
-            minAlt: makeBuilder({type: new Uint16()}),
-            minAltSig: makeBuilder({type: new Uint8()}),
-            maxSig: makeBuilder({type: new Uint8()}),
-            avgSig: makeBuilder({type: new Uint8()}),
-            avgCrc: makeBuilder({type: new Uint8()}),
-            count: makeBuilder({type: new Uint32()}),
-            avgGap: makeBuilder({type: new Uint8()})
-        };
-        if (type == bufferTypes.global) {
-            arrow.stations = makeBuilder({type: new Utf8()});
-            arrow.expectedGap = makeBuilder({type: new Uint8()});
-            arrow.numStations = makeBuilder({type: new Uint8()});
-        }
-        return arrow;
-    }
 
-    //
-    // Called to convert the in progress buffers to finished vectors ready for streaming
-    static finalizeArrow(arrow: ArrowType, fileName: string) {
-        const output: Record<string, any> = {};
-        for (const k in arrow) {
-            const outputArray = arrow[k]?.finish()?.toVector();
-            if (outputArray) {
-                output[k] = outputArray;
-            }
-        }
-        const outputTable = new Table(output);
-
-        if (UNCOMPRESSED_ARROW_FILES) {
-            const pt = new PassThrough({objectMode: true});
-            pt.pipe(RecordBatchWriter.throughNode()).pipe(createWriteStream(fileName));
-            pt.write(outputTable);
-            pt.end();
-        }
-
-        {
-            const pt = new PassThrough({objectMode: true});
-            pt.pipe(RecordBatchWriter.throughNode())
-                .pipe(createGzip())
-                .pipe(createWriteStream(fileName + '.gz'));
-            pt.write(outputTable);
-            pt.end();
-        }
-    }
-
-    //
-    // Add ourselves to an arrow builder
-    // takes hex (without 0x) for the h3 and adds it to the cell
-    // index. The assumption is that each row corresponds to a h3
-    // but the row in itself actually doesn't need to track this directly
-    // (because the key pointing to the row does)
-    // we need to emit it for the browser so it can render data in the
-    // correct place.
-    appendToArrow(h3: CoverageHeader, arrow: ArrowType) {
+    arrowFormat(h3splitlong?: [number, number]): ArrowType {
         const count = this._u32[this._sh.u32oCount];
-        const sl = h3.h3splitlong;
-        arrow.h3lo.append(sl[0]);
-        arrow.h3hi.append(sl[1]);
-        arrow.minAgl.append(this._u16[this._sh.u16oMinAltAgl]);
-        arrow.minAlt.append(this._u16[this._sh.u16oMinAlt]);
-        arrow.minAltSig.append(this._u8[this._sh.u8oMinAltMaxSig]);
-        arrow.maxSig.append(this._u8[this._sh.u8oMaxSig]);
-        arrow.avgSig.append((this._u32[this._sh.u32oSumSig] / count) * 4);
-        arrow.avgCrc.append((this._u32[this._sh.u32oSumCrc] / count) * 10);
-        arrow.avgGap.append((this._u32[this._sh.u32oSumGap] / count) * 4);
-        arrow.count.append(count);
 
-        if (this._ish) {
-            let i = this._u8[(this._sh as typeof globalHeader).u8oHead],
-                sid = 99999;
-            let o = undefined;
-            let ns = 0;
+        let extra: any = {};
 
-            // Iterate through the list, note we have mapped
-            while (i != 0 && sid != 0) {
-                // Calculate bytes from start for this item
-                const startOffset = this._calcOffset(i);
-                const o8 = startOffset,
-                    o16 = startOffset / sU16,
-                    o32 = startOffset / sU32;
-
-                // Get sid to add to list
-                sid = this._u16[o16 + this._ish.u16oStationId];
-                let scount = this._u32[o32 + this._ish.u32oCount];
-                let percentage = Math.trunc((10 * scount) / count);
-
-                // emit id base16 plus percentage (percentage will only be one digit
-                // at the end 0-A (0%-100%) - only the first 30 stations
-                if (ns < 30) {
-                    o = (o ? o + ',' : '') + ((sid << 4) | (percentage & 0x0f)).toString(36);
-                }
-
-                i = this._u8[o8 + this._ish.u8oNext];
-                ns++;
-            }
-            arrow.stations?.append(o || '');
-            arrow.expectedGap?.append(((this._u32[this._sh.u32oSumGap] / count) * 4) / ns);
-            arrow.numStations?.append(Math.min(ns, 255));
-        }
-    }
-    arrowFormat() {
-        //h3: CoverageHeader) {
-        const count = this._u32[this._sh.u32oCount];
-        //        const sl = h3.h3splitlong;
-
-        let extra = {};
         if (this._ish) {
             let i = this._u8[(this._sh as typeof globalHeader).u8oHead],
                 sid = 99999;
@@ -447,9 +329,15 @@ export class CoverageRecord {
             };
         }
 
+        const h3fields = h3splitlong
+            ? {
+                  h3lo: h3splitlong[0],
+                  h3hi: h3splitlong[1]
+              }
+            : {};
+
         return {
-            //            h3lo: sl[0], //
-            //            h3hi: sl[1],
+            ...h3fields,
             minAgl: this._u16[this._sh.u16oMinAltAgl],
             minAlt: this._u16[this._sh.u16oMinAlt],
             minAltSig: this._u8[this._sh.u8oMinAltMaxSig],

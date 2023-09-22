@@ -39,6 +39,7 @@ export interface RollupStats {
         recordsRemoved: number;
         databases: number;
         skippedStations: number;
+        arrowRecords: number;
     };
 }
 //
@@ -130,7 +131,8 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
             retiredBuckets: 0,
             recordsRemoved: 0,
             databases: 0,
-            skippedStations: 0
+            skippedStations: 0,
+            arrowRecords: 0
             //            accumulators: processAccumulators,
             //            current: CoverageHeader.getAccumulatorMeta(...current).accumulator
         }
@@ -147,7 +149,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
             const station = stationMeta.station;
 
             // If there has been no packets since the last output then we don't gain anything by scanning the whole db and processing it
-            if (!retiredAccumulators.length && stationMeta.outputEpoch && !stationMeta.moved && (stationMeta.lastPacket || 0) < (updateCutOff || stationMeta.outputEpoch)) {
+            if (station !== 'global' && !retiredAccumulators.length && stationMeta.outputEpoch && !stationMeta.moved && (stationMeta.lastPacket || 0) < (updateCutOff || stationMeta.outputEpoch)) {
                 rollupStats.last!.skippedStations++;
                 return;
             }
@@ -166,6 +168,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
                     rollupStats.last!.operations += r.operations;
                     rollupStats.last!.retiredBuckets += r.retiredBuckets;
                     rollupStats.last!.recordsRemoved += r.recordsRemoved;
+                    rollupStats.last!.arrowRecords += r.arrowRecords;
                     rollupStats.last!.databases++;
                 }
             }
@@ -207,6 +210,7 @@ export async function rollupStartupAll() {
         datamerged: 0,
         datachanged: 0,
         databases: 0,
+        arrowRecords: 0,
         elapsed: 0
     };
 
@@ -226,6 +230,7 @@ export async function rollupStartupAll() {
                 startupStats.datachanged += r.datachanged ? 1 : 0;
                 startupStats.datamerged += r.datamerged ? 1 : 0;
                 startupStats.datapurged += r.datapurged ? 1 : 0;
+                startupStats.arrowRecords += r.arrowRecords;
                 startupStats.databases++;
             }
         },
