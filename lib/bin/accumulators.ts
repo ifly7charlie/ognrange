@@ -91,9 +91,8 @@ export function whatAccumulators(now: Date): Accumulators {
     };
 }
 
-export function initialiseAccumulators() {
-    accumulators = whatAccumulators(new Date());
-    console.log(accumulators);
+export function initialiseAccumulators(): Accumulators {
+    return (accumulators = whatAccumulators(new Date()));
 }
 
 export function describeAccumulators(a: Accumulators): [string, string] {
