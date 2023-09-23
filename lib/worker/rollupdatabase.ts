@@ -2,79 +2,38 @@ import {CoverageRecord, bufferTypes} from '../bin/coveragerecord';
 import {CoverageHeader} from '../bin/coverageheader';
 import {CoverageRecordWriter} from '../bin/coveragerecordwriter';
 
-import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
+//import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
+
+import {sortBy as _sortBy, uniq as _uniq} from 'lodash';
 
 import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync, renameSync} from 'fs';
 
-import {getDbThrow, DB, BatchOperation, closeAllStationDbs} from './stationcache';
+import {DB, BatchOperation} from './stationcache';
 
 import {Epoch, EpochMS, StationName, StationId, H3LockKey} from '../bin/types';
 
 import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
-import {Worker, parentPort, isMainThread, SHARE_ENV} from 'node:worker_threads';
-
 import {Accumulators, AccumulatorTypeString, describeAccumulators} from '../bin/accumulators';
 import {StationDetails} from '../bin/stationstatus';
 
-import {backupDatabase as backupDatabaseInternal} from './backupdatabase';
-import {writeH3ToDB, flushH3DbOps} from './h3storage';
-
 import {saveAccumulatorMetadata} from './rollupmetadata';
 
-interface RollupWorkerResult {}
+import {RollupWorkerResult} from './rollupworker';
 
-type RollupWorkerCommands =
-    | {
-          action: 'backup';
-          station: StationName;
-          now: EpochMS;
-          accumulators: Accumulators;
-      }
-    | {
-          action: 'flushPending';
-          now: EpochMS;
-          accumulators: Accumulators;
-      }
-    | {
-          action: 'abortstartup';
-      }
-    | {
-          action: 'shutdown';
-      }
-    | {
-          action: 'purge';
-          station: StationName;
-      }
-    | {
-          station: 'all';
-          action: 'abortstartup';
-          now: EpochMS;
-      }
-    | {
-          action: 'rollup';
-          station: StationName;
-          now: EpochMS;
-          commonArgs: RollupDatabaseArgs;
-      }
-    | {
-          action: 'startup';
-          station: StationName;
-          now: EpochMS;
-          accumulators: Accumulators;
-          stationMeta?: StationDetails;
-      };
+export type RollupDatabaseCommand = {
+    action: 'rollup';
+    station: StationName;
+    now: EpochMS;
+    commonArgs: RollupDatabaseArgs;
+};
 
-interface RollupResult extends RollupWorkerResult {
+export interface RollupResult extends RollupWorkerResult {
     elapsed: number;
     operations: number;
     recordsRemoved: number;
     retiredBuckets: number;
     arrowRecords: number;
-}
-
-interface RollupFlushResult extends RollupWorkerResult {
-    databases: number;
 }
 
 export interface RollupDatabaseArgs {
@@ -88,194 +47,6 @@ export interface RollupDatabaseArgs {
     retiredAccumulators?: AccumulatorTypeString[]; // if we are rotating then this should be set
 }
 
-//
-// Record of all the outstanding transactions
-const promises: Record<string, {resolve: Function}> = {};
-
-// So we can wait for all of them
-const h3promises: Promise<void>[] = [];
-//
-// Start the worker thread
-const worker = isMainThread ? new Worker(__filename, {env: SHARE_ENV}) : null;
-
-// Update the disk version of the H3 by transferring the buffer record to
-// the worker thread, the buffer is NO LONGER VALID
-export async function flushH3(station: StationName, h3lockkey: H3LockKey, buffer: Uint8Array) {
-    if (!worker) {
-        return;
-    }
-    // special post as it needs to transfer the buffer rather than copy it
-    const donePromise = new Promise<void>((resolve) => {
-        promises[h3lockkey + '_flushH3'] = {resolve};
-        worker.postMessage({action: 'flushH3', now: Date.now(), station, h3lockkey, buffer}, [buffer.buffer]);
-    });
-
-    // Keep copy so we can wait for it and also return it so the caller can wait
-    h3promises.push(donePromise);
-    return donePromise;
-}
-
-// Send all the recently flushed operations to the disk, called after h3cache flush is done and
-// before a rollup can start
-export async function flushPendingH3s(accumulators: Accumulators): Promise<RollupFlushResult> {
-    if (!worker) {
-        return {databases: 0};
-    }
-    // Make sure all the h3promises are settled, then reset that - we don't
-    // care what happens just want to make sure we don't flush too early
-    await Promise.allSettled(h3promises);
-    h3promises.length = 0;
-
-    return postMessage({action: 'flushPending', now: Date.now() as EpochMS, accumulators}) as Promise<RollupFlushResult>;
-}
-
-export async function shutdownRollupWorker() {
-    // Do the sync in the worker thread
-    return postMessage({action: 'shutdown'});
-}
-
-export async function rollupStartup(station: StationName, accumulators: Accumulators, stationMeta?: StationDetails): Promise<any> {
-    // Do the sync in the worker thread
-    return postMessage({station, action: 'startup', now: Date.now() as EpochMS, accumulators, stationMeta});
-}
-
-export async function rollupAbortStartup() {
-    return postMessage({station: 'all', action: 'abortstartup', now: Date.now() as EpochMS});
-}
-export async function rollupDatabase(station: StationName, commonArgs: RollupDatabaseArgs): Promise<RollupResult | void> {
-    // Safety check
-    if (h3promises.length) {
-        console.error(`rollupDatabase ${station} requested but h3s pending to disk`);
-        throw new Error('sequence error - pendingH3s not flushed before rollup');
-    }
-    return postMessage({station, action: 'rollup', commonArgs, now: Date.now() as EpochMS});
-}
-
-export async function purgeDatabase(station: StationName): Promise<any> {
-    if (station === 'global') {
-        throw new Error('attempt to purge global');
-    }
-
-    return postMessage({station, action: 'purge'});
-}
-
-export async function backupDatabase(station: StationName, accumulators: Accumulators): Promise<{rows: number; elapsed: EpochMS}> {
-    if (!worker) {
-        return {rows: 0, elapsed: 0 as EpochMS};
-    }
-    // Do the sync in the worker thread
-    return postMessage({station, action: 'backup', now: Date.now() as EpochMS, accumulators});
-}
-
-export function dumpRollupWorkerStatus() {
-    if (!worker || !Object.keys(promises).length) {
-        return;
-    }
-    console.log('worker processing:', Object.keys(promises).join(','));
-}
-
-// block startup from continuing - variable in worker thread only
-let abortStartup = false;
-
-let h3dbOps = new Map<StationName, BatchOperation[]>();
-
-//
-// Inbound in the thread Dispatch to the correct place
-if (!isMainThread) {
-    parentPort!.on('message', async (task) => {
-        let out: any = {success: false};
-        try {
-            switch (task.action) {
-                case 'flushH3':
-                    await writeH3ToDB(task.station, task.h3lockkey, task.buffer);
-                    parentPort!.postMessage({action: task.action, h3lockkey: task.h3lockkey, success: true});
-                    return;
-                case 'flushPending':
-                    out = await flushH3DbOps(task.accumulators);
-                    parentPort!.postMessage({action: task.action, ...out, success: true});
-                    return;
-                case 'shutdown':
-                    await closeAllStationDbs();
-                    parentPort!.postMessage({action: task.action, ...out, station: task.station, success: true});
-                    return;
-            }
-
-            let db: DB | undefined = undefined;
-            try {
-                db = await getDbThrow(task.station);
-                switch (task.action) {
-                    case 'rollup':
-                        out = await rollupDatabaseInternal(db, task.commonArgs);
-                        break;
-                    case 'abortstartup':
-                        out = {success: true};
-                        abortStartup = true;
-                        break;
-                    case 'startup':
-                        out = !abortStartup ? await rollupDatabaseStartup(db, task) : {success: false};
-                        if (out.success && !abortStartup) {
-                            await db.compactRange('0', 'Z');
-                            out.datacompacted = true;
-                        }
-                        break;
-                    case 'purge':
-                        await purgeDatabaseInternal(db, 'purge');
-                        break;
-                    case 'backup':
-                        out = await backupDatabaseInternal(db, task);
-                        break;
-                }
-                await db!.close();
-            } catch (e) {
-                console.error(e, '->', JSON.stringify(task, null, 4));
-            }
-            parentPort!.postMessage({action: task.action, station: task.station, ...out});
-        } catch (e) {
-            console.error(task, e);
-        }
-    });
-}
-
-//
-// Response from the thread will finish the promise created when the message is called
-// and pass the response values to the
-else {
-    worker!.on('message', (data) => {
-        const promiseKey = (data.h3lockkey ?? data.station ?? 'all') + '_' + data.action;
-        const resolver = promises[promiseKey]?.resolve;
-        delete promises[promiseKey];
-        if (resolver) {
-            resolver(data);
-        } else {
-            console.error(`missing resolve function for ${promiseKey}/`);
-        }
-    });
-}
-
-async function postMessage(command: RollupWorkerCommands): Promise<any> {
-    if (!worker) {
-        return;
-    }
-    return new Promise<RollupWorkerResult>((resolve) => {
-        promises[`${'station' in command && command.station ? command.station : 'all'}_${command.action}`] = {resolve};
-        worker.postMessage(command);
-    });
-}
-
-// Clear data from the db
-async function purge(db: DB, hr: CoverageHeader) {
-    // See if there are actually data entries
-    //    const first100KeyCount = (await db.keys({...CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, false), limit: 50}).all()).length;
-
-    // Now clear and compact
-    await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
-
-    // And provide a status update
-    //    if (first100KeyCount) {
-    //        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.dbKey()} purged [${first100KeyCount > 49 ? '>49' : first100KeyCount}] entries successfully`);
-    //    }
-}
-
 import type {DBMetaRecord} from './rollupmetadata';
 
 export type AccumulatorsExtended = {
@@ -285,162 +56,15 @@ export type AccumulatorsExtended = {
 };
 
 //
-// We need to make sure we know what rollups the DB has, and process pending rollup data
-// when the process starts. If we don't do this all sorts of weird may happen
-// (only used for global but could theoretically be used everywhere)
-//
-// This relies on the fact that the 'current' accumulator is deleted when it is rolled
-// up, so any 'current' accumulators left in the DB are data that has been flushed to
-// disk but not rolled up.
-//
-// There shouldn't be a regular situation where this is more than one accumulator but it is
-// possible for example due to startup failures, or perhaps disk space issues
-//
-// LevelDB is transactional and the rollup should be treated as one transaction
-//
-export async function rollupDatabaseStartup(
-    db: DB, //
-    {now, accumulators: expectedAccumulators, stationMeta}: {now: number; accumulators: Accumulators; stationMeta: any}
-) {
-    const accumulatorsToPurge: Record<string, string> = {}; // purge no other action
-    const allAccumulators: Record<string, CoverageHeader> = {};
-    const hangingRollups: Record<string, Accumulators & AccumulatorsExtended> = {};
-    let datapurged = false;
-    let datamerged = false;
-
-    // First thing we need to do is find all the accumulators in the database
-    let iterator = db.iterator();
-    let iteratorPromise = iterator.next(),
-        row = null;
-
-    while ((row = await iteratorPromise)) {
-        const [key, value] = row;
-        let hr = new CoverageHeader(key);
-
-        // 80000000 is the h3 cell code we use to
-        // store the metadata for our iterator
-        if (!hr.isMeta) {
-            accumulatorsToPurge[hr.dbKey()] = hr.accumulator;
-            console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
-            iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
-            iteratorPromise = iterator.next();
-            continue;
-        }
-
-        const unrefinedMeta = JSON.parse(String(value));
-        const meta: DBMetaRecord = unrefinedMeta as DBMetaRecord;
-
-        // accumulator TYPE not configured on this machine - purge with no other action
-        if (
-            !unrefinedMeta || //
-            !(hr.typeName in expectedAccumulators) ||
-            !('accumulators' in meta) ||
-            (hr.typeName !== 'current' && !meta?.accumulators?.[hr.typeName]?.file)
-        ) {
-            console.log(`${db.ognStationName}: invalid accumulator or missing metadata for ${hr.dbKey()}, ${String(value)}, file:${meta?.accumulators?.[hr.typeName]?.file}`);
-            accumulatorsToPurge[hr.dbKey()] = meta?.accumulators?.[hr.typeName]?.file ?? hr.accumulator;
-        } else {
-            // currents are the only ones that can start a rollup
-            if (hr.typeName === 'current') {
-                const currentBucket = meta.currentAccumulator ?? meta.accumulators.current.bucket;
-                hangingRollups[currentBucket] = meta.accumulators;
-            }
-            // Otherwise it's a target and we need to capture them so we know if they are valid
-            else {
-                //
-                allAccumulators[meta?.accumulators?.[hr.typeName]?.file] = hr;
-            }
-        }
-
-        // Done with this one lets skip forward
-        iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
-        iteratorPromise = iterator.next();
-    }
-
-    let arrowRecords = 0;
-
-    // This is more interesting, this is a current that could be rolled into one of the other
-    // existing accumulators... Current's are a "buffering" of the points until they get
-    // merged hence why we can roll them up. this will also cause output files to be generated
-    for (const key in hangingRollups) {
-        const hangingAccumulators = hangingRollups[key];
-
-        // If we have a current then we roll it up regardless of the rest
-        const missingBuckets = Object.keys(hangingAccumulators) //
-            .filter((a) => a !== 'current')
-            .filter((a) => !(hangingAccumulators[a as AccumulatorTypeString].file in allAccumulators)) as AccumulatorTypeString[];
-
-        const [currentStart, destinationFiles] = describeAccumulators(hangingAccumulators);
-
-        // As long as we have a single bucket then we can proceed
-        if (missingBuckets.length < 3) {
-            Object.values(hangingAccumulators).forEach((v) => delete v.found);
-            const rollupResult = await rollupDatabaseInternal(db, {
-                //
-                accumulators: hangingAccumulators,
-                now,
-                needValidPurge: false,
-                stationMeta,
-                historical: true,
-                wasMissing: missingBuckets
-            });
-            arrowRecords += rollupResult.arrowRecords;
-            if (hangingAccumulators.current.bucket !== expectedAccumulators.current.bucket) {
-                console.log(
-                    `${db.ognStationName}: rolled up hanging current accumulator ${key}(${currentStart}) into ${destinationFiles}: ${JSON.stringify(rollupResult)}` + //
-                        (missingBuckets.length ? `${missingBuckets.join(',')} were missing` : '')
-                );
-            }
-            datamerged = true;
-        } else {
-            console.log(`${db.ognStationName}: DROPPING hanging current accumulator ${key}(${currentStart}) for ${destinationFiles}: ${missingBuckets.join(',')} were missing`);
-        }
-    }
-
-    const purgePromises: Promise<void>[] = [
-        // And we then need to purge anything that is no longer current (ie isn't
-        // in expected)
-        ...Object.values(allAccumulators)
-            .filter((ch) => expectedAccumulators[ch.typeName].bucket != ch.bucket)
-            .map((hr) => purge(db, hr)),
-
-        // These are old accumulators we purge them because we aren't sure what else can be done
-        ...Object.keys(accumulatorsToPurge).map((key) => {
-            datapurged = true;
-            return purge(db, new CoverageHeader(key));
-        })
-    ];
-    const purgedAccumulators =
-        Object.values(accumulatorsToPurge).join(',') +
-        '&' +
-        Object.values(allAccumulators)
-            .filter((ch) => expectedAccumulators[ch.typeName].bucket != ch.bucket)
-            .map((ch: CoverageHeader) => ch.accumulator)
-            .join(',');
-
-    // Wait for it to finish
-    await Promise.allSettled(purgePromises);
-
-    if (datapurged) {
-        console.log(`${db.ognStationName} purged ${purgePromises.length}: ${purgedAccumulators}`);
-    }
-
-    return {success: true, datapurged, datamerged, datachanged: datamerged || datapurged, purged: purgePromises.length, arrowRecords};
-}
-
-async function purgeDatabaseInternal(db: DB, reason: string) {
-    // empty the database... we could delete it but this is very simple and should be good enough
-    console.log(`clearing database for ${db.ognStationName} because ${reason}`);
-    await db.clear();
-    return;
-}
-
 //
 // Rotate and Rollup all the data we have
 // we do this by iterating through each database looking for things in default
 // aggregator (which is always just the raw h3id)
 //
-async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators, needValidPurge, stationMeta, historical, wasMissing, retiredAccumulators}: RollupDatabaseArgs): Promise<RollupResult> {
+export async function rollupDatabaseInternal(
+    db: DB, //
+    {validStations, now, accumulators, needValidPurge, stationMeta, historical, wasMissing, retiredAccumulators}: RollupDatabaseArgs
+): Promise<RollupResult> {
     //
     //
     const nowEpoch = Math.floor(now / 1000) as Epoch;
@@ -825,6 +449,150 @@ async function rollupDatabaseInternal(db: DB, {validStations, now, accumulators,
     return {elapsed: Date.now() - startTime, operations: dbOps.length, recordsRemoved, arrowRecords, ...retired};
 }
 
+//
+// We need to make sure we know what rollups the DB has, and process pending rollup data
+// when the process starts. If we don't do this all sorts of weird may happen
+// (only used for global but could theoretically be used everywhere)
+//
+// This relies on the fact that the 'current' accumulator is deleted when it is rolled
+// up, so any 'current' accumulators left in the DB are data that has been flushed to
+// disk but not rolled up.
+//
+// There shouldn't be a regular situation where this is more than one accumulator but it is
+// possible for example due to startup failures, or perhaps disk space issues
+//
+// LevelDB is transactional and the rollup should be treated as one transaction
+//
+export async function rollupDatabaseStartup(
+    db: DB, //
+    {now, accumulators: expectedAccumulators, stationMeta}: {now: number; accumulators: Accumulators; stationMeta: any}
+) {
+    const accumulatorsToPurge: Record<string, string> = {}; // purge no other action
+    const allAccumulators: Record<string, CoverageHeader> = {};
+    const hangingRollups: Record<string, Accumulators & AccumulatorsExtended> = {};
+    let datapurged = false;
+    let datamerged = false;
+
+    // First thing we need to do is find all the accumulators in the database
+    let iterator = db.iterator();
+    let iteratorPromise = iterator.next(),
+        row = null;
+
+    while ((row = await iteratorPromise)) {
+        const [key, value] = row;
+        let hr = new CoverageHeader(key);
+
+        // 80000000 is the h3 cell code we use to
+        // store the metadata for our iterator
+        if (!hr.isMeta) {
+            accumulatorsToPurge[hr.dbKey()] = hr.accumulator;
+            console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
+            iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+            iteratorPromise = iterator.next();
+            continue;
+        }
+
+        const unrefinedMeta = JSON.parse(String(value));
+        const meta: DBMetaRecord = unrefinedMeta as DBMetaRecord;
+
+        // accumulator TYPE not configured on this machine - purge with no other action
+        if (
+            !unrefinedMeta || //
+            !(hr.typeName in expectedAccumulators) ||
+            !('accumulators' in meta) ||
+            (hr.typeName !== 'current' && !meta?.accumulators?.[hr.typeName]?.file)
+        ) {
+            console.log(`${db.ognStationName}: invalid accumulator or missing metadata for ${hr.dbKey()}, ${String(value)}, file:${meta?.accumulators?.[hr.typeName]?.file}`);
+            accumulatorsToPurge[hr.dbKey()] = meta?.accumulators?.[hr.typeName]?.file ?? hr.accumulator;
+        } else {
+            // currents are the only ones that can start a rollup
+            if (hr.typeName === 'current') {
+                const currentBucket = meta.currentAccumulator ?? meta.accumulators.current.bucket;
+                hangingRollups[currentBucket] = meta.accumulators;
+            }
+            // Otherwise it's a target and we need to capture them so we know if they are valid
+            else {
+                //
+                allAccumulators[meta?.accumulators?.[hr.typeName]?.file] = hr;
+            }
+        }
+
+        // Done with this one lets skip forward
+        iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+        iteratorPromise = iterator.next();
+    }
+
+    let arrowRecords = 0;
+
+    // This is more interesting, this is a current that could be rolled into one of the other
+    // existing accumulators... Current's are a "buffering" of the points until they get
+    // merged hence why we can roll them up. this will also cause output files to be generated
+    for (const key in hangingRollups) {
+        const hangingAccumulators = hangingRollups[key];
+
+        // If we have a current then we roll it up regardless of the rest
+        const missingBuckets = Object.keys(hangingAccumulators) //
+            .filter((a) => a !== 'current')
+            .filter((a) => !(hangingAccumulators[a as AccumulatorTypeString].file in allAccumulators)) as AccumulatorTypeString[];
+
+        const [currentStart, destinationFiles] = describeAccumulators(hangingAccumulators);
+
+        // As long as we have a single bucket then we can proceed
+        if (missingBuckets.length < 3) {
+            Object.values(hangingAccumulators).forEach((v) => delete v.found);
+            const rollupResult = await rollupDatabaseInternal(db, {
+                //
+                accumulators: hangingAccumulators,
+                now,
+                needValidPurge: false,
+                stationMeta,
+                historical: true,
+                wasMissing: missingBuckets
+            });
+            arrowRecords += rollupResult.arrowRecords;
+            if (hangingAccumulators.current.bucket !== expectedAccumulators.current.bucket) {
+                console.log(
+                    `${db.ognStationName}: rolled up hanging current accumulator ${key}(${currentStart}) into ${destinationFiles}: ${JSON.stringify(rollupResult)}` + //
+                        (missingBuckets.length ? `${missingBuckets.join(',')} were missing` : '')
+                );
+            }
+            datamerged = true;
+        } else {
+            console.log(`${db.ognStationName}: DROPPING hanging current accumulator ${key}(${currentStart}) for ${destinationFiles}: ${missingBuckets.join(',')} were missing`);
+        }
+    }
+
+    const purgePromises: Promise<void>[] = [
+        // And we then need to purge anything that is no longer current (ie isn't
+        // in expected)
+        ...Object.values(allAccumulators)
+            .filter((ch) => expectedAccumulators[ch.typeName].bucket != ch.bucket)
+            .map((hr) => purge(db, hr)),
+
+        // These are old accumulators we purge them because we aren't sure what else can be done
+        ...Object.keys(accumulatorsToPurge).map((key) => {
+            datapurged = true;
+            return purge(db, new CoverageHeader(key));
+        })
+    ];
+    const purgedAccumulators =
+        Object.values(accumulatorsToPurge).join(',') +
+        '&' +
+        Object.values(allAccumulators)
+            .filter((ch) => expectedAccumulators[ch.typeName].bucket != ch.bucket)
+            .map((ch: CoverageHeader) => ch.accumulator)
+            .join(',');
+
+    // Wait for it to finish
+    await Promise.allSettled(purgePromises);
+
+    if (datapurged) {
+        console.log(`${db.ognStationName} purged ${purgePromises.length}: ${purgedAccumulators}`);
+    }
+
+    return {success: true, datapurged, datamerged, datachanged: datamerged || datapurged, purged: purgePromises.length, arrowRecords};
+}
+
 function symlink(src: string, dest: string) {
     try {
         unlinkSync(dest);
@@ -836,9 +604,16 @@ function symlink(src: string, dest: string) {
     }
 }
 
-// Helpers for testing
-export const exportedForTest = {
-    rollupDatabaseInternal,
-    rollupDatabaseStartup,
-    purgeDatabaseInternal
-};
+// Clear data from the db
+async function purge(db: DB, hr: CoverageHeader) {
+    // See if there are actually data entries
+    //    const first100KeyCount = (await db.keys({...CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, false), limit: 50}).all()).length;
+
+    // Now clear and compact
+    await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
+
+    // And provide a status update
+    //    if (first100KeyCount) {
+    //        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.dbKey()} purged [${first100KeyCount > 49 ? '>49' : first100KeyCount}] entries successfully`);
+    //    }
+}
