@@ -1,27 +1,27 @@
 import {ClassicLevel} from 'classic-level';
 
-import {ignoreStation} from './ignorestation';
+import {ignoreStation} from '../lib/bin/ignorestation';
 
-import {CoverageRecord, CoverageRecordOut} from './coveragerecord';
-import {CoverageHeader} from './coverageheader';
+import {CoverageRecord, CoverageRecordOut} from '../lib/bin/coveragerecord';
+import {CoverageHeader} from '../lib/bin/coverageheader';
 
-import {StationId, StationName} from './types';
+import {StationId, StationName} from '../lib/bin/types';
 import {H3Index} from 'h3-js';
 
 // h3 cache functions
-import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from './h3cache';
+import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from '../lib/bin/h3cache';
 
-jest.mock('./rollup');
-jest.mock('./rollupworker', () => {});
+jest.mock('../lib/bin/rollup');
+jest.mock('../lib/bin/rollupworker', () => {});
 
-import {getAccumulator, getCurrentAccumulators, CurrentAccumulator, AccumulatorTypeString, initialiseAccumulators} from './accumulators';
-import {getStationDetails} from './stationstatus';
+import {getAccumulator, getCurrentAccumulators, Accumulators, AccumulatorBucket, AccumulatorTypeString, initialiseAccumulators} from '../lib/bin/accumulators';
+import {getStationDetails} from '../lib/bin/stationstatus';
 
-import {getDb} from './stationcache';
+import {getDb} from '../lib/bin/stationcache';
 
 import {filter as _filter, reduce as _reduce} from 'lodash';
 
-import {DB_PATH, OUTPUT_PATH} from '../common/config';
+import {DB_PATH, OUTPUT_PATH} from '../lib/common/config';
 
 let log = process.env.TEST_DEBUG ? console.log : () => 0;
 
@@ -33,8 +33,8 @@ function set({
     crc,
     signal,
     gap,
-    stationName,
-    stationId,
+    packetStationId,
+    dbStationId,
     accumulator
 }: //
 {
@@ -44,13 +44,12 @@ function set({
     signal: number;
     gap: number;
     crc: number;
-    stationName: StationName;
-    stationId: StationId;
-    accumulator?: CurrentAccumulator;
-}): Promise<void> {
+    packetStationId: StationId | number;
+    dbStationId: StationId | number;
+    accumulator?: AccumulatorBucket;
+}): void {
     accumulator ??= getAccumulator();
-    const h3k = new CoverageHeader(stationId, ...accumulator, h3);
-    return updateCachedH3(stationName, h3k, altitude, agl, crc, signal, gap, stationId);
+    return updateCachedH3(h3, altitude, agl, crc, signal, gap,packetStationId as StationId, dbStationId as StationId);
 }
 
 async function get(
@@ -66,13 +65,13 @@ Promise<CoverageRecordOut | any> {
     const h3k = new CoverageHeader(0 as StationId, ...acc, h3);
     console.log('get ', h3k.dbKey());
     try {
-        return new CoverageRecord(await ((await getD) - b(station))!.get(h3k.dbKey())).toObject();
+        return new CoverageRecord(await ((await getDb(station))!.get(h3k.dbKey())).toObject();
     } catch (e) {
         return {...e, station, h3k};
     }
 }
 
-const test_a1 = {stationName: 'test-a1' as StationName, stationId: 1 as StationId};
+const test_a1 = {dbstationName: 'test-a1' as StationName, stationId: 1 as StationId};
 const test_a2 = {stationName: 'test-a2' as StationName, stationId: 2 as StationId};
 const test_global = 'global' as StationName;
 
@@ -100,12 +99,12 @@ test('init a', () => {
 
 // Set one row in the database and flush
 test('set', async () => {
-    await set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, ...test_a1});
+    set({h3: '87088619bffffff', altitude: 100, agl: 100, crc: 0, signal: 10, gap: 1, dbStationId: 1, packetStationId: 0 });
     expect(getH3CacheSize()).toBe(1);
 });
 
 test('flushed one', async () => {
-    const flushStats = await flushDirtyH3s({allUnwritten: true});
+    const flushStats = await flushDirtyH3s(getCurrentAccumulators(), true);
     expect(flushStats).toMatchObject({
         written: 1,
         databases: 1,
