@@ -505,20 +505,24 @@ export async function rollupDatabaseStartup(
             console.log(`${db.ognStationName}: invalid accumulator or missing metadata for ${hr.dbKey()}, ${String(value)}, file:${meta?.accumulators?.[hr.typeName]?.file}`);
             accumulatorsToPurge[hr.dbKey()] = meta?.accumulators?.[hr.typeName]?.file ?? hr.accumulator;
         } else {
-            if (!meta.accumulators.current) {
-                meta.accumulators.current = {
-                    bucket: meta.currentAccumulator,
-                    file: ''
-                };
-            }
-            // currents are the only ones that can start a rollup
+            // currents are the only ones that can start a rollup, and regardless of the metadata
+            // we know exactly what bucket they are
             if (hr.typeName === 'current') {
-                const currentBucket = meta.currentAccumulator ?? meta.accumulators.current.bucket;
-                hangingRollups[currentBucket] = meta.accumulators;
+                // We need a current accumulator for the rollup to work
+                // this used to be in a different location or totally absent
+                // so lets reconstruct it - this code can be removed once
+                // all dbs are updated
+                if (!meta.accumulators.current) {
+                    meta.accumulators.current = {
+                        bucket: hr.bucket,
+                        file: ''
+                    };
+                }
+                hangingRollups[hr.bucket] = meta.accumulators;
             }
             // Otherwise it's a target and we need to capture them so we know if they are valid
             else {
-                //
+                // for this we don't need anything more except the filename
                 allAccumulators[meta?.accumulators?.[hr.typeName]?.file] = hr;
             }
         }
