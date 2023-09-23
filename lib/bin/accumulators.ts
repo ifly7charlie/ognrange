@@ -58,7 +58,7 @@ export function getCurrentAccumulators(): undefined | Accumulators {
 /// for several years) or discard the data.
 //
 // this takes effect immediately so all new packets will move to the new accumulator
-// rolling over is maximum of 12 times an hour...
+// rolling over is minimum 12 minutes...
 export function whatAccumulators(now: Date): Accumulators {
     const rolloverperiod = Math.floor((now.getUTCHours() * 60 + now.getUTCMinutes()) / ROLLUP_PERIOD_MINUTES);
     const newAccumulatorBucket = ((now.getUTCDate() & 0x1f) << 7) | (rolloverperiod & 0x7f);
