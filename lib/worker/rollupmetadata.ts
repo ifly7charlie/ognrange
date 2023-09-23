@@ -1,12 +1,12 @@
-import {AccumulatorBucket, CoverageHeader} from './coverageheader';
+import {AccumulatorBucket, CoverageHeader} from '../bin/coverageheader';
 
 import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
 
-import {Epoch, EpochMS} from './types';
+import {Epoch, EpochMS} from '../bin/types';
 
 import {DB} from './stationcache';
 
-import {Accumulators, AccumulatorTypeString} from './accumulators';
+import {Accumulators, AccumulatorTypeString} from '../bin/accumulators';
 
 export interface DBMetaRecord {
     start: Epoch;

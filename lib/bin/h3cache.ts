@@ -7,7 +7,7 @@ import {getStationName} from './stationstatus';
 
 import {H3, H3LockKey, StationId, EpochMS} from './types';
 
-import {flushH3, flushPendingH3s} from './rollupworker';
+import {flushH3, flushPendingH3s} from '../worker/rollupworker';
 
 import {getAccumulator, getCurrentAccumulators} from './accumulators';
 import type {Accumulators} from './accumulators';

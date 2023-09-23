@@ -1,7 +1,7 @@
 //
 import {mapAllCapped} from './mapallcapped';
 
-import {backupDatabase} from './rollupworker';
+import {backupDatabase} from '../worker/rollupworker';
 
 import {EpochMS} from './types';
 

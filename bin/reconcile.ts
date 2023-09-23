@@ -7,9 +7,9 @@ import {tableFromIPC, RecordBatchStreamReader} from 'apache-arrow/Arrow.node';
 import {ClassicLevel} from 'classic-level';
 
 import {CoverageRecord} from '../lib/bin/coveragerecord';
-import {CoverageHeader, AccumulatorTypeString, AccumulatorBucket} from '../lib/bin/coverageheader';
-import {Accumulators, whatAccumulators} from '../lib/bin/accumulators';
-import {saveAccumulatorMetadata} from '../lib/bin/rollupmetadata';
+import {CoverageHeader, AccumulatorTypeString} from '../lib/bin/coverageheader';
+import {whatAccumulators} from '../lib/bin/accumulators';
+import {saveAccumulatorMetadata} from '../lib/worker/rollupmetadata';
 
 import {StationId} from '../lib/bin/types';
 

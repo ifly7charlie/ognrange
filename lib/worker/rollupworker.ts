@@ -1,21 +1,21 @@
-import {CoverageRecord, bufferTypes} from './coveragerecord';
-import {CoverageHeader} from './coverageheader';
-import {CoverageRecordWriter} from './coveragerecordwriter';
+import {CoverageRecord, bufferTypes} from '../bin/coveragerecord';
+import {CoverageHeader} from '../bin/coverageheader';
+import {CoverageRecordWriter} from '../bin/coveragerecordwriter';
 
 import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
 
 import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync, renameSync} from 'fs';
 
-import {getDb, getDbThrow, DB, BatchOperation, closeAllStationDbs} from './stationcache';
+import {getDbThrow, DB, BatchOperation, closeAllStationDbs} from './stationcache';
 
-import {Epoch, EpochMS, StationName, StationId, H3LockKey} from './types';
+import {Epoch, EpochMS, StationName, StationId, H3LockKey} from '../bin/types';
 
 import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
 import {Worker, parentPort, isMainThread, SHARE_ENV} from 'node:worker_threads';
 
-import {Accumulators, AccumulatorTypeString, describeAccumulators} from './accumulators';
-import {StationDetails} from './stationstatus';
+import {Accumulators, AccumulatorTypeString, describeAccumulators} from '../bin/accumulators';
+import {StationDetails} from '../bin/stationstatus';
 
 import {backupDatabase as backupDatabaseInternal} from './backupdatabase';
 

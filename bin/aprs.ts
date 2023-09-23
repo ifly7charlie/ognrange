@@ -80,7 +80,7 @@ import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from '../lib/bin/h3cache'
 
 // Rollup functions
 import {rollupAll, rollupStartupAll, rollupStats} from '../lib/bin/rollup';
-import {rollupAbortStartup, shutdownRollupWorker, dumpRollupWorkerStatus} from '../lib/bin/rollupworker';
+import {rollupAbortStartup, shutdownRollupWorker, dumpRollupWorkerStatus} from '../lib/worker/rollupworker';
 import {getCurrentAccumulators, updateAndProcessAccumulators, initialiseAccumulators} from '../lib/bin/accumulators';
 
 // Get our git version

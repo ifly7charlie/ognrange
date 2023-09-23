@@ -4,15 +4,10 @@ import {ClassicLevel, BatchOperation as ClassicBatchOperation} from 'classic-lev
 // Least Recently Used cache for Station Database connectiosn
 import LRUCache from 'lru-cache';
 
-import AsyncLock from 'async-lock';
-let lock = new AsyncLock();
-
 // Map id to name
-import {StationName, EpochMS} from './types';
+import {StationName, EpochMS} from '../bin/types';
 
 import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from '../common/config';
-
-import {isMainThread} from 'node:worker_threads';
 
 export type BatchOperation = ClassicBatchOperation<DB, string, Uint8Array>;
 

@@ -1,22 +1,20 @@
-import {Utf8, Binary, makeBuilder, makeTable, RecordBatchWriter} from 'apache-arrow/Arrow.node';
-import {TypedArray} from 'apache-arrow/interfaces';
-import {BACKUP_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
+import {BACKUP_PATH} from '../common/config';
 
-import {Epoch, EpochMS} from './types';
+import {Epoch, EpochMS} from '../bin/types';
 
-import {CoverageHeader} from './coverageheader';
+import {CoverageHeader} from '../bin/coverageheader';
 
 import {DB} from './stationcache';
 
-import {mkdirSync} from 'fs';
-import {Accumulators, AccumulatorTypeString} from './accumulators';
+import {Accumulators, AccumulatorTypeString} from '../bin/accumulators';
 
 import {createWriteStream} from 'fs';
-//import {PassThrough} from 'stream';
 import {createGzip} from 'node:zlib';
 
 import {Readable, pipeline} from 'node:stream';
 import {RecordBatch, RecordBatchStreamWriter, Schema, Struct, Field, builderThroughAsyncIterable} from 'apache-arrow';
+import {Utf8, Binary} from 'apache-arrow/Arrow.node';
+
 import {IterableBuilderOptions} from 'apache-arrow/factories';
 
 interface BackupMessageType {

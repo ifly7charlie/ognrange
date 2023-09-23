@@ -7,7 +7,7 @@ import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
 import {Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
 
-import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from './rollupworker';
+import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from '../worker/rollupworker';
 
 import {allStationsDetails, updateStationStatus} from './stationstatus';
 
