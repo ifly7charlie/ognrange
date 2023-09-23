@@ -51,7 +51,7 @@ export function getCurrentAccumulators(): undefined | Accumulators {
 // Same applies to the buckets we roll into, if it's unique then we can probably resume into it and still
 // output a reasonable file. If it was simply 'day of month' then a one mount outage would break everything
 //
-// if you run this after a month gap then welcome back ;) and I'm sorry ;)  [it has to fit in 12bits]
+// if you run this after a month gap then welcome back ;) and I'm sorry ;)  [to fit in 12bits]
 //
 // in this situation if it happens to be identical bucket it will resume into current month
 // otherwise it will try and rollup into the buckets that existed at the time (which are valid
