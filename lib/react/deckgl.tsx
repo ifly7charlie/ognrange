@@ -387,12 +387,6 @@ export function CoverageMap(props: {
         </div>
     ) : null;
 
-    const airspaceLayer = {
-        id: 'airspaceLayer',
-        type: 'raster',
-        source: 'airspace'
-    };
-
     // We keep our saved viewstate up to date in case of re-render
     const onViewStateChange = useCallback(({viewState}) => {
         props.setViewport(viewState);
@@ -420,7 +414,7 @@ export function CoverageMap(props: {
                 {router.query?.airspace == '1' ? (
                     <>
                         <Source id="airspace" type="raster" tiles={['https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=760e6a3ccde9c9f277f3de723169934b']} maxzoom={14} tileSize={256} />
-                        <Layer {...airspaceLayer} minzoom={0} maxzoom={14} />
+                        <Layer type={'raster'} source={'airspace'} minzoom={0} maxzoom={14} />
                     </>
                 ) : null}
                 <AttributionControl key={props.station} customAttribution={attribution} style={attributionStyle} />

@@ -55,6 +55,8 @@ export function Settings(props: {updateUrl: (updates: any) => void}) {
         {label: 'Dark', value: 'mapbox/dark-v10'}
     ];
 
+    const selectedValue = _find(baseMaps, {value: router.query.mapStyle || defaultBaseMap})[0] ?? baseMaps[0];
+
     return !settingsVisible ? (
         <div style={{padding: '10px', position: 'absolute', bottom: '10px', right: '20px'}}>
             <button style={{padding: '5px'}} onClick={toggleSettings}>
@@ -90,12 +92,12 @@ export function Settings(props: {updateUrl: (updates: any) => void}) {
                 </tbody>
             </table>
             <b>Select base map style:</b>
-            <Select options={baseMaps} value={_find(baseMaps, {value: router.query.mapStyle || defaultBaseMap})} onChange={(v) => setSetting('mapStyle', v.value)} />
+            <Select options={baseMaps} value={selectedValue} onChange={(v) => setSetting('mapStyle', v.value)} />
             <br />
-            <Checkbox checked={parseInt(router.query.highlightStations ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
+            <Checkbox checked={parseInt(router.query.highlightStations.toString() ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
                 Show distance circles
             </Checkbox>
-            <Checkbox checked={parseInt(router.query.airspace ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
+            <Checkbox checked={parseInt(router.query.airspace.toString() ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
                 Show airspace
             </Checkbox>
             <hr />

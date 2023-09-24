@@ -55,7 +55,7 @@ const globalVisualisations = [
 ];
 
 // Convert list of files into a select
-const fetcher = (...args) => fetch(...args).then((res) => res.json());
+const fetcher = (arg0: any, arg1: any) => fetch(arg0, arg1).then((res) => res.json());
 const DATA_URL = process.env.NEXT_PUBLIC_DATA_URL || '/data/';
 
 //
@@ -294,7 +294,7 @@ export default function CombinePage(props) {
                     ></CoverageMap>
                 </div>
                 {router.isReady ? (
-                    <Dock isVisible={expanded && process.browser} size={size} style={{border: '10px solid black'}} dimMode="none" position={dockPosition} onVisibleChange={onDockVisibleChange} onSizeChange={onDockResize}>
+                    <Dock isVisible={expanded && process.browser} size={size} dimMode="none" position={dockPosition} onVisibleChange={onDockVisibleChange} onSizeChange={onDockResize}>
                         <div>
                             <span style={{padding: '0px', border: '5px solid white'}}>
                                 <img width="100" height="100" src="http://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />

@@ -10,9 +10,7 @@ import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/c
 
 import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
-import _map from 'lodash.map';
-import _reduce from 'lodash.reduce';
-import _sortBy from 'lodash.sortby';
+import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
 export default async function getH3Details(req, res) {
     // Top level
@@ -63,7 +61,7 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    const result = {};
+    const result: Record<string, Record<string, number>> = {};
 
     // Now we will go through the list of stations and get the stations that could match
     for (const station of globalRecord?.stations?.split(',') || []) {
@@ -75,7 +73,7 @@ export default async function getH3Details(req, res) {
             console.log('station', sid, ' not found!');
         } else {
             await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
-                result[date] = Object.assign(result[date] || {});
+                result[date] ??= {}; //Object.assign(result[date] || {});
                 result[date][stationName] = row.count;
             });
         }
@@ -85,7 +83,7 @@ export default async function getH3Details(req, res) {
     let total = 0;
     const summed = _reduce(
         result,
-        (r, v, k) => {
+        (r, v) => {
             return _reduce(
                 v,
                 (r, v, k) => {
@@ -96,7 +94,7 @@ export default async function getH3Details(req, res) {
                 r
             );
         },
-        {}
+        {} as Record<string, number>
     );
 
     // Sort and find top 5

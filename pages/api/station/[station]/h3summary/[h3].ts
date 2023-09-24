@@ -47,11 +47,11 @@ export default async function getH3Details(req, res) {
 
     console.log(now.toISOString(), ' h3summary', stationName, selectedFile, fileDateMatch, req.query.h3, h3SplitLong);
 
-    const result = {};
+    const result: Record<string, Record<string, number>> = {};
     const sids = {};
 
     await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
-        result[date] = Object.assign(result[date] || {});
+        result[date] ??= {}; //Object.assign(result[date] || {});
         result[date] = _reduce(
             row?.stations?.split(',') || [],
             (acc, x) => {
