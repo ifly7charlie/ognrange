@@ -45,7 +45,8 @@ services:
             aprs:
                 condition: service_healthy
         ports:
-            - 8080:8000
+            - 80:8000
+            - 443:8443
 volumes:
     arrow:
     db:
