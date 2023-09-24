@@ -413,7 +413,7 @@ export function CoverageMap(props: {
                 />
                 {router.query?.airspace == '1' ? (
                     <>
-                        <Source id="airspace" type="raster" tiles={['https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=760e6a3ccde9c9f277f3de723169934b']} maxzoom={14} tileSize={256} />
+                        <Source id="airspace" type="raster" tiles={['https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=${process.env.NEXT_PUBLIC_AIRSPACE_API_KEY}']} maxzoom={14} tileSize={256} />
                         <Layer type={'raster'} source={'airspace'} minzoom={0} maxzoom={14} />
                     </>
                 ) : null}

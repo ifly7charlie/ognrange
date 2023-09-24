@@ -97,9 +97,11 @@ export function Settings(props: {updateUrl: (updates: any) => void}) {
             <Checkbox checked={parseInt(router.query.highlightStations.toString() ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
                 Show distance circles
             </Checkbox>
-            <Checkbox checked={parseInt(router.query.airspace.toString() ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
-                Show airspace
-            </Checkbox>
+            {process.env.NEXT_PUBLIC_AIRSPACE_API_KEY ? (
+                <Checkbox checked={parseInt(router.query.airspace.toString() ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
+                    Show airspace
+                </Checkbox>
+            ) : null}
             <hr />
 
             <button style={{padding: '5px'}} onClick={toggleSettings}>
