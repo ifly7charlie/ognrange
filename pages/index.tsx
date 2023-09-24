@@ -1,4 +1,6 @@
 import {useRouter} from 'next/router';
+import {useSearchParams} from 'next/naviagtion';
+
 import dynamic from 'next/dynamic';
 import Head from 'next/head';
 
