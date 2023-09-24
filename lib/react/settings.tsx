@@ -19,7 +19,7 @@ const Checkbox = ({children, ...props}) => (
     </label>
 );
 
-export function Settings(props: {updateUrl: (updates: any) => void}) {
+export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_PUBLIC_AIRSPACE_API_KEY?: string}}) {
     const router = useRouter();
     const [settingsVisible, setSettingsVisible] = useState(false);
 
@@ -97,7 +97,7 @@ export function Settings(props: {updateUrl: (updates: any) => void}) {
             <Checkbox checked={parseInt(router.query.highlightStations.toString() ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
                 Show distance circles
             </Checkbox>
-            {process.env.NEXT_PUBLIC_AIRSPACE_API_KEY ? (
+            {props.env.NEXT_PUBLIC_AIRSPACE_API_KEY ? (
                 <Checkbox checked={parseInt(router.query.airspace.toString() ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
                     Show airspace
                 </Checkbox>

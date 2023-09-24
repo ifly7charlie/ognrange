@@ -49,7 +49,7 @@ function DeckGLOverlay(
 //
 // Responsible for generating the deckGL layers
 //
-function makeLayers(station, file, setStation, highlightStations, visualisation, map2d, onClick, lockedH3, setProgress, getProgress, colourise, colours) {
+function makeLayers(station, file, setStation, highlightStations, visualisation, map2d, onClick, lockedH3, setProgress, getProgress, colourise, colours, env) {
     const ICON_MAPPING = {
         marker: {x: 0, y: 0, width: 128, height: 128, mask: true}
     };
@@ -132,7 +132,7 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
     // So we can check loading status
     const hexLayer = new H3HexagonLayer({
         id: (station || 'global') + (file || 'year'),
-        data: `${NEXT_PUBLIC_DATA_URL}${station || 'global'}/${station || 'global'}.${file || 'year'}.arrow`,
+        data: `${env.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL}${station || 'global'}/${station || 'global'}.${file || 'year'}.arrow`,
         loadOptions: {
             fetch: (input, init) => {
                 return fetch(input, init).then(progressFetch(setProgress));
@@ -175,7 +175,7 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
         // Stations
         new IconLayer({
             id: 'icon-layer',
-            data: `${NEXT_PUBLIC_DATA_URL}stations.json`,
+            data: `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations.json`,
             loaders: [JSONLoader],
             dataTransform: (d) => {
                 if (d) {
@@ -233,6 +233,7 @@ function getObjectFromIndex(i, layer) {
 
 export function CoverageMap(props: {
     //
+    env: Record<string, string>;
     mapType: number;
     setDetails: (d: any) => void;
     setHighlightStations: (h: any) => void;
@@ -316,7 +317,8 @@ export function CoverageMap(props: {
                 setLoaded,
                 () => isLoaded,
                 colourise,
-                fromColour.toString() + toColour.toString()
+                fromColour.toString() + toColour.toString(),
+                props.env
             ),
         [props.station, props.file, map2d, props.visualisation, props.highlightStations, lockedH3, fromColour, toColour]
     );
@@ -401,7 +403,7 @@ export function CoverageMap(props: {
                 ref={mapRef}
                 initialViewState={{...props.viewport, ...viewOptions}}
                 onMove={onViewStateChange}
-                mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN}
+                mapboxAccessToken={props.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN}
                 reuseMaps={true}
                 attributionControl={false}
             >
@@ -411,9 +413,9 @@ export function CoverageMap(props: {
                     layers={layers} //
                     interleaved={true}
                 />
-                {router.query?.airspace == '1' ? (
+                {router.query?.airspace == '1' && props.env.NEXT_PUBLIC_AIRSPACE_API_KEY ? (
                     <>
-                        <Source id="airspace" type="raster" tiles={['https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=${process.env.NEXT_PUBLIC_AIRSPACE_API_KEY}']} maxzoom={14} tileSize={256} />
+                        <Source id="airspace" type="raster" tiles={['https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=${props.env.NEXT_PUBLIC_AIRSPACE_API_KEY}']} maxzoom={14} tileSize={256} />
                         <Layer type={'raster'} source={'airspace'} minzoom={0} maxzoom={14} />
                     </>
                 ) : null}

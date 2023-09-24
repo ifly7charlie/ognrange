@@ -3,6 +3,7 @@ import {useSearchParams} from 'next/navigation';
 
 import dynamic from 'next/dynamic';
 import Head from 'next/head';
+import type {InferGetServerSidePropsType, GetServerSideProps} from 'next';
 
 import useSWR from 'swr';
 import {useState, useRef, useMemo, useEffect, useCallback} from 'react';
@@ -15,6 +16,9 @@ import {Settings} from '../lib/react/settings';
 import {stationMeta} from '../lib/react/stationMeta';
 import {CoverageDetails} from '../lib/react/CoverageDetails';
 
+import getConfig from 'next/config';
+const {serverRuntimeConfig} = getConfig();
+
 const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mod.CoverageMap), {
     ssr: false,
     loading: () => (
@@ -25,6 +29,8 @@ const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mo
         </div>
     )
 });
+
+//import Dock from 'react-dock';
 
 import {Dock} from 'react-dock';
 
@@ -56,7 +62,6 @@ const globalVisualisations = [
 
 // Convert list of files into a select
 const fetcher = (arg0: any, arg1: any) => fetch(arg0, arg1).then((res) => res.json());
-const DATA_URL = process.env.NEXT_PUBLIC_DATA_URL || '/data/';
 
 //
 // Main page rendering :)
@@ -106,6 +111,7 @@ export default function CombinePage(props) {
 */
 
     // Load the associated index
+    const DATA_URL = props.env.NEXT_PUBLIC_DATA_URL || process.env.NEXT_PUBLIC_DATA_URL || '/data/';
     const {data, error} = useSWR(DATA_URL + (station || 'global') + '/' + (station || 'global') + '.index.json', fetcher);
 
     // Display the right ones to the user
@@ -279,6 +285,7 @@ export default function CombinePage(props) {
             <div>
                 <div style={{width: '100vw', height: '100vh'}}>
                     <CoverageMap //
+                        env={props.env}
                         station={station}
                         file={file}
                         setStation={setStation}
@@ -293,7 +300,7 @@ export default function CombinePage(props) {
                         setDetails={setDetails}
                     ></CoverageMap>
                 </div>
-                {router.isReady ? (
+                {router.isReady && process.browser ? (
                     <Dock isVisible={expanded && process.browser} size={size} dimMode="none" position={dockPosition} onVisibleChange={onDockVisibleChange} onSizeChange={onDockResize}>
                         <div>
                             <span style={{padding: '0px', border: '5px solid white'}}>
@@ -325,10 +332,24 @@ export default function CombinePage(props) {
                                 </>
                             )}
                         </div>
-                        <Settings updateUrl={updateUrl} />
+                        <Settings updateUrl={updateUrl} env={props.env} />
                     </Dock>
                 ) : null}
             </div>
         </>
     );
 }
+
+// Just to force server side rendering
+export const getServerSideProps = (async () => {
+    return {
+        props: {
+            env: {
+                NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN: serverRuntimeConfig.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN,
+                NEXT_PUBLIC_SITEURL: serverRuntimeConfig.NEXT_PUBLIC_SITEURL,
+                NEXT_PUBLIC_DATA_URL: serverRuntimeConfig.NEXT_PUBLIC_DATA_URL,
+                NEXT_PUBLIC_AIRSPACE_API_KEY: serverRuntimeConfig.NEXT_PUBLIC_AIRSPACE_API_KEY
+            }
+        }
+    };
+}) satisfies GetServerSideProps<{env: Record<string, string>}>;
