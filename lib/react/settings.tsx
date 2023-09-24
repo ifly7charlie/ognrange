@@ -29,18 +29,9 @@ export function Settings(props: {updateUrl: (updates: any) => void}) {
 
     //    console.log('render', router.query, settingsVisible);
 
-    function setSetting(name, value) {
+    function setSetting(name: string, value: string) {
         if (router.query[name] != value) {
-            const newObject = {};
-            newObject[name] = value;
-            router.replace(
-                {
-                    pathname: '/',
-                    query: {...router.query, ...newObject}
-                },
-                undefined,
-                {shallow: false}
-            );
+            props.updateUrl({[name]: value});
         }
     }
 

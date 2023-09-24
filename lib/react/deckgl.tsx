@@ -1,4 +1,4 @@
-import React, {useState, useCallback, useMemo, useRef} from 'react';
+import React, {useState, useCallback, useMemo, useRef, useEffect} from 'react';
 import {MapboxOverlay, MapboxOverlayProps} from '@deck.gl/mapbox';
 
 import Map, {Source, Layer, LayerProps, useControl, NavigationControl, ScaleControl} from 'react-map-gl';
@@ -140,14 +140,6 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
         },
         loaders: ArrowLoader,
         dataTransform: (d: any & {count: number[]}) => {
-            console.log('h3lo' in d ? 'new format' : 'old format');
-            // Get the h3ids in the correct format for display
-            /*            const h3s =
-                'h3lo' in d
-                    ? _map(d.h3lo, (p, i) => [p, d.h3hi[i]]) // new file format
-                    : _map(_chunk(d.h3, 2), (p) => [p[0], p[1]]); // old file format
-
-                    // Calculate the maximum number of points in a cell and store as a log2 */
             maxCount = 0;
             for (const v of d.count) {
                 maxCount = Math.max(maxCount, v);
@@ -251,6 +243,7 @@ export function CoverageMap(props: {
     file?: string;
     tooltips: boolean;
     viewport: any;
+    setViewport: Function;
 }) {
     const router = useRouter();
     const [lockedH3, setLockedH3] = useState(null);
@@ -280,6 +273,17 @@ export function CoverageMap(props: {
         [lockedH3]
     );
 
+    // Focus any selected station
+    useEffect(() => {
+        if (stationMeta) {
+            const meta = _find(stationMeta, {station: props.station});
+            if (mapRef?.current && meta) {
+                mapRef.current.getMap().flyTo({center: [meta.lng, meta.lat]});
+                props.setViewport({latitude: meta.lat, longitude: meta.lng});
+            }
+        }
+    }, [props.station, stationMeta, mapRef.current]);
+
     const colourMaps = useMemo(() => {
         const f = router.query.fromColour || defaultFromColour;
         const t = router.query.toColour || defaultToColour;
@@ -292,9 +296,6 @@ export function CoverageMap(props: {
     }, [router.isReady, router.query.fromColour, router.query.toColour]);
 
     const colourise = (v: number): [number, number, number, number] => {
-        if (v > 255) {
-            console.log(v);
-        }
         return colourMaps[Math.trunc(((v / 255) * steps) % steps)];
     };
 
@@ -376,7 +377,7 @@ export function CoverageMap(props: {
                 return {html};
             }
         },
-        [props.tooltips]
+        [props.tooltips, lockedH3, props.highlightStations]
     );
 
     const loadingLayer = isLoaded ? (
@@ -392,9 +393,12 @@ export function CoverageMap(props: {
         source: 'airspace'
     };
 
-    const viewOptions = map2d ? {minPitch: 0, maxPitch: 0, pitch: 0} : {minPitch: 0, maxPitch: 85, pitch: 70};
+    // We keep our saved viewstate up to date in case of re-render
+    const onViewStateChange = useCallback(({viewState}) => {
+        props.setViewport(viewState);
+    }, []);
 
-    console.log(props.viewport);
+    const viewOptions = map2d ? {minPitch: 0, maxPitch: 0, pitch: 0} : {minPitch: 0, maxPitch: 85, pitch: 70};
     return (
         <>
             <Map
@@ -402,6 +406,7 @@ export function CoverageMap(props: {
                 //        mapStyle={'mapbox://styles/ifly7charlie/clmbzpceq01au01r7abhp42mm'}
                 ref={mapRef}
                 initialViewState={{...props.viewport, ...viewOptions}}
+                onMove={onViewStateChange}
                 mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN}
                 reuseMaps={true}
                 attributionControl={false}
@@ -443,6 +448,7 @@ const attributionStyle = {
     fontSize: '13px'
 };
 
+/*
 const hillshade = {
     id: 'hillshade',
     source: 'mapbox-dem',
@@ -468,3 +474,4 @@ const skyLayer = {
         'sky-atmosphere-color': 'rgba(135, 206, 235, 1.0)'
     }
 };
+*/
