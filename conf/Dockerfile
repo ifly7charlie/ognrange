@@ -22,6 +22,7 @@ RUN apk add --no-cache --virtual .build-deps alpine-sdk python3 && npm_config_bu
 
 FROM build-image AS next-build-image
 COPY ./next.config.cjs ./next.config.cjs
+COPY ./tsconfig.json ./tsconfig.json
 COPY ./styles ./styles
 COPY ./lib/common ./lib/common
 COPY ./lib/api ./lib/api
@@ -33,6 +34,7 @@ FROM build-image AS aprs-build-image
 COPY ./lib/common ./lib/common
 COPY ./bin ./bin
 COPY ./lib/bin ./lib/bin
+COPY ./lib/worker ./lib/worker
 COPY ./tsconfig-bin.json ./tsconfig-bin.json
 RUN yarn aprs:build
 
