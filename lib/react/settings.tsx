@@ -19,7 +19,7 @@ const Checkbox = ({children, ...props}) => (
     </label>
 );
 
-export function Settings(props) {
+export function Settings(props: {updateUrl: (updates: any) => void}) {
     const router = useRouter();
     const [settingsVisible, setSettingsVisible] = useState(false);
 
@@ -30,7 +30,6 @@ export function Settings(props) {
     //    console.log('render', router.query, settingsVisible);
 
     function setSetting(name, value) {
-        console.log(name, value);
         if (router.query[name] != value) {
             const newObject = {};
             newObject[name] = value;
@@ -42,7 +41,6 @@ export function Settings(props) {
                 undefined,
                 {shallow: false}
             );
-            console.log('after', router.query);
         }
     }
 
