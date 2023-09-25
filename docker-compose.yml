@@ -2,13 +2,11 @@ version: '3.9'
 services:
     next:
         image: ghcr.io/ifly7charlie/ogr-next:latest
+        platform: linux/amd64
         build:
             context: .
             dockerfile: ./conf/Dockerfile
             target: next
-        depends_on:
-            aprs:
-                condition: service_healthy
         environment:
             - NEXT_PUBLIC_SITEURL
             - NEXT_PUBLIC_DATA_URL
@@ -19,6 +17,7 @@ services:
         restart: always
     aprs:
         image: ghcr.io/ifly7charlie/ogr-aprs:latest
+        platform: linux/amd64
         build:
             context: .
             dockerfile: ./conf/Dockerfile
@@ -37,6 +36,7 @@ services:
             - arrow:/ognrange/data/arrow
     apache:
         image: ghcr.io/ifly7charlie/ogr-apache:latest
+        platform: linux/amd64
         build:
             context: .
             dockerfile: ./conf/Dockerfile
@@ -48,8 +48,6 @@ services:
             - arrow:/ognrange/data/arrow:ro
         depends_on:
             next:
-                condition: service_healthy
-            aprs:
                 condition: service_healthy
         ports:
             - 80:8000
