@@ -21,7 +21,7 @@ COPY ./yarn.lock ./
 RUN apk add --no-cache --virtual .build-deps alpine-sdk python3 && npm_config_build_from_source=true yarn install --frozen-lockfile && apk del .build-deps
 
 FROM build-image AS next-build-image
-COPY ./next.config.cjs ./next.config.cjs
+COPY ./next.config.js ./next.config.js
 COPY ./tsconfig.json ./tsconfig.json
 COPY ./styles ./styles
 COPY ./lib/common ./lib/common
@@ -49,12 +49,12 @@ RUN apk add --no-cache --virtual .build-deps alpine-sdk python3 && npm_config_bu
 FROM base-image AS next
 HEALTHCHECK --interval=10s --retries=5 CMD curl -Q --fail http://localhost:3000 || exit 1
 WORKDIR /ognrange
-COPY --from=next-build-image /ognrange/.next ./.next
+COPY --from=next-build-image /ognrange/.next/standalone ./
+COPY --from=next-build-image /ognrange/.next/static ./.next/static
 COPY ./public ./public
-COPY ./next.config.cjs ./next.config.cjs
 COPY ./LICENSE ./LICENSE
 EXPOSE 3000
-CMD yarn next start
+CMD ["node", "server.js"]
 
 FROM base-image AS aprs
 HEALTHCHECK --interval=10s --retries=5 CMD flock --exclusive --nonblock /ognrange/data/db/status/LOCK  --command 'echo lock failed' || exit 1
@@ -67,4 +67,6 @@ FROM httpd:2.4-alpine AS apache
 HEALTHCHECK --interval=10s --retries=5 CMD curl -Q --fail http://localhost:8000 || exit 1
 RUN apk add --no-cache curl
 RUN mkdir -p /ognrange/data
+EXPOSE 8443
+EXPOSE 8000
 COPY ./conf/docker-httpd.conf /usr/local/apache2/conf/httpd.conf
