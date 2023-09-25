@@ -94,11 +94,11 @@ export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_P
             <b>Select base map style:</b>
             <Select options={baseMaps} value={selectedValue} onChange={(v) => setSetting('mapStyle', v.value)} />
             <br />
-            <Checkbox checked={parseInt(router.query.highlightStations.toString() ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
+            <Checkbox checked={parseInt(router.query.highlightStations?.toString() ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
                 Show distance circles
             </Checkbox>
             {props.env.NEXT_PUBLIC_AIRSPACE_API_KEY ? (
-                <Checkbox checked={parseInt(router.query.airspace.toString() ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
+                <Checkbox checked={parseInt(router.query.airspace?.toString() ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
                     Show airspace
                 </Checkbox>
             ) : null}
