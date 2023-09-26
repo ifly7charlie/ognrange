@@ -29,23 +29,18 @@ export default async function getH3Details(req, res) {
     const parentH3SplitLong = h3IndexToSplitLong(parentH3);
 
     // Get a Year/Month component from the file
-    let fileDateMatches = selectedFile?.match(/^[a-z]+.([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
-    if (!fileDateMatches || !fileDateMatches.length) {
-        res.status(404).text('invalid date');
-        return;
-    }
+    let fileDateMatches = selectedFile?.match(/^[a-z]+\.([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
     let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
-    let globalFileName = selectedFile;
     let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = '' + now.getUTCFullYear();
-            globalFileName = `year.${fileDateMatch}`;
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
+    const globalFileName = `${fileDateMatch.indexOf('-') ? 'month' : 'year'}.${fileDateMatch}`;
 
     console.log(now.toISOString(), ' h3others', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
