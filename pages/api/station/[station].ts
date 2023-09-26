@@ -35,9 +35,7 @@ export default async function getH3Details(req, res) {
 
     const files = readdirSync(ARROW_PATH + stationName)
         .map((fileName: string) => {
-            console.log(fileName);
             const parts = fileName.match(fileMatcher);
-            console.log(parts);
             if (!parts || parts.length < 2) {
                 return null;
             }
