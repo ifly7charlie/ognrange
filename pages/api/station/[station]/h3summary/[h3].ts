@@ -28,14 +28,9 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    // We only work on a specific station
-    if (stationName != 'global') {
+    // We only work on a global
+    if (stationName !== 'global') {
         res.status(200).json([]);
-        return;
-    }
-
-    if (ignoreStation(stationName)) {
-        res.status(404).text('invalid station name');
         return;
     }
 

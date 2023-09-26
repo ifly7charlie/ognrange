@@ -24,8 +24,8 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    if (ignoreStation(subdir)) {
-        res.status(404).text('invalid station name');
+    if (subdir !== 'global' && ignoreStation(subdir)) {
+        res.status(404).json({error: 'invalid station name'});
         return;
     }
 
