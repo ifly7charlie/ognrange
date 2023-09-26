@@ -10,13 +10,13 @@ import {aprsParser, aprsPacket} from 'js-aprs-fap';
 
 // Height above ground calculations, uses mapbox to get height for point
 //import geo from './lib/getelevationoffset.js';
-import {getCacheSize, getElevationOffset} from '../lib/bin/getelevationoffset.js';
+import {getCacheSize, getElevationOffset} from '../lib/bin/getelevationoffset';
 
 import {mkdirSync, existsSync} from 'fs';
 
-import {ignoreStation} from '../lib/bin/ignorestation.js';
+import {ignoreStation} from '../lib/common/ignorestation';
 
-import {gitVersion} from '../lib/bin/gitversion.js';
+import {gitVersion} from '../lib/bin/gitversion';
 
 import {backupDatabases} from '../lib/bin/backupdatabases';
 import {getMapAllCappedStatus} from '../lib/bin/mapallcapped';
