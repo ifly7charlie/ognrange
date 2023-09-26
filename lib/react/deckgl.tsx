@@ -1,7 +1,7 @@
 import React, {useState, useCallback, useMemo, useRef, useEffect} from 'react';
 import {MapboxOverlay, MapboxOverlayProps} from '@deck.gl/mapbox';
 
-import Map, {Source, Layer, LayerProps, useControl, NavigationControl, ScaleControl} from 'react-map-gl';
+import Map, {Source, Layer, useControl, NavigationControl, ScaleControl} from 'react-map-gl';
 
 import {IconLayer, ColumnLayer} from '@deck.gl/layers';
 import {H3HexagonLayer} from '@deck.gl/geo-layers';
@@ -13,13 +13,15 @@ import {JSONLoader} from '@loaders.gl/json';
 
 import ReactDOMServer from 'react-dom/server';
 
+import {getObjectFromIndex} from './pickabledetails';
+
 import {useRouter} from 'next/router';
 
 import {progressFetch} from './progressFetch';
 
 import {map as _map, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, find as _find, debounce as _debounce} from 'lodash';
 
-import {CoverageDetails} from './CoverageDetails';
+import {CoverageDetailsToolTip} from './CoverageDetails';
 
 import {defaultFromColour, defaultToColour, defaultBaseMap} from './defaults';
 
@@ -193,9 +195,9 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
             iconMapping: ICON_MAPPING,
             getIcon: (d) => 'marker',
             // How big
-            sizeScale: 500,
-            sizeMinPixels: 5,
-            sizeMaxPixels: 50,
+            sizeScale: 750,
+            sizeMinPixels: 3,
+            //            sizeMaxPixels: 30,
             sizeUnits: 'meters',
             getSize: getStationSize,
             // where and what colour
@@ -210,31 +212,11 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
     return {hexLayer, layers: layers};
 }
 
-function getObjectFromIndex(i, layer) {
-    const d = layer?.props?.data.d;
-    return d
-        ? {
-              h: [d.h3lo[i], d.h3hi[i]], //layer.props.data.h3s[i],
-              a: d.avgSig[i],
-              b: d.minAlt[i],
-              c: d.count[i],
-              d: d.minAltSig[i],
-              e: d.maxSig[i],
-              f: d.avgCrc[i],
-              g: d.minAgl[i],
-              p: d.avgGap[i],
-              q: d.expectedGap?.[i],
-              s: d.stations?.[i] || 0,
-              t: d.numStations?.[i] ?? d.stations?.[i]?.split(',')?.length ?? 0,
-              length: d.avgSig.length
-          }
-        : null;
-}
-
 export function CoverageMap(props: {
     //
     env: Record<string, string>;
     mapType: number;
+    details: any;
     setDetails: (d: any) => void;
     setHighlightStations: (h: any) => void;
     station?: string;
@@ -245,10 +227,13 @@ export function CoverageMap(props: {
     tooltips: boolean;
     viewport: any;
     setViewport: Function;
+    dockSplit: number;
 }) {
     const router = useRouter();
-    const [lockedH3, setLockedH3] = useState(null);
     const [isLoaded, setLoaded] = useState(null);
+    const details = props.details;
+
+    const airspaceKey = props.env.NEXT_PUBLIC_AIRSPACE_API_KEY || process.env.NEXT_PUBLIC_AIRSPACE_API_KEY;
 
     const toColour = router.query.toColour || defaultToColour;
     const fromColour = router.query.fromColour || defaultFromColour;
@@ -258,20 +243,17 @@ export function CoverageMap(props: {
 
     // Map display style
     const map2d = props.mapType > 1;
-    const mapStreet = props.mapType % 2;
 
     const onClick = useCallback(
         (o) => {
             const object = getObjectFromIndex(o.index, o.layer);
-            if (lockedH3 && (object?.h == lockedH3 || !object?.h)) {
-                props.setDetails({locked: false});
-                setLockedH3(null);
+            if (details.locked && (!object || object.i == props.details.i)) {
+                props.setDetails({});
             } else {
-                setLockedH3(object?.h);
                 props.setDetails({...object, locked: true});
             }
         },
-        [lockedH3]
+        [props.details, props.details.h?.[0], props.details.locked]
     );
 
     // Focus any selected station
@@ -313,14 +295,14 @@ export function CoverageMap(props: {
                 props.visualisation,
                 map2d,
                 onClick,
-                lockedH3,
+                details.locked ? details?.h : null,
                 setLoaded,
                 () => isLoaded,
                 colourise,
                 fromColour.toString() + toColour.toString(),
                 props.env
             ),
-        [props.station, props.file, map2d, props.visualisation, props.highlightStations, lockedH3, fromColour, toColour]
+        [props.station, props.file, map2d, props.visualisation, props.highlightStations, props.details.locked, props.details.h?.[0], props.details.h?.[1], fromColour, toColour]
     );
 
     let attribution = `<a href="//www.glidernet.org/">Data from OGN</a> | `;
@@ -334,20 +316,18 @@ export function CoverageMap(props: {
     // Generate tooltip text, and update side panel
     const useToolTipSelection = useCallback(
         ({index: i, layer, picked}) => {
-            if (lockedH3) {
+            if (props.details?.locked) {
                 return null;
             }
             if (!picked) {
-                if (props.highlightStations) {
-                    props.setHighlightStations({});
-                }
-                props.setDetails(null);
+                props.setHighlightStations({});
+                props.setDetails({});
                 return null;
             }
 
             const object = getObjectFromIndex(i, layer);
 
-            if (object) {
+            if (object && object.i != props.details.i) {
                 props.setDetails(object);
 
                 if (!props.tooltips && object.s) {
@@ -367,19 +347,17 @@ export function CoverageMap(props: {
             }
 
             if (props.tooltips) {
+                console.log('tooltips', object, i, layer, picked);
                 const html = ReactDOMServer.renderToStaticMarkup(
-                    <CoverageDetails
+                    <CoverageDetailsToolTip
                         details={object} //
                         station={props.station}
-                        highlightStations={props.highlightStations}
-                        setHighlightStations={props.setHighlightStations}
-                        file={props.file}
                     />
                 );
                 return {html};
             }
         },
-        [props.tooltips, lockedH3, props.highlightStations]
+        [props.tooltips, props.details, props.details.i, props.details.locked, props.station, props.file, stationMeta]
     );
 
     const loadingLayer = isLoaded ? (
@@ -393,6 +371,11 @@ export function CoverageMap(props: {
     const onViewStateChange = useCallback(({viewState}) => {
         props.setViewport(viewState);
     }, []);
+
+    useEffect(() => {
+        mapRef?.current?.resize();
+    }, [props.dockSplit]);
+    //                <div style={{width: `${((1 - dockSplit) * 100).toFixed(0)}vw`, height: '100vh'}}>
 
     const viewOptions = map2d ? {minPitch: 0, maxPitch: 0, pitch: 0} : {minPitch: 0, maxPitch: 85, pitch: 70};
     return (
@@ -413,9 +396,9 @@ export function CoverageMap(props: {
                     layers={layers} //
                     interleaved={true}
                 />
-                {router.query?.airspace == '1' && props.env.NEXT_PUBLIC_AIRSPACE_API_KEY ? (
+                {router.query?.airspace == '1' && airspaceKey ? (
                     <>
-                        <Source id="airspace" type="raster" tiles={['https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=${props.env.NEXT_PUBLIC_AIRSPACE_API_KEY}']} maxzoom={14} tileSize={256} />
+                        <Source id="airspace" type="raster" tiles={[`https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=${airspaceKey}`]} maxzoom={14} tileSize={256} />
                         <Layer type={'raster'} source={'airspace'} minzoom={0} maxzoom={14} />
                     </>
                 ) : null}
