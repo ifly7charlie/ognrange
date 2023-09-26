@@ -6,8 +6,7 @@ import {useRouter} from 'next/router';
 
 import Select from 'react-select';
 
-import _find from 'lodash.find';
-import _debounce from 'lodash.debounce';
+import {find as _find, debounce as _debounce} from 'lodash';
 
 import {HexAlphaColorPicker} from 'react-colorful';
 
@@ -20,7 +19,7 @@ const Checkbox = ({children, ...props}) => (
     </label>
 );
 
-export function Settings(props) {
+export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_PUBLIC_AIRSPACE_API_KEY?: string}}) {
     const router = useRouter();
     const [settingsVisible, setSettingsVisible] = useState(false);
 
@@ -30,20 +29,9 @@ export function Settings(props) {
 
     //    console.log('render', router.query, settingsVisible);
 
-    function setSetting(name, value) {
-        console.log(name, value);
+    function setSetting(name: string, value: string) {
         if (router.query[name] != value) {
-            const newObject = {};
-            newObject[name] = value;
-            router.replace(
-                {
-                    pathname: '/',
-                    query: {...router.query, ...newObject}
-                },
-                undefined,
-                {shallow: false}
-            );
-            console.log('after', router.query);
+            props.updateUrl({[name]: value});
         }
     }
 
@@ -66,6 +54,8 @@ export function Settings(props) {
         {label: 'Navigation Guidance Day', value: 'mapbox/navigation-guidance-day'},
         {label: 'Dark', value: 'mapbox/dark-v10'}
     ];
+
+    const selectedValue = _find(baseMaps, {value: router.query.mapStyle || defaultBaseMap})[0] ?? baseMaps[0];
 
     return !settingsVisible ? (
         <div style={{padding: '10px', position: 'absolute', bottom: '10px', right: '20px'}}>
@@ -102,16 +92,21 @@ export function Settings(props) {
                 </tbody>
             </table>
             <b>Select base map style:</b>
-            <Select options={baseMaps} value={_find(baseMaps, {value: router.query.mapStyle || defaultBaseMap})} onChange={(v) => setSetting('mapStyle', v.value)} />
+            <Select options={baseMaps} value={selectedValue} onChange={(v) => setSetting('mapStyle', v.value)} />
             <br />
-            <Checkbox checked={parseInt(router.query.highlightStations || '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
+            <Checkbox checked={parseInt(router.query.highlightStations?.toString() ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
                 Show distance circles
             </Checkbox>
+            {props.env.NEXT_PUBLIC_AIRSPACE_API_KEY ? (
+                <Checkbox checked={parseInt(router.query.airspace?.toString() ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
+                    Show airspace
+                </Checkbox>
+            ) : null}
             <hr />
-
             <button style={{padding: '5px'}} onClick={toggleSettings}>
                 &nbsp;<span> Close</span>
             </button>
+            <div style={{fontSize: 'x-small', color: 'grey', position: 'absolute', bottom: '5px', right: '5px'}}>v{process.env.NEXT_PUBLIC_GIT_REF}</div>
         </div>
     );
 }

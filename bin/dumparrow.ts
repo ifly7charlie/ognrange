@@ -32,7 +32,6 @@ async function dump() {
 
         let lo = 0;
         let hi = 0;
-        console.log(JSON.stringify(batch, null, 2));
         for (const columns of batch) {
             let out = '';
             const json = columns.toJSON();

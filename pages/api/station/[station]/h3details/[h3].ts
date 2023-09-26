@@ -8,6 +8,8 @@ import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
 import {H3DetailsOutputStructure, H3DetailsOutput} from '../../../../../lib/api/types';
 
+import {ignoreStation} from '../../../../../lib/common/ignorestation';
+
 export default async function getH3Details(req, res) {
     // Top level
     const subdir: string = req.query.station;
@@ -19,6 +21,11 @@ export default async function getH3Details(req, res) {
 
     if (!h3SplitLong) {
         res.status(200).json([]);
+        return;
+    }
+
+    if (subdir !== 'global' && ignoreStation(subdir)) {
+        res.status(404).json({error: 'invalid station name'});
         return;
     }
 

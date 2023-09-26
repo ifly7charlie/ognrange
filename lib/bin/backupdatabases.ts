@@ -1,7 +1,7 @@
 //
 import {mapAllCapped} from './mapallcapped';
 
-import {backupDatabase} from './rollupworker';
+import {backupDatabase} from '../worker/rollupworker';
 
 import {EpochMS} from './types';
 
@@ -29,7 +29,8 @@ export async function backupDatabases(processAccumulators: Accumulators): Promis
         totalElapsed: 0 as EpochMS
     };
 
-    let promise = mapAllCapped(
+    await mapAllCapped(
+        'backup',
         allStationsDetails({includeGlobal: true}),
         async function (stationMeta: StationDetails) {
             const stats = await backupDatabase(stationMeta.station, processAccumulators);
@@ -40,7 +41,6 @@ export async function backupDatabases(processAccumulators: Accumulators): Promis
         20
     );
 
-    await promise;
     backupStats.elapsed = (Date.now() - start) as EpochMS;
 
     console.log(`backup completed ${JSON.stringify(backupStats)}`);

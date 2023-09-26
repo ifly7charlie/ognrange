@@ -9,11 +9,11 @@ import {searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../l
 
 import {MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
+import {ignoreStation} from '../../../../../lib/common/ignorestation';
+
 import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
-import _map from 'lodash.map';
-import _reduce from 'lodash.reduce';
-import _sortBy from 'lodash.sortby';
+import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
 export default async function getH3Details(req, res) {
     // Top level
@@ -28,8 +28,8 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    // We only work on a specific station
-    if (stationName != 'global') {
+    // We only work on a global
+    if (stationName !== 'global') {
         res.status(200).json([]);
         return;
     }
@@ -49,11 +49,11 @@ export default async function getH3Details(req, res) {
 
     console.log(now.toISOString(), ' h3summary', stationName, selectedFile, fileDateMatch, req.query.h3, h3SplitLong);
 
-    const result = {};
+    const result: Record<string, Record<string, number>> = {};
     const sids = {};
 
     await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
-        result[date] = Object.assign(result[date] || {});
+        result[date] ??= {}; //Object.assign(result[date] || {});
         result[date] = _reduce(
             row?.stations?.split(',') || [],
             (acc, x) => {

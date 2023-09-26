@@ -38,7 +38,9 @@ async function main() {
         db = new ClassicLevel<string, Uint8Array>(dbPath, {valueEncoding: 'view', createIfMissing: false});
         await db.open();
     } catch (e) {
-        console.error(e);
+        console.log(args.db, 'error', e);
+        //        console.error(e);
+        return;
     }
 
     if (!db) {
@@ -59,7 +61,6 @@ async function main() {
             if (hr.isMeta) {
                 accumulators[hr.accumulator] = {hr: hr, meta: JSON.parse(String(value)), count: 0, size: 0};
                 console.log(hr.dbKey(), String(value));
-
                 if (args.size) {
                     db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
                         accumulators[hr.accumulator].size = r;
@@ -92,8 +93,12 @@ async function main() {
         //          let hr = new CoverageHeader(key);
         //    }
     }
-    for (const a in accumulators) {
-        console.log(`${accumulators[a].hr.typeName} [${a}]: ${accumulators[a].count} records, ~ ${accumulators[a].size} bytes`);
-        console.log('  ' + JSON.stringify(accumulators[a].meta));
+    //    for (const a in accumulators) {
+    //      console.log(`${accumulators[a].hr.typeName} [${a}]: ${accumulators[a].count} records, ~ ${accumulators[a].size} bytes`);
+    //        console.log('  ' + JSON.stringify(accumulators[a].meta));
+    //  }
+
+    if (Object.keys(accumulators).length < 3) {
+        //    console.log(args.db)
     }
 }

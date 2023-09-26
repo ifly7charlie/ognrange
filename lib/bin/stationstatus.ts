@@ -15,6 +15,8 @@ export interface StationDetails {
     station: StationName;
     lat?: number;
     lng?: number;
+    previous_location?: [number, number];
+    primary_location?: [number, number];
     lastPacket?: Epoch; //epoch
     lastLocation?: Epoch; // epoch
     lastOutputFile?: Epoch;
@@ -22,13 +24,14 @@ export interface StationDetails {
     status?: string;
     notice?: string;
     moved?: boolean;
+    bouncing?: boolean;
     valid?: boolean;
     outputEpoch?: Epoch;
     outputDate?: string;
 }
 
-let stations: Record<StationName, StationDetails> = {}; // map from string to details
-let stationIds: Record<StationId, StationName> = {}; // map from id to string
+const stations: Map<StationName, StationDetails> = new Map<StationName, StationDetails>(); // map from string to details
+const stationIds: Map<StationId, StationName> = new Map<StationId, StationName>(); // map from id to string
 let statusDb: ClassicLevel<StationName, StationDetails> | undefined;
 
 // We need to use a protected data structure to generate ids
@@ -50,10 +53,11 @@ export async function loadStationStatus() {
         statusDb = new ClassicLevel<StationName, StationDetails>(DB_PATH + 'status', {valueEncoding: 'json'});
         await statusDb.open();
 
-        for await (const [key, value] of statusDb.iterator()) {
-            stations[key] = value;
-            stationIds[stations[key].id] = key;
+        for await (const [name, details] of statusDb.iterator()) {
+            stations.set(name, details);
+            stationIds.set(details.id, name);
         }
+        1;
     } catch (e) {
         console.log('Unable to loadStationStatus', e);
         process.exit(1);
@@ -62,7 +66,7 @@ export async function loadStationStatus() {
     // Figure out the next id and save it
     const nextid =
         (reduce(
-            stations,
+            [...stations.values()],
             (highest: number, i: StationDetails) => {
                 return highest < (i.id || 0) ? i.id : highest;
             },
@@ -80,52 +84,88 @@ export function getStationDetails(stationName: StationName, serialise = true): S
         throw new Error('no station name provided');
     }
 
-    if (!stations[stationName]) {
-        stations[stationName] = {station: stationName, id: (stationid = Atomics.add(nextStation, 0, 1) as StationId)};
-        stationIds[stationid] = stationName;
-        console.log(`allocated id ${stationid} to ${stationName}, ${Object.keys(stations).length} in hash`);
+    let details = stations.get(stationName);
+
+    if (!details) {
+        details = {station: stationName, id: (stationid = Atomics.add(nextStation, 0, 1) as StationId)};
+        stations.set(stationName, details);
+        stationIds.set(stationid, stationName);
+        console.log(`allocated id ${stationid} to ${stationName}, ${stations.size} have metadata`);
 
         if (serialise && statusDb !== undefined) {
-            statusDb.put(stationName, stations[stationName]);
+            statusDb.put(stationName, details);
         }
     }
 
-    return stations[stationName];
+    return details;
 }
 export function allStationsDetails({includeGlobal}: {includeGlobal: boolean} = {includeGlobal: false}): StationDetails[] {
-    const values = Object.values(stations);
+    const values = [...stations.values()];
     if (includeGlobal) {
         values.unshift({station: 'global' as StationName, id: 0 as StationId});
     }
     return values;
 }
 export function allStationsNames({includeGlobal}: {includeGlobal: boolean} = {includeGlobal: false}): string[] {
-    const values = Object.keys(stations);
+    const values = [...stations.keys()];
     if (includeGlobal) {
-        values.unshift('global');
+        values.unshift('global' as StationName);
     }
     return values;
 }
 
 export function getStationName(stationId: StationId): StationName | undefined {
-    return stationId === 0 ? ('global' as StationName) : stationIds[stationId] || undefined;
+    return stationId === 0 ? ('global' as StationName) : stationIds.get(stationId) || undefined;
 }
 
 // Check if we have moved too far ( a little wander is considered ok )
 export function checkStationMoved(stationName: StationName, latitude: Latitude, longitude: Longitude, timestamp: Epoch): void {
     let details = getStationDetails(stationName);
-    const distance = details.lat && details.lng ? h3.greatCircleDistance([details.lat, details.lng], [latitude, longitude], 'km') : 0;
-    details.lat = latitude;
-    details.lng = longitude;
-    details.lastLocation = timestamp;
+
+    if (!details.primary_location) {
+        details.primary_location = [latitude, longitude];
+    }
+    if (!details.previous_location) {
+        details.previous_location = details.lat !== undefined && details.lng !== undefined ? [details.lat, details.lng] : details.primary_location;
+    }
+
+    const distance = h3.greatCircleDistance(details.primary_location, [latitude, longitude], 'km');
 
     // Did it move?
     if (distance > STATION_MOVE_THRESHOLD_KM) {
-        details.notice = `${Math.round(distance)}km move detected ${new Date(timestamp * 1000).toISOString()} resetting history`;
-        details.moved = true; // we need to persist this
-        console.log(`station ${stationName} has moved location to ${latitude},${longitude} which is ${distance.toFixed(1)}km`);
-        updateStationStatus(details);
+        // How far from previous position? some stations get duplicate names so this might help catch it
+        const previous_distance = h3.greatCircleDistance(details.previous_location, [latitude, longitude], 'km');
+        if (previous_distance > STATION_MOVE_THRESHOLD_KM) {
+            details.notice = `${Math.round(distance)}km move detected ${new Date(timestamp * 1000).toISOString()} resetting history`;
+            console.log(`station ${stationName} has moved location to ${latitude},${longitude} which is ${distance.toFixed(1)}km ${JSON.stringify(details, null, 4)}`);
+            details.moved = true; // we need to persist this, and relock on new location
+            details.previous_location = details.primary_location;
+            delete details.bouncing;
+            details.primary_location = [latitude, longitude];
+        } else if (previous_distance > 0.1) {
+            details.notice = 'station appears to be in motion, resetting history';
+            console.log(stationName, details.notice);
+            details.moved = true; // we need to persist this, and relock on new location
+            delete details.bouncing;
+            details.primary_location = [latitude, longitude];
+        } else {
+            console.log(`station ${stationName} bouncing between two locations ${h3.greatCircleDistance(details.previous_location, details.primary_location, 'km').toFixed(1)}km (merging)`);
+            details.notice = 'station appears to be bouncing between two locations, merging data';
+            delete details.moved;
+            details.bouncing = true;
+        }
+    } else {
+        if (distance > 0.1) {
+            details.notice = `small ${distance.toFixed(1)}km move detected ${new Date(timestamp * 1000).toISOString()} keeping history`;
+        } else {
+            details.notice = '';
+        }
+        delete details.bouncing;
     }
+    details.lat = latitude;
+    details.lng = longitude;
+    details.lastLocation = timestamp;
+    updateStationStatus(details);
 }
 
 // Capture the beacon for status purposes
@@ -137,9 +177,9 @@ export function updateStationBeacon(stationName: StationName, body: string, time
 }
 
 export function updateStationStatus(details: StationDetails): Promise<void> {
-    return statusDb?.put(details.station, details) || new Promise<void>(() => {});
+    return statusDb?.put(details.station, details) ?? Promise.resolve();
 }
 
 export async function closeStatusDb(): Promise<void> {
-    return statusDb?.close() || new Promise<void>(() => {});
+    return statusDb?.close() ?? Promise.resolve();
 }

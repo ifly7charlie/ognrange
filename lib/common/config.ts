@@ -27,6 +27,17 @@ export const APRS_KEEPALIVE_PERIOD_MS = (parseInt(process.env.APRS_KEEPALIVE_PER
 export const APRS_TRAFFIC_FILTER = process.env.APRS_TRAFFIC_FILTER || 't/spuoimnwt';
 export const APRS_SERVER = process.env.APRS_SERVER || 'aprs.glidernet.org:14580';
 
+/* # control the database handle caching for the accumulators
+ * # by default we will keep a few hundred open at a time, unlike tile cache
+ * # dbs will be flushed if they expire. (theory being that flying windows
+ * # might be short and less open is less risk of problems)
+ * # note that each DB uses 4 or 5 file handles MINIMUM so ulimit must be
+ * # large enough! You want to set the number to be at least 20% larger
+ * # than the maximum number of stations that are likely to be receiving
+ * # simultaneously on a busy day */
+export const MAX_STATION_DBS = parseInt(process.env.MAX_STATION_DBS ?? '') || 3200;
+export const STATION_DB_EXPIRY_MS = (parseInt(process.env.STATION_DB_EXPIRY_HOURS ?? '') || 12) * 3600 * 1000;
+
 /*
 # ROLLUP is when the current accumulators are merged with the daily/monthly/annual
 # accumulators. All are done at the same time and the accumulators are 'rolled'
@@ -38,7 +49,7 @@ export const ROLLUP_PERIOD_MINUTES = process.env.ROLLUP_PERIOD_MINUTES ? parseFl
 /* # how many databases we can process at once when doing a rollup, if
  * # your system drops the APRS connection when it is busy then you should
  * # set this number lower */
-export const MAX_SIMULTANEOUS_ROLLUPS = parseInt(process.env.MAX_SIMULTANEOUS_ROLLUPS ?? '') || 100;
+export const MAX_SIMULTANEOUS_ROLLUPS = Math.min(parseInt(process.env.MAX_SIMULTANEOUS_ROLLUPS ?? '') || 100, MAX_STATION_DBS * 0.9);
 
 // how much detail to collect, bigger numbers = more cells! goes up fast see
 // https://h3geo.org/docs/core-library/restable for what the sizes mean
@@ -60,17 +71,6 @@ export const STATION_MOVE_THRESHOLD_KM = parseInt(process.env.STATION_MOVE_THRES
 
 // If we haven't had traffic in this long then we expire the station
 export const STATION_EXPIRY_TIME_SECS = (parseInt(process.env.STATION_EXPIRY_TIME_DAYS ?? '') || 31) * 3600 * 24;
-
-/* # control the database handle caching for the accumulators
- * # by default we will keep a few hundred open at a time, unlike tile cache
- * # dbs will be flushed if they expire. (theory being that flying windows
- * # might be short and less open is less risk of problems)
- * # note that each DB uses 4 or 5 file handles MINIMUM so ulimit must be
- * # large enough! You want to set the number to be at least 20% larger
- * # than the maximum number of stations that are likely to be receiving
- * # simultaneously on a busy day */
-export const MAX_STATION_DBS = parseInt(process.env.MAX_STATION_DBS ?? '') || 3200;
-export const STATION_DB_EXPIRY_MS = (parseInt(process.env.STATION_DB_EXPIRY_HOURS ?? '') || 12) * 3600 * 1000;
 
 /*
 # Cache control - we cache the datablocks by station and h3 to save us needing

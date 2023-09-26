@@ -62,7 +62,7 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
 
         try {
             if (fileName.match(/.gz$/)) {
-               arrowFileContents = gunzipSync(arrowFileContents);
+                arrowFileContents = gunzipSync(arrowFileContents);
             }
 
             table = tableFromIPC([arrowFileContents]);
@@ -81,7 +81,7 @@ export async function searchMatchingArrowFiles(station: string, fileDateMatch: s
     try {
         const files = readdirSync(ARROW_PATH + station)
             .map((fn) => {
-                return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz/)?.[1] || '', fileName: fn};
+                return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz$/)?.[1] || '', fileName: fn};
             })
             .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch)
             .sort((a, b) => a.fileName.localeCompare(b.fileName));

@@ -7,16 +7,15 @@ import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
 import {Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
 
-import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from './rollupworker';
+import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from '../worker/rollupworker';
 
 import {allStationsDetails, updateStationStatus} from './stationstatus';
 
-import {CurrentAccumulator, Accumulators, getCurrentAccumulators, AccumulatorTypeString} from './accumulators';
+import {Accumulators, getCurrentAccumulators, AccumulatorTypeString, describeAccumulators} from './accumulators';
 
 import {gzipSync, createGzip} from 'zlib';
 
-import {Epoch, StationName, StationId} from './types';
-import {CoverageHeader} from './coverageheader';
+import {Epoch, StationId} from './types';
 
 import {
     MAX_SIMULTANEOUS_ROLLUPS, //
@@ -36,22 +35,32 @@ export interface RollupStats {
     last?: {
         sumElapsed: number;
         operations: number;
+        retiredBuckets: number;
+        recordsRemoved: number;
         databases: number;
         skippedStations: number;
+        arrowRecords: number;
     };
 }
+
+// When did we load this module (ie start the process)
+// Used to ensure we don't purge immediately after restart
+const startupTime = Math.trunc(Date.now() / 1000) as Epoch;
+
 //
 // Information about last rollup
 export let rollupStats: RollupStats = {completed: 0, elapsed: 0};
 
 //
 // This iterates through all open databases and rolls them up.
-export async function rollupAll({current, processAccumulators}: {current: CurrentAccumulator; processAccumulators: Accumulators}): Promise<RollupStats> {
+export async function rollupAll(accumulators: Accumulators, nextAccumulators?: Accumulators): Promise<RollupStats> {
     //
     // Make sure we have updated validStations
     const nowDate = new Date();
     const nowEpoch = Math.floor(Date.now() / 1000) as Epoch;
-    const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
+    const expiryEpoch = Math.max(nowEpoch - STATION_EXPIRY_TIME_SECS, startupTime - STATION_EXPIRY_TIME_SECS);
+    console.log(`Rollup starting, station expiry time ${new Date(expiryEpoch * 1000).toISOString()}`);
+
     const validStations = new Set<StationId>();
     let needValidPurge = false;
     let invalidStations = 0;
@@ -59,13 +68,14 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
     for (const station of allStationsDetails({includeGlobal: false})) {
         const wasStationValid = station.valid;
 
+        // Any of these, if we don't have a timestamp yet assume it is valid
+        const stationValidityTimestamp = station.lastPacket || station.lastBeacon || nowEpoch;
+
         if (station.moved) {
             station.moved = false;
             station.valid = false;
             rollupStats.movedStations++;
-            console.log(`purging moved station ${station.station}`);
-            updateStationStatus(station);
-        } else if ((station.lastPacket || station.lastBeacon || nowEpoch) > expiryEpoch) {
+        } else if (stationValidityTimestamp > expiryEpoch) {
             validStations.add(Number(station.id) as StationId);
             station.valid = true;
         } else {
@@ -76,20 +86,39 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
             updateStationStatus(station);
             needValidPurge = true;
             invalidStations++;
-            console.log(`purging invalid station ${station.station}`);
+            console.log(`purging ${station.moved ? 'moved' : 'expired'} station ${station.station} last timestamp ${new Date(stationValidityTimestamp * 1000).toISOString()}`);
         }
     }
 
     rollupStats.validStations = validStations.size;
     rollupStats.invalidStations = invalidStations;
 
+    // See if any are no longer valid (current is never valid twice so it'll go)
+    const retiredAccumulators = (
+        nextAccumulators
+            ? Object.keys(accumulators) //
+                  .filter((a) => a !== 'current')
+                  .filter((a) => accumulators[a as AccumulatorTypeString].bucket != nextAccumulators[a as AccumulatorTypeString].bucket)
+            : []
+    ) as AccumulatorTypeString[];
+
+    // Figure out what the cutoff for changes is for reviewing the datases
+    // it's the oldest time that the accumulator isn't valid for (including current)
+    const updateCutOff = Math.min(
+        ...(nextAccumulators
+            ? Object.keys(accumulators) //
+                  .filter((a) => accumulators[a as AccumulatorTypeString].bucket != nextAccumulators[a as AccumulatorTypeString].bucket)
+                  .map((a) => accumulators[a as AccumulatorTypeString].effectiveStart ?? 0)
+            : [0])
+    ) as Epoch;
+
     let commonArgs: RollupDatabaseArgs = {
-        current,
         now: nowEpoch,
-        processAccumulators,
+        accumulators,
         validStations,
         needValidPurge,
-        stationMeta: undefined
+        stationMeta: undefined,
+        retiredAccumulators
     };
 
     console.log(`performing rollup and output of ${validStations.size} stations + global, removing ${invalidStations} stations`);
@@ -98,13 +127,20 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
         commonArgs.needValidPurge = false;
     }
 
+    if (retiredAccumulators.length) {
+        console.log(`${retiredAccumulators.join(',')} have changed accumulator, removing from all databases`);
+    }
+
     rollupStats = {
         ...rollupStats, //
         last: {
             sumElapsed: 0, //
             operations: 0,
+            retiredBuckets: 0,
+            recordsRemoved: 0,
             databases: 0,
-            skippedStations: 0
+            skippedStations: 0,
+            arrowRecords: 0
             //            accumulators: processAccumulators,
             //            current: CoverageHeader.getAccumulatorMeta(...current).accumulator
         }
@@ -115,30 +151,34 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
     // of the global db or other actions.
     // it is worth running them in parallel as there is a lot of IO which would block
     let promise = mapAllCapped(
+        'rollup',
         allStationsDetails({includeGlobal: true}),
         async function (stationMeta) {
             const station = stationMeta.station;
 
             // If there has been no packets since the last output then we don't gain anything by scanning the whole db and processing it
-            if (stationMeta.outputEpoch && !stationMeta.moved && (stationMeta.lastPacket || 0) < stationMeta.outputEpoch) {
+            if (station !== 'global' && !retiredAccumulators.length && stationMeta.outputEpoch && !stationMeta.moved && (stationMeta.lastPacket || 0) < (updateCutOff || stationMeta.outputEpoch)) {
                 rollupStats.last!.skippedStations++;
                 return;
             }
 
             // If a station is not valid we are clearing the data from it from the registers
-            if (needValidPurge && !validStations.has(stationMeta.id)) {
+            if (stationMeta.station != 'global' && needValidPurge && !validStations.has(stationMeta.id)) {
                 // empty the database... we could delete it but this is very simple and should be good enough
                 console.log(`clearing database for ${station} as it is not valid`);
                 await purgeDatabase(station);
                 rollupStats.last!.databases++;
-                return;
-            }
-
-            const r = await rollupDatabase(station, {...commonArgs, stationMeta});
-            if (r) {
-                rollupStats.last!.sumElapsed += r.elapsed;
-                rollupStats.last!.operations += r.operations;
-                rollupStats.last!.databases++;
+            } else {
+                // Or if it is valid we roll it up
+                const r = await rollupDatabase(station, {...commonArgs, stationMeta});
+                if (r) {
+                    rollupStats.last!.sumElapsed += r.elapsed;
+                    rollupStats.last!.operations += r.operations;
+                    rollupStats.last!.retiredBuckets += r.retiredBuckets;
+                    rollupStats.last!.recordsRemoved += r.recordsRemoved;
+                    rollupStats.last!.arrowRecords += r.arrowRecords;
+                    rollupStats.last!.databases++;
+                }
             }
 
             // Details about when we wrote, also contains information about the station if
@@ -160,43 +200,53 @@ export async function rollupAll({current, processAccumulators}: {current: Curren
     rollupStats.elapsed += rollupStats.lastElapsed;
     rollupStats.completed++;
     rollupStats.lastStart = nowDate.toISOString();
-    console.log(`rollup of ${current.join('/')} completed`, JSON.stringify(rollupStats));
+    console.log(`rollup of ${describeAccumulators(accumulators).join(' ')} completed: ${JSON.stringify(rollupStats)}`);
 
     return rollupStats;
 }
 
 export async function rollupStartupAll() {
+    const now = Date.now();
     const current = getCurrentAccumulators() || superThrow('no accumulators on startup');
-    const common = {current: current.currentAccumulator, processAccumulators: current.accumulators};
 
-    const allStations = allStationsDetails();
-    console.log(`performing startup rollup and output of ${allStations.length} stations + global stations`);
+    const allStations = allStationsDetails({includeGlobal: true});
 
-    // Global is biggest and takes longest
-    let promises = [];
-    promises.push(
-        new Promise<void>(async function (resolve) {
-            await rollupStartup('global' as StationName, common);
-            resolve();
-        })
-    );
+    const [currentStart, destinationFiles] = describeAccumulators(current);
+
+    const startupStats = {
+        datapurged: 0,
+        datamerged: 0,
+        datachanged: 0,
+        databases: 0,
+        arrowRecords: 0,
+        elapsed: 0
+    };
+
+    console.log(`performing startup rollup and output of ${allStations.length} stations (including global) resuming ${currentStart},${destinationFiles}`);
 
     // each of the stations, capped at 20% of db cache (or 30 tasks) to reduce risk of purging the whole cache
     // mapAllCapped will not return till all have completed, but this doesn't block the processing
     // of the global db or other actions.
     // it is worth running them in parallel as there is a lot of IO which would block
-    promises.push(
-        mapAllCapped(
-            allStations,
-            async (stationMeta) => {
-                const station = stationMeta.station;
-                await rollupStartup(station, common, stationMeta);
-            },
-            MAX_SIMULTANEOUS_ROLLUPS
-        )
+    await mapAllCapped(
+        'startup',
+        allStations,
+        async (stationMeta) => {
+            const station = stationMeta.station;
+            const r = await rollupStartup(station, current, stationMeta);
+            if (r) {
+                startupStats.datachanged += r.datachanged ? 1 : 0;
+                startupStats.datamerged += r.datamerged ? 1 : 0;
+                startupStats.datapurged += r.datapurged ? 1 : 0;
+                startupStats.arrowRecords += r.arrowRecords;
+                startupStats.databases++;
+            }
+        },
+        MAX_SIMULTANEOUS_ROLLUPS
     );
-    await Promise.allSettled(promises);
-    console.log(`done initial rollup`);
+
+    startupStats.elapsed = Date.now() - now;
+    console.log(`done initial rollup ${JSON.stringify(startupStats)}`);
 }
 
 //

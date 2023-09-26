@@ -1,22 +1,20 @@
-import {Utf8, Binary, makeBuilder, makeTable, RecordBatchWriter} from 'apache-arrow/Arrow.node';
-import {TypedArray} from 'apache-arrow/interfaces';
-import {BACKUP_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
+import {BACKUP_PATH} from '../common/config';
 
-import {Epoch, EpochMS} from './types';
+import {Epoch, EpochMS} from '../bin/types';
 
-import {CoverageHeader} from './coverageheader';
+import {CoverageHeader} from '../bin/coverageheader';
 
 import {DB} from './stationcache';
 
-import {mkdirSync} from 'fs';
-import {Accumulators, AccumulatorTypeString} from './accumulators';
+import {Accumulators, AccumulatorTypeString} from '../bin/accumulators';
 
 import {createWriteStream} from 'fs';
-//import {PassThrough} from 'stream';
 import {createGzip} from 'node:zlib';
 
 import {Readable, pipeline} from 'node:stream';
 import {RecordBatch, RecordBatchStreamWriter, Schema, Struct, Field, builderThroughAsyncIterable} from 'apache-arrow';
+import {Utf8, Binary} from 'apache-arrow/Arrow.node';
+
 import {IterableBuilderOptions} from 'apache-arrow/factories';
 
 interface BackupMessageType {
@@ -26,7 +24,7 @@ interface BackupMessageType {
 
 //
 // Make an Arrow backup of the database
-export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccumulators: Accumulators; now: Epoch}): Promise<{elapsed: EpochMS; rows: number}> {
+export async function backupDatabase(db: DB, {accumulators, now}: {accumulators: Accumulators; now: Epoch}): Promise<{elapsed: EpochMS; rows: number}> {
     //
     //
     const startTime = Date.now();
@@ -39,9 +37,9 @@ export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccum
     // Finally if we have rollups with data after us then we need to update their invalidstations
     // now we go through them in step form
     const allRecords = async function* (): AsyncGenerator<BackupMessageType> {
-        for (const accumulator of Object.keys(whatAccumulators)) {
+        for (const accumulator of Object.keys(accumulators)) {
             const r = accumulator as AccumulatorTypeString;
-            const par = whatAccumulators[r];
+            const par = accumulators[r];
             const iterator = db.iterator(CoverageHeader.getDbSearchRangeForAccumulator(r, par!.bucket));
 
             for await (const [prefixedh3r, rollupValue] of iterator) {
@@ -59,7 +57,7 @@ export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccum
 
     const builderOptions: IterableBuilderOptions<typeof message_type> = {
         type: message_type,
-        nullValues: [null, 'n/a', undefined],
+        nullValues: null,
         highWaterMark: 3000,
         queueingStrategy: 'count'
     };
@@ -75,10 +73,6 @@ export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccum
         }
     };
 
-    //    const pt = new PassThrough({objectMode: true});
-    //    pt.pipe(createGzip()).pipe(createWriteStream(fileName + '.gz'));
-    //    pt.end();
-
     await new Promise((resolve) =>
         pipeline(
             //
@@ -88,7 +82,9 @@ export async function backupDatabase(db: DB, {whatAccumulators, now}: {whatAccum
             createWriteStream(fileName + '.gz'),
             resolve
         )
-    );
+    ).catch((e) => {
+        console.error('backup failed', db.ognStationName, e);
+    });
 
     return {elapsed: (Date.now() - startTime) as EpochMS, rows};
 }

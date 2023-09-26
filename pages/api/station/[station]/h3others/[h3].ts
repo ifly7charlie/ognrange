@@ -10,13 +10,10 @@ import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/c
 
 import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
-import _map from 'lodash.map';
-import _reduce from 'lodash.reduce';
-import _sortBy from 'lodash.sortby';
+import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
 export default async function getH3Details(req, res) {
     // Top level
-    const subdir: string = req.query.station;
     const selectedFile: string = req.query.file;
     const lockedH3 = parseInt(req.query.lockedH3 || '0');
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
@@ -27,32 +24,25 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    // We only work on a specific station
-    if (subdir == 'global') {
-        res.status(200).json([]);
-        return;
-    }
-
     // Find in the global DB - this is so we can get a c
     const parentH3 = cellToParent(req.query.h3, H3_GLOBAL_CELL_LEVEL);
     const parentH3SplitLong = h3IndexToSplitLong(parentH3);
 
     // Get a Year/Month component from the file
-    let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
+    let fileDateMatches = selectedFile?.match(/^[a-z]+\.([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
     let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
-    let globalFileName = selectedFile;
     let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
             fileDateMatch = '' + now.getUTCFullYear();
-            globalFileName = `year.${fileDateMatch}`;
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
+    const globalFileName = `${fileDateMatch.indexOf('-') ? 'month' : 'year'}.${fileDateMatch}`;
 
-    console.log(now.toISOString(), ' h3others', subdir, selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
+    console.log(now.toISOString(), ' h3others', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     // Find the enclosing global record
     const globalRecord = await searchArrowFileInline('global/global.' + globalFileName + '.arrow.gz', parentH3SplitLong);
@@ -63,7 +53,7 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    const result = {};
+    const result: Record<string, Record<string, number>> = {};
 
     // Now we will go through the list of stations and get the stations that could match
     for (const station of globalRecord?.stations?.split(',') || []) {
@@ -75,7 +65,7 @@ export default async function getH3Details(req, res) {
             console.log('station', sid, ' not found!');
         } else {
             await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
-                result[date] = Object.assign(result[date] || {});
+                result[date] ??= {}; //Object.assign(result[date] || {});
                 result[date][stationName] = row.count;
             });
         }
@@ -85,7 +75,7 @@ export default async function getH3Details(req, res) {
     let total = 0;
     const summed = _reduce(
         result,
-        (r, v, k) => {
+        (r, v) => {
             return _reduce(
                 v,
                 (r, v, k) => {
@@ -96,7 +86,7 @@ export default async function getH3Details(req, res) {
                 r
             );
         },
-        {}
+        {} as Record<string, number>
     );
 
     // Sort and find top 5
