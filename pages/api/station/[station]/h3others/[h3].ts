@@ -14,7 +14,6 @@ import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
 export default async function getH3Details(req, res) {
     // Top level
-    const subdir: string = req.query.station;
     const selectedFile: string = req.query.file;
     const lockedH3 = parseInt(req.query.lockedH3 || '0');
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
@@ -25,18 +24,16 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    // We only work on a specific station
-    if (subdir == 'global') {
-        res.status(200).json([]);
-        return;
-    }
-
     // Find in the global DB - this is so we can get a c
     const parentH3 = cellToParent(req.query.h3, H3_GLOBAL_CELL_LEVEL);
     const parentH3SplitLong = h3IndexToSplitLong(parentH3);
 
     // Get a Year/Month component from the file
-    let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
+    let fileDateMatches = selectedFile?.match(/^[a-z]+.([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
+    if (!fileDateMatches || !fileDateMatches.length) {
+        res.status(404).text('invalid date');
+        return;
+    }
     let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let globalFileName = selectedFile;
     let oldest: Date | undefined = undefined;
@@ -50,7 +47,7 @@ export default async function getH3Details(req, res) {
         }
     }
 
-    console.log(now.toISOString(), ' h3others', subdir, selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
+    console.log(now.toISOString(), ' h3others', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
     // Find the enclosing global record
     const globalRecord = await searchArrowFileInline('global/global.' + globalFileName + '.arrow.gz', parentH3SplitLong);

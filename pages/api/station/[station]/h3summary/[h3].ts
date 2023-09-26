@@ -9,6 +9,8 @@ import {searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../l
 
 import {MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
+import {ignoreStation} from '../../../../../lib/common/ignorestation';
+
 import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
 import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
@@ -29,6 +31,11 @@ export default async function getH3Details(req, res) {
     // We only work on a specific station
     if (stationName != 'global') {
         res.status(200).json([]);
+        return;
+    }
+
+    if (ignoreStation(stationName)) {
+        res.status(404).text('invalid station name');
         return;
     }
 

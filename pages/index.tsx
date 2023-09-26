@@ -112,7 +112,7 @@ export default function CombinePage(props) {
 
     // Load the associated index
     const DATA_URL = props.env.NEXT_PUBLIC_DATA_URL || process.env.NEXT_PUBLIC_DATA_URL || '/data/';
-    const {data, error} = useSWR(DATA_URL + (station || 'global') + '/' + (station || 'global') + '.index.json', fetcher);
+    const {data, error} = useSWR(`/api/station/${station || 'global'}`, fetcher);
 
     // Display the right ones to the user
     const [availableFiles, selectedFile] = useMemo((): [any, any] => {
