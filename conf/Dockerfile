@@ -8,9 +8,6 @@ RUN echo "NEXT_PUBLIC_GIT_REF=$(cat /ognrange/.git/`cat .git/HEAD | cut -f2 -d '
 
 ######## builders
 FROM node:18.16-alpine as gyp
-RUN apk add --no-cache flock curl
-WORKDIR /ognrange
-COPY --from=version /ognrange/.env.local ./.env.local
 
 FROM gyp as build-image
 WORKDIR /ognrange
@@ -28,6 +25,7 @@ COPY ./lib/common ./lib/common
 COPY ./lib/api ./lib/api
 COPY ./pages ./pages
 COPY ./lib/react ./lib/react
+COPY --from=version /ognrange/.env.local ./.env.local
 RUN yarn next build
 
 FROM build-image AS aprs-build-image
@@ -36,6 +34,7 @@ COPY ./bin ./bin
 COPY ./lib/bin ./lib/bin
 COPY ./lib/worker ./lib/worker
 COPY ./tsconfig-bin.json ./tsconfig-bin.json
+COPY --from=version /ognrange/.env.local ./.env.local
 RUN yarn aprs:build
 
 
