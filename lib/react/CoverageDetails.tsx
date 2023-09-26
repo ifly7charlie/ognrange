@@ -1,4 +1,3 @@
-import {useRouter} from 'next/router';
 import {useMemo, useState, useCallback} from 'react';
 import useSWR from 'swr';
 
@@ -16,11 +15,13 @@ import {BarChart, Bar} from 'recharts';
 
 import VisibilitySensor from 'react-visibility-sensor';
 
+import {IoLockOpenOutline} from 'react-icons/io5';
+
 import {prefixWithZeros} from '../common/prefixwithzeros';
 
 import graphcolours from './graphcolours.js';
 
-const fetcher = (...args) => fetch(...args).then((res) => res.json());
+const fetcher = (args0, args1) => fetch(args0, args1).then((res) => res.json());
 
 function WaitForGraph() {
     return (
@@ -31,12 +32,84 @@ function WaitForGraph() {
         </>
     );
 }
+
+export function CoverageDetailsToolTip({details, station}) {
+    const sd = useMemo(() => {
+        return _find(stationMeta, {station: station});
+    }, [station, stationMeta != undefined]);
+
+    if (details.station) {
+        return (
+            <div>
+                <b>{details.station}</b>
+                <br />
+                <>
+                    {details.status ? (
+                        <div
+                            style={{
+                                width: '350px',
+                                overflowWrap: 'anywhere',
+                                fontSize: 'small'
+                            }}
+                        >
+                            {details.status}
+                        </div>
+                    ) : null}
+                </>
+                {details?.length ? (
+                    <>
+                        <hr />
+                        {details.length} coverage cells
+                        <br />
+                        {Math.round(details.length * 0.0737327598) * 10} sq km
+                        <br />
+                        <hr />
+                    </>
+                ) : null}
+            </div>
+        );
+    }
+
+    if (details.h) {
+        return (
+            <div>
+                {sd?.lat && sd?.lng ? (
+                    <>
+                        {greatCircleDistance(cellToLatLng(details.h), [sd.lat, sd.lng], 'km').toFixed(0)}km to <b>{station}</b>
+                        <hr />
+                    </>
+                ) : null}
+                <b>Lowest Point</b>
+                <br />
+                {(details.d / 4).toFixed(1)} dB @ {details.b} m ({details.g} m agl)
+                <hr />
+                <b>Signal Strength</b>
+                <br />
+                Average: {(details.a / 4).toFixed(1)} dB, Max: {(details.e / 4).toFixed(1)} dB
+                <hr />
+                Avg Gap between packets: {details.p >> 2}s{' '}
+                {(details.q ?? true) !== true && details.stationCount > 1 ? (
+                    <>
+                        (expected: {details.q >> 2}s)
+                        <br />
+                    </>
+                ) : (
+                    <br />
+                )}
+                Avg CRC errors: {details.f / 10}
+                <br />
+                <hr />
+                Number of packets: {details.c}
+            </div>
+        );
+    }
+    return <div> </div>;
+}
 //
 // Used to generate the tooltip or the information to display in the details panel
-export function CoverageDetails({details, station, setHighlightStations, highlightStations, file}) {
+export function CoverageDetails({details, setDetails, station, setStation, file}) {
     let stationList = undefined;
     let stationCount = undefined;
-    const router = useRouter();
     const [doFetch, setDoFetch] = useState(station + details?.h);
     const [extraVisible, setExtraVisible] = useState(false);
 
@@ -61,6 +134,10 @@ export function CoverageDetails({details, station, setHighlightStations, highlig
     const sd = useMemo(() => {
         return _find(stationMeta, {station: station});
     }, [station, stationMeta != undefined]);
+
+    const clearSelectedH3 = useCallback(() => setDetails({}), [false]);
+
+    const selectStation = useCallback((e) => setStation(e.relatedTarget.id), [false]);
 
     if (!details?.station && !details?.h) {
         return (
@@ -95,13 +172,7 @@ export function CoverageDetails({details, station, setHighlightStations, highlig
                 acc.push(
                     <tr key={sid}>
                         <td>
-                            <Link
-                                replace
-                                href={{
-                                    pathname: '/',
-                                    query: {...router.query, station: meta?.station || ''}
-                                }}
-                            >
+                            <Link replace onClick={selectStation} href={'#'} id={meta?.station || ''}>
                                 {meta?.station || 'Unknown'}
                             </Link>
                         </td>
@@ -157,13 +228,19 @@ export function CoverageDetails({details, station, setHighlightStations, highlig
                     </>
                 ) : null}
                 <b>Details at {details.locked ? 'specific point' : 'mouse point'}</b>
-                <br />
+                {details.locked ? (
+                    <button style={{float: 'right', padding: '10px'}} onClick={clearSelectedH3}>
+                        <IoLockOpenOutline style={{paddingTop: '2px'}} />
+                        &nbsp;<span> Unlock</span>
+                    </button>
+                ) : null}
                 {sd?.lat && sd?.lng ? (
                     <>
                         <br />
                         Distance to {station}: {greatCircleDistance(cellToLatLng(details.h), [sd.lat, sd.lng], 'km').toFixed(0)}km
                     </>
                 ) : null}
+                <br style={{clear: 'both'}} />
                 <hr />
                 <LowestPointDetails d={details.d} b={details.b} g={details.g} byDay={byDay} />
                 <SignalDetails a={details.a} e={details.e} byDay={byDay} />
@@ -175,7 +252,7 @@ export function CoverageDetails({details, station, setHighlightStations, highlig
                 {details.locked && byDay ? ( //
                     <VisibilitySensor onChange={setExtraVisible}>
                         <>
-                            <div height="300px">
+                            <div style={{height: '300px'}}>
                                 <br />
                             </div>
                             {extraVisible ? ( //
@@ -440,7 +517,7 @@ function OtherStationsDetails(props) {
                             <Tooltip />
                             <Legend />
                             {_map(byDay.series, (v, i) => (
-                                <Bar key={'ot' + v.s} isAnimationActive={false} type="monotone" stackId="a" dataKey={v.s} stroke={graphcolours[i]} fill={graphcolours[i]} dot={{r: 1}} />
+                                <Bar key={'ot' + v.s} isAnimationActive={false} type="monotone" stackId="a" dataKey={v.s} stroke={graphcolours[i]} fill={graphcolours[i]} />
                             ))}
                         </BarChart>
                     </ResponsiveContainer>
