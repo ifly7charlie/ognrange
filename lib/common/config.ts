@@ -106,5 +106,3 @@ export const ELEVATION_TILE_RESOLUTION = parseInt(process.env.ELEVATION_TILE_RES
 /* # version number if exported during build - normally calls git to get it for development
  * # environment */
 export const GIT_REF = process.env.GIT_REF || process.env.NEXT_PUBLIC_GIT_REF || null;
-
-console.log('configuration loaded');
