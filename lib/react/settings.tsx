@@ -103,10 +103,10 @@ export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_P
                 </Checkbox>
             ) : null}
             <hr />
-
             <button style={{padding: '5px'}} onClick={toggleSettings}>
                 &nbsp;<span> Close</span>
             </button>
+            <div style={{fontSize: 'x-small', color: 'grey', position: 'absolute', bottom: '5px', right: '5px'}}>v{process.env.NEXT_PUBLIC_GIT_REF}</div>
         </div>
     );
 }
