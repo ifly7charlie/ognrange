@@ -42,6 +42,11 @@ export interface RollupStats {
         arrowRecords: number;
     };
 }
+
+// When did we load this module (ie start the process)
+// Used to ensure we don't purge immediately after restart
+const startupTime = Math.trunc(Date.now() / 1000) as Epoch;
+
 //
 // Information about last rollup
 export let rollupStats: RollupStats = {completed: 0, elapsed: 0};
@@ -53,7 +58,9 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
     // Make sure we have updated validStations
     const nowDate = new Date();
     const nowEpoch = Math.floor(Date.now() / 1000) as Epoch;
-    const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
+    const expiryEpoch = Math.max(nowEpoch - STATION_EXPIRY_TIME_SECS, startupTime - STATION_EXPIRY_TIME_SECS);
+    console.log(`Rollup starting, station expiry time ${new Date(expiryEpoch * 1000).toISOString()}`);
+
     const validStations = new Set<StationId>();
     let needValidPurge = false;
     let invalidStations = 0;
@@ -61,13 +68,14 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
     for (const station of allStationsDetails({includeGlobal: false})) {
         const wasStationValid = station.valid;
 
+        // Any of these, if we don't have a timestamp yet assume it is valid
+        const stationValidityTimestamp = station.lastPacket || station.lastBeacon || nowEpoch;
+
         if (station.moved) {
             station.moved = false;
             station.valid = false;
             rollupStats.movedStations++;
-            console.log(`purging moved station ${station.station}`);
-            updateStationStatus(station);
-        } else if ((station.lastPacket || station.lastBeacon || nowEpoch) > expiryEpoch) {
+        } else if (stationValidityTimestamp > expiryEpoch) {
             validStations.add(Number(station.id) as StationId);
             station.valid = true;
         } else {
@@ -78,7 +86,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
             updateStationStatus(station);
             needValidPurge = true;
             invalidStations++;
-            console.log(`purging invalid station ${station.station}`);
+            console.log(`purging ${station.moved ? 'moved' : 'expired'} station ${station.station} last timestamp ${new Date(stationValidityTimestamp * 1000).toISOString()}`);
         }
     }
 
