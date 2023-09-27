@@ -74,7 +74,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
 
     //
     // Make sure we have updated validStations
-    lock.acquire('rollup', async () => {
+    return lock.acquire('rollup', async () => {
         const expiryEpoch = nowEpoch - STATION_EXPIRY_TIME_SECS;
         console.log(`Rollup of ${describeAccumulators(accumulators)} starting, station expiry time ${new Date(expiryEpoch * 1000).toISOString()}`);
 
