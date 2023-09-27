@@ -110,11 +110,6 @@ export async function rollupAbortStartup() {
     return postMessage({station: 'all', action: 'abortstartup', now: Date.now() as EpochMS});
 }
 export async function rollupDatabase(station: StationName, commonArgs: RollupDatabaseArgs): Promise<RollupResult | void> {
-    // Safety check
-    if (h3promises.length) {
-        console.error(`rollupDatabase ${station} requested but h3s pending to disk`);
-        throw new Error('sequence error - pendingH3s not flushed before rollup');
-    }
     return postMessage({station, action: 'rollup', commonArgs, now: Date.now() as EpochMS});
 }
 
@@ -182,15 +177,16 @@ if (!isMainThread) {
                             await db.compactRange('0', 'Z');
                             out.datacompacted = true;
                         }
+                        await db!.close();
                         break;
                     case 'purge':
                         await purgeDatabaseInternal(db, 'purge');
+                        await db!.close();
                         break;
                     case 'backup':
                         out = await backupDatabaseInternal(db, task);
                         break;
                 }
-                await db!.close();
             } catch (e) {
                 console.error(e, '->', JSON.stringify(task, null, 4));
             }
@@ -212,7 +208,7 @@ else {
         if (resolver) {
             resolver(data);
         } else {
-            console.error(`missing resolve function for ${promiseKey}/`);
+            console.error(`missing resolve function for ${promiseKey}`);
         }
     });
 }
@@ -221,8 +217,15 @@ async function postMessage(command: RollupWorkerCommands): Promise<any> {
     if (!worker) {
         return;
     }
+    const key = `${'station' in command && command.station ? command.station : 'all'}_${command.action}`;
+
+    if (promises[key]) {
+        console.error(new Error(`duplicate postMessage for ${key}`), command);
+        return;
+    }
+
     return new Promise<RollupWorkerResult>((resolve) => {
-        promises[`${'station' in command && command.station ? command.station : 'all'}_${command.action}`] = {resolve};
+        promises[key] = {resolve};
         worker.postMessage(command);
     });
 }

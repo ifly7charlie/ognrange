@@ -95,7 +95,11 @@ export function initialiseAccumulators(): Accumulators {
     return (accumulators = whatAccumulators(new Date()));
 }
 
-export function describeAccumulators(a: Accumulators): [string, string] {
+export function describeAccumulators(a?: Accumulators): [string, string] {
+    if (!a) {
+        return ['-', ''];
+    }
+
     const currentStart = new Date((a.current?.effectiveStart ?? 0) * 1000);
     const currentText = currentStart //
         ? prefixWithZeros(2, currentStart.getUTCHours().toString()) + ':' + prefixWithZeros(2, currentStart.getUTCMinutes().toString())

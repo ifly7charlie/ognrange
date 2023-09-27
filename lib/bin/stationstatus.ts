@@ -181,5 +181,13 @@ export function updateStationStatus(details: StationDetails): Promise<void> {
 }
 
 export async function closeStatusDb(): Promise<void> {
+    // Make sure we save all of the lastPackets for the stations
+    for (const [k, v] of stations) {
+        if (v.lastBeacon && v.lastPacket && v.lastBeacon < v.lastPacket) {
+            await statusDb?.put(k, v);
+        }
+    }
+
+    // And now close it
     return statusDb?.close() ?? Promise.resolve();
 }

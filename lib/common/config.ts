@@ -82,7 +82,7 @@ export const STATION_EXPIRY_TIME_SECS = (parseInt(process.env.STATION_EXPIRY_TIM
 #   tracked
 # - MAXIMUM_DIRTY_PERIOD ensures that they will be written at least this often
 */
-export const H3_CACHE_FLUSH_PERIOD_MS = (parseInt(process.env.H3_CACHE_FLUSH_PERIOD_MINUTES ?? '') || 5) * 60 * 1000;
+export const H3_CACHE_FLUSH_PERIOD_MS = 500; // (parseInt(process.env.H3_CACHE_FLUSH_PERIOD_MINUTES ?? '') || 5) * 60 * 1000;
 export const H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS = (parseInt(process.env.H3_CACHE_MAXIMUM_DIRTY_PERIOD_MINUTES ?? '') || 30) * 60 * 1000;
 
 /* # control the elevation tile cache, note tiles are not evicted on expiry

@@ -65,7 +65,7 @@ export class CoverageRecordWriter {
     // Append to the builder, flushing if needed
     append(hr: CoverageHeader, cr: CoverageRecord) {
         this._builder.append(cr.arrowFormat(hr.h3splitlong));
-        if (this._builder.length > 4500) {
+        if (this._builder.length > 50000) {
             this.flushBlock();
         }
     }

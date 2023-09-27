@@ -39,18 +39,16 @@ RUN yarn aprs:build
 
 
 ########### production images
-FROM gyp as base-image
+FROM build-image as base-image
 WORKDIR /ognrange
-COPY ./package.json ./
-COPY ./yarn.lock ./
-RUN apk add --no-cache --virtual .build-deps alpine-sdk python3 && npm_config_build_from_source=true yarn install --production  --frozen-lockfile && apk del .build-deps
+RUN yarn install --production  --frozen-lockfile
 
 FROM node:18.16-alpine AS next
 #HEALTHCHECK --interval=10s --retries=5 CMD curl -Q --fail http://localhost:3000 || exit 1
 HEALTHCHECK --interval=10s --retries=5 CMD wget --no-verbose --tries=1 --spider http://next:3000/ || exit 1
 WORKDIR /ognrange
 #COPY --from=next-build-image /ognrange/.next/standalone ./
-COPY --from=next-build-image /ognrange/node_modules ./node_modules
+COPY --from=build-image /ognrange/node_modules ./node_modules
 COPY ./next.config.js ./next.config.js
 COPY ./LICENSE ./LICENSE
 COPY ./package.json ./
@@ -67,7 +65,7 @@ RUN mkdir data
 COPY --from=aprs-build-image /ognrange/dist ./dist
 COPY --from=aprs-build-image /ognrange/package.json .
 COPY --from=aprs-build-image /ognrange/.env.local ./.env.local
-COPY --from=aprs-build-image /ognrange/node_modules ./node_modules
+COPY --from=build-image /ognrange/node_modules ./node_modules
 CMD node dist/bin/aprs.js
 
 FROM httpd:2.4-alpine AS apache

@@ -101,7 +101,7 @@ main().then(() => console.log('initialised'));
 async function main() {
     if (ROLLUP_PERIOD_MINUTES < 12) {
         console.log(`ROLLUP_PERIOD_MINUTES is too short, it must be more than 12 minutes`);
-        process.exit();
+        //        process.exit();
     }
 
     console.log(`Configuration loaded DB@${DB_PATH} Output@${OUTPUT_PATH} Backups@${BACKUP_PATH}, Version ${gv}`);
@@ -195,6 +195,7 @@ async function handleExit(signal: string) {
     process.exit();
 }
 process.on('SIGINT', handleExit);
+process.on('SIGHUP', handleExit);
 process.on('SIGQUIT', handleExit);
 process.on('SIGTERM', handleExit);
 
