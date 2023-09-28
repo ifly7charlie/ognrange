@@ -97,6 +97,10 @@ export async function flushPendingH3s(accumulators: Accumulators): Promise<Rollu
 }
 
 export async function shutdownRollupWorker() {
+    //make sure the flush is finished
+    await Promise.allSettled(h3promises);
+    // and anything else that is running
+    await Promise.allSettled(Object.values(promises));
     // Do the sync in the worker thread
     return postMessage({action: 'shutdown'});
 }
@@ -177,11 +181,9 @@ if (!isMainThread) {
                             await db.compactRange('0', 'Z');
                             out.datacompacted = true;
                         }
-                        await db!.close();
                         break;
                     case 'purge':
                         await purgeDatabaseInternal(db, 'purge');
-                        await db!.close();
                         break;
                     case 'backup':
                         out = await backupDatabaseInternal(db, task);
@@ -190,6 +192,7 @@ if (!isMainThread) {
             } catch (e) {
                 console.error(e, '->', JSON.stringify(task, null, 4));
             }
+            db?.close(); // done allow it to close
             parentPort!.postMessage({action: task.action, station: task.station, ...out});
         } catch (e) {
             console.error(task, e);

@@ -10,7 +10,7 @@ import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync, renameS
 
 import {DB, BatchOperation} from './stationcache';
 
-import {Epoch, EpochMS, StationName, StationId, H3LockKey} from '../bin/types';
+import {Epoch, EpochMS, StationName, StationId} from '../bin/types';
 
 import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
