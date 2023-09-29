@@ -32,7 +32,7 @@ export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | a
             g: d.minAgl[i],
             p: d.avgGap[i],
             q: d.expectedGap?.[i],
-            s: d.stations?.[i] || 0,
+            s: d.stations?.[i] || '',
             t: d.numStations?.[i] ?? d.stations?.[i]?.split(',')?.length ?? 0,
             length: d.avgSig.length
         };

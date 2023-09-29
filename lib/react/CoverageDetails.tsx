@@ -1,12 +1,13 @@
 import {useMemo, useState, useCallback} from 'react';
 import useSWR from 'swr';
 
-import Link from 'next/link';
-
 import {stationMeta} from './stationMeta';
+
 import {cellToLatLng, greatCircleDistance} from 'h3-js';
+import {prefixWithZeros} from '../common/prefixwithzeros';
 
 import {FaUserClock, FaChartBar} from 'react-icons/fa';
+import {IoLockOpenOutline} from 'react-icons/io5';
 
 import {find as _find, reduce as _reduce, debounce as _debounce, map as _map} from 'lodash';
 
@@ -15,9 +16,7 @@ import {BarChart, Bar} from 'recharts';
 
 import VisibilitySensor from 'react-visibility-sensor';
 
-import {IoLockOpenOutline} from 'react-icons/io5';
-
-import {prefixWithZeros} from '../common/prefixwithzeros';
+import {StationList} from './stationlist';
 
 import graphcolours from './graphcolours.js';
 
@@ -105,13 +104,18 @@ export function CoverageDetailsToolTip({details, station}) {
     }
     return <div> </div>;
 }
+
 //
 // Used to generate the tooltip or the information to display in the details panel
 export function CoverageDetails({details, setDetails, station, setStation, file}) {
-    let stationList = undefined;
-    let stationCount = undefined;
     const [doFetch, setDoFetch] = useState(station + details?.h);
     const [extraVisible, setExtraVisible] = useState(false);
+
+    const updateExtraVisibility = useCallback((visible: boolean) => {
+        if (!extraVisible && visible) {
+            setExtraVisible(true);
+        }
+    }, []);
 
     const delayedUpdateFrom = useCallback(
         _debounce(
@@ -137,8 +141,6 @@ export function CoverageDetails({details, setDetails, station, setStation, file}
 
     const clearSelectedH3 = useCallback(() => setDetails({}), [false]);
 
-    const selectStation = useCallback((e) => setStation(e.relatedTarget.id), [false]);
-
     if (!details?.station && !details?.h) {
         return (
             <>
@@ -155,43 +157,6 @@ export function CoverageDetails({details, setDetails, station, setStation, file}
     }
 
     delayedUpdateFrom(station + details?.h);
-
-    // See if we have a list of stations, they are base36 encocoded along with % of packets
-    // ie: (stationid*10+(percentpackets%10)).toString(36)
-    if (stationMeta && details.s) {
-        const parts = details.s.split(',');
-
-        stationList = _reduce(
-            parts,
-            (acc, x) => {
-                const decoded = parseInt(x, 36);
-                const sid = decoded >> 4;
-                const percentage = (decoded & 0x0f) * 10;
-                const meta = stationMeta[sid];
-                const dist = meta?.lat ? greatCircleDistance(cellToLatLng(details.h), [meta.lat, meta.lng], 'km').toFixed(0) + ' km' : '';
-                acc.push(
-                    <tr key={sid}>
-                        <td>
-                            <Link replace onClick={selectStation} href={'#'} id={meta?.station || ''}>
-                                {meta?.station || 'Unknown'}
-                            </Link>
-                        </td>
-                        <td>{dist}</td>
-                        <td>{percentage > 10 ? percentage.toFixed(0) + '%' : ''}</td>
-                    </tr>
-                );
-                return acc;
-            },
-            []
-        );
-
-        stationList = (
-            <table className="stationList">
-                <tbody>{stationList}</tbody>
-            </table>
-        );
-        stationCount = details.t || parts.length;
-    }
 
     // Either a station
     if (details.station) {
@@ -249,12 +214,12 @@ export function CoverageDetails({details, setDetails, station, setStation, file}
                 <br />
                 <hr />
                 <CountDetails c={details.c} byDay={byDay} />
+                <StationList encodedList={details.s} selectedH3={details.h} setStation={setStation} />
+                <br />
                 {details.locked && byDay ? ( //
-                    <VisibilitySensor onChange={setExtraVisible}>
+                    <VisibilitySensor onChange={updateExtraVisibility}>
                         <>
-                            <div style={{height: '300px'}}>
-                                <br />
-                            </div>
+                            <div style={{height: '10px'}}></div>
                             {extraVisible ? ( //
                                 <OtherStationsDetails h={details.h} file={file} station={station} locked={details.locked} />
                             ) : (
@@ -262,14 +227,6 @@ export function CoverageDetails({details, setDetails, station, setStation, file}
                             )}
                         </>
                     </VisibilitySensor>
-                ) : null}
-                <br />
-                {stationList ? (
-                    <>
-                        <b>Stations ({stationCount})</b>
-                        <br />
-                        {stationList}
-                    </>
                 ) : null}
             </div>
         );
