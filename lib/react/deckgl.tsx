@@ -18,7 +18,7 @@ import {useRouter} from 'next/router';
 
 import {progressFetch} from './progressFetch';
 
-import {map as _map, sortedIndexOf as _sortedIndexOf, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, find as _find, debounce as _debounce} from 'lodash';
+import {map as _map, sortedIndexOf as _sortedIndexOf, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, indexOf as _indexOf, debounce as _debounce} from 'lodash';
 
 import {CoverageDetailsToolTip} from './CoverageDetails';
 
@@ -216,9 +216,10 @@ export function CoverageMap(props: {
     setDetails: (d: any) => void;
     highlightStations?: HighlightStationIndicies;
     setHighlightStations: (h: HighlightStationIndicies) => void;
-    station?: string;
-    visualisation: string;
+    station: string;
     setStation: (s: any) => void;
+    flyToStation: string;
+    visualisation: string;
     file?: string;
     tooltips: boolean;
     viewport: any;
@@ -263,16 +264,17 @@ export function CoverageMap(props: {
         [props.details, props.details.h?.[0], props.details.locked]
     );
 
-    // Focus any selected station
+    // Focus any selected station, but only if it's not a fresh page load
+    // flyToStation is a useState and props.station is from the URL
     useEffect(() => {
-        if (stationMeta) {
-            const meta = _find(stationMeta, {station: props.station});
-            if (mapRef?.current && meta) {
-                mapRef.current.getMap().flyTo({center: [meta.lng, meta.lat]});
-                props.setViewport({latitude: meta.lat, longitude: meta.lng});
+        if (stationMeta && props.station === props.flyToStation) {
+            const metaIndex = _indexOf(stationMeta.name, props.flyToStation);
+            if (mapRef?.current && metaIndex != -1) {
+                mapRef.current.getMap().flyTo({center: [stationMeta.lng[metaIndex], stationMeta.lat[metaIndex]]});
+                props.setViewport({latitude: stationMeta.lat[metaIndex], longitude: stationMeta.lng[metaIndex]});
             }
         }
-    }, [props.station, stationMeta, mapRef.current]);
+    }, [props.station, props.flyToStation, stationMeta, mapRef.current]);
 
     const colourMaps = useMemo(() => {
         const f = router.query.fromColour || defaultFromColour;

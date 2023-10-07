@@ -46,6 +46,7 @@ export default function CombinePage(props) {
     // classes. If no class is set then assume the first one
     const router = useRouter();
     const params = useSearchParams();
+    const [flyToStation, setFlyToStation] = useState<string>();
 
     const station = params.get('station');
     const visualisation = params.get('visualisation') || 'avgSig';
@@ -73,8 +74,8 @@ export default function CombinePage(props) {
     const [details, setDetails] = useState({});
 
     // For highlight which station we are talking about
-    const defaultHighlight = [];
-    const [highlightStations, setHighlightStations] = useState<[number, number][]>(defaultHighlight);
+    const defaultHighlight: number[] = [];
+    const [highlightStations, setHighlightStations] = useState<number[]>(defaultHighlight);
 
     // Update the station by updating the query url preserving all parameters but station
     const setStation = useCallback(
@@ -86,6 +87,7 @@ export default function CombinePage(props) {
                 newStation = '';
             }
             updateUrl({station: newStation});
+            setFlyToStation(newStation);
         },
         [stationMeta, station]
     );
@@ -178,9 +180,10 @@ export default function CombinePage(props) {
                 <div style={{width: `${dockSplitW}vw`, height: `${dockSplitH}vh`}}>
                     <CoverageMap //
                         env={props.env}
-                        station={station}
                         file={file}
+                        station={station}
                         setStation={setStation}
+                        flyToStation={flyToStation}
                         visualisation={visualisation}
                         viewport={viewport}
                         setViewport={setViewportUrl}
