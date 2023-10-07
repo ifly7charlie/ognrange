@@ -73,11 +73,8 @@ export default function CombinePage(props) {
     const [details, setDetails] = useState({});
 
     // For highlight which station we are talking about
-    const defaultHighlight = {};
-    if (station) {
-        defaultHighlight[station] = 1;
-    }
-    const [highlightStations, setHighlightStations] = useState(defaultHighlight);
+    const defaultHighlight = [];
+    const [highlightStations, setHighlightStations] = useState<[number, number][]>(defaultHighlight);
 
     // Update the station by updating the query url preserving all parameters but station
     const setStation = useCallback(

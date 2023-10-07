@@ -9,7 +9,6 @@ import {H3HexagonLayer} from '@deck.gl/geo-layers';
 import {AttributionControl} from 'react-map-gl';
 
 import {ArrowLoader} from '@loaders.gl/arrow';
-import {JSONLoader} from '@loaders.gl/json';
 
 import ReactDOMServer from 'react-dom/server';
 
@@ -19,7 +18,7 @@ import {useRouter} from 'next/router';
 
 import {progressFetch} from './progressFetch';
 
-import {map as _map, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, find as _find, debounce as _debounce} from 'lodash';
+import {map as _map, sortedIndexOf as _sortedIndexOf, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, find as _find, debounce as _debounce} from 'lodash';
 
 import {CoverageDetailsToolTip} from './CoverageDetails';
 
@@ -48,21 +47,22 @@ function DeckGLOverlay(
     return null;
 }
 
+type HighlightStationIndicies = number[];
+
 //
 // Responsible for generating the deckGL layers
 //
-function makeLayers(station, file, setStation, highlightStations, visualisation, map2d, onClick, lockedH3, setProgress, getProgress, colourise, colours, env) {
+function makeLayers(station, file, setStation, highlightStations: HighlightStationIndicies, visualisation, map2d, onClick, lockedH3, setProgress, getProgress, colourise, colours, env) {
     const ICON_MAPPING = {
         marker: {x: 0, y: 0, width: 128, height: 128, mask: true}
     };
 
     // Colouring and display options
-    let getStationColor = (d) => (highlightStations[d.id] ? [255, 16, 240] : [0, 0, 192]);
-    if (station) {
-        getStationColor = (d) => (d.station == station ? [255, 16, 240] : [0, 0, 255]);
-    }
-    let getStationSize = (d) => (highlightStations[d.id] || d.station == station ? 7 : 5);
-
+    let getStationColor = (d, {index}) => (stationMeta.name[index] == station || highlightStations[index] ? [255, 16, 240] : [0, 0, 192]);
+    //    if (station) {
+    //        getStationColor = (d) => (d.station == station ? [255, 16, 240] : [0, 0, 255]);
+    //    }
+    let getStationSize = (d, {index}) => (stationMeta.name[index] == station || highlightStations[index] ? 7 : 5);
     const visualisationFunctions = {
         count: (f, i) => colourise(Math.log2(f.count[i]) * (254 / maxCount)),
         avgSig: (f, i) => colourise(Math.min(f.avgSig[i] * 3, 254)),
@@ -84,16 +84,12 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
     const visualisationFunction = visualisationFunctions[visualisation] || visualisationFunctions['avgSig'];
     const altitudeFunction = altitudeFunctions[visualisation] || (() => 0);
 
-    // are we showing circles
-    const locations = _filter(
-        _map(Object.keys(highlightStations), (f) => (stationMeta?.[f]?.lat && stationMeta?.[f]?.lng ? stationMeta?.[f] : undefined)),
-        (v) => !!v
-    );
     const l10k = _map([10, 20, 30], (r) =>
-        locations
+        //        locations
+        highlightStations?.length
             ? new ColumnLayer({
                   id: 'stationk' + r,
-                  data: locations,
+                  data: highlightStations, // locations,
                   diskResolution: 50,
                   radius: r * 1000,
                   radiusUnits: 'meters',
@@ -102,7 +98,8 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
                   stroked: true,
                   pickable: false,
                   elevationScale: 1,
-                  getPosition: (d) => [d.lng, d.lat],
+                  getPosition: (d, {index, data}) => [stationMeta.lng[d], stationMeta.lat[d]], // data.l[index], //.data.h3s[index],
+                  //                {l: [stationMeta?.lng[index], stationMeta?.lat[index]], index});
                   getLineColor: [255, 16, 240, 128],
                   getLineWidth: 10,
                   getElevation: 1000,
@@ -177,31 +174,30 @@ function makeLayers(station, file, setStation, highlightStations, visualisation,
         // Stations
         new IconLayer({
             id: 'icon-layer',
-            data: `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations.json`,
-            loaders: [JSONLoader],
+            data: `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations.arrow`,
+            loaders: [ArrowLoader],
             dataTransform: (d) => {
                 if (d) {
-                    setStationMeta(_keyby(d, 'id'));
+                    setStationMeta(d);
                 }
+                d.length = d.id.length;
                 return d;
             },
             // allow hover and click
             pickable: true,
-            onClick: (i) => {
-                setStation(i.object?.station || '');
-            },
+            onClick,
             // What icon to display
             iconAtlas: 'https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/icon-atlas.png',
             iconMapping: ICON_MAPPING,
             getIcon: (d) => 'marker',
             // How big
             sizeScale: 750,
-            sizeMinPixels: 3,
+            sizeMinPixels: 6,
             //            sizeMaxPixels: 30,
             sizeUnits: 'meters',
             getSize: getStationSize,
             // where and what colour
-            getPosition: (d) => [d.lng, d.lat],
+            getPosition: (d, {index, data}) => [data.lng[index], data.lat[index]], //.data.h3s[index],
             getColor: getStationColor,
             updateTriggers: {
                 getColor: [station, highlightStations],
@@ -218,11 +214,11 @@ export function CoverageMap(props: {
     mapType: number;
     details: any;
     setDetails: (d: any) => void;
-    setHighlightStations: (h: any) => void;
+    highlightStations?: HighlightStationIndicies;
+    setHighlightStations: (h: HighlightStationIndicies) => void;
     station?: string;
     visualisation: string;
     setStation: (s: any) => void;
-    highlightStations?: any;
     file?: string;
     tooltips: boolean;
     viewport: any;
@@ -247,10 +243,21 @@ export function CoverageMap(props: {
     const onClick = useCallback(
         (o) => {
             const object = getObjectFromIndex(o.index, o.layer);
-            if (details.locked && (!object || object.i == props.details.i)) {
+            if (details.locked && !object) {
                 props.setDetails({});
-            } else {
-                props.setDetails({...object, locked: true});
+            }
+
+            if (!object) {
+                return;
+            }
+            if (object.type === 'hexagon') {
+                if (details.locked && (!object || object.i == props.details.i)) {
+                    props.setDetails({});
+                } else {
+                    props.setDetails({...object, locked: true});
+                }
+            } else if (object.type === 'station') {
+                props.setStation(object.name);
             }
         },
         [props.details, props.details.h?.[0], props.details.locked]
@@ -291,7 +298,7 @@ export function CoverageMap(props: {
                 props.station,
                 props.file,
                 props.setStation, //
-                router.query.highlightStations == '0' ? '' : props.highlightStations,
+                router.query.highlightStations == '0' ? [] : props.highlightStations,
                 props.visualisation,
                 map2d,
                 onClick,
@@ -320,34 +327,40 @@ export function CoverageMap(props: {
                 return null;
             }
             if (!picked) {
-                props.setHighlightStations({});
+                props.setHighlightStations([]);
                 props.setDetails({});
                 return null;
             }
 
             const object = getObjectFromIndex(i, layer);
+            if (!object) {
+                return null;
+            }
 
-            if (object && object.i != props.details.i) {
+            // Add highlight to all stations that are referenced by the point
+            if (object.type === 'hexagon' && object.i != props.details.i) {
                 props.setDetails(object);
 
-                if (!props.tooltips && object.s) {
+                if (!props.tooltips && object.s && stationMeta) {
                     const parts = object.s.split(',');
                     props.setHighlightStations(
                         _reduce(
                             parts,
                             (acc, x) => {
                                 const sid = parseInt(x, 36) >> 4;
-                                acc[sid] = !!stationMeta[sid]?.lat;
+                                const index = _sortedIndexOf(stationMeta?.id, sid);
+                                if (index != -1 && !isNaN(stationMeta?.lat[index])) {
+                                    acc.push(index);
+                                }
                                 return acc;
                             },
-                            {}
+                            [] as HighlightStationIndicies
                         )
                     );
                 }
             }
 
-            if (props.tooltips) {
-                console.log('tooltips', object, i, layer, picked);
+            if (props.tooltips || object.type === 'station') {
                 const html = ReactDOMServer.renderToStaticMarkup(
                     <CoverageDetailsToolTip
                         details={object} //

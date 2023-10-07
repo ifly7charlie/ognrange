@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import {useMemo, useCallback} from 'react';
 
-import {reduce as _reduce} from 'lodash';
+import {reduce as _reduce, sortedIndexOf as _sortedIndexOf} from 'lodash';
 
 import {stationMeta} from './stationMeta';
 import {cellToLatLng, greatCircleDistance} from 'h3-js';
@@ -16,9 +16,13 @@ export function StationList({
     selectedH3: [number, number];
     setStation: (a: string) => void;
 }) {
-    const selectStation = useCallback((e) => setStation(e.relatedTarget.id), [false]);
+    const selectStation = useCallback(
+        (e) => {
+            setStation(e.currentTarget?.id);
+        },
+        [false]
+    );
 
-    console.log(typeof encodedList);
     const splitList = useMemo(() => encodedList?.split(','), [encodedList]);
 
     // Convert from comma list that is encoded using: stationid << 4 | percentage & 0x0f
@@ -30,13 +34,15 @@ export function StationList({
                     const decoded = parseInt(x, 36);
                     const sid = decoded >> 4;
                     const percentage = (decoded & 0x0f) * 10;
-                    const meta = stationMeta[sid];
-                    const dist = meta?.lat ? greatCircleDistance(cellToLatLng(selectedH3), [meta.lat, meta.lng], 'km').toFixed(0) + ' km' : '';
+                    const index = _sortedIndexOf(stationMeta.id, sid);
+                    const loc = index != -1 && !isNaN(stationMeta.lat[index]) ? [stationMeta.lat[index], stationMeta.lng[index]] : null;
+                    const name = index != -1 ? stationMeta.name[index] : null;
+                    const dist = loc ? greatCircleDistance(cellToLatLng(selectedH3), loc, 'km').toFixed(0) + ' km' : '';
                     acc.push(
                         <tr key={sid}>
                             <td>
-                                <Link replace onClick={selectStation} href={'#'} id={meta?.station || ''}>
-                                    {meta?.station || 'Unknown'}
+                                <Link replace onClick={selectStation} href={'#'} id={name}>
+                                    {name || 'Unknown'}
                                 </Link>
                             </td>
                             <td>{dist}</td>

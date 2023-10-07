@@ -3,13 +3,13 @@ import useSWR from 'swr';
 
 import {stationMeta} from './stationMeta';
 
-import {cellToLatLng, greatCircleDistance} from 'h3-js';
+import {cellToLatLng, greatCircleDistance, getResolution, getHexagonAreaAvg, UNITS} from 'h3-js';
 import {prefixWithZeros} from '../common/prefixwithzeros';
 
 import {FaUserClock, FaChartBar} from 'react-icons/fa';
 import {IoLockOpenOutline} from 'react-icons/io5';
 
-import {find as _find, reduce as _reduce, debounce as _debounce, map as _map} from 'lodash';
+import {findIndex as _findIndex, reduce as _reduce, debounce as _debounce, map as _map} from 'lodash';
 
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, LabelList} from 'recharts';
 import {BarChart, Bar} from 'recharts';
@@ -34,13 +34,14 @@ function WaitForGraph() {
 
 export function CoverageDetailsToolTip({details, station}) {
     const sd = useMemo(() => {
-        return _find(stationMeta, {station: station});
+        const index = _findIndex<string>(stationMeta?.name, station ?? 'global');
+        return index != -1 ? [stationMeta.lng[index], stationMeta.lat[index]] : null;
     }, [station, stationMeta != undefined]);
 
-    if (details.station) {
+    if (details.type === 'station') {
         return (
             <div>
-                <b>{details.station}</b>
+                <b>{details.name}</b>
                 <br />
                 <>
                     {details.status ? (
@@ -60,21 +61,19 @@ export function CoverageDetailsToolTip({details, station}) {
                         <hr />
                         {details.length} coverage cells
                         <br />
-                        {Math.round(details.length * 0.0737327598) * 10} sq km
+                        {Math.round(details.length * getHexagonAreaAvg(getResolution(details.h[0]), UNITS.km2))} sq km
                         <br />
                         <hr />
                     </>
                 ) : null}
             </div>
         );
-    }
-
-    if (details.h) {
+    } else if (details.type === 'hexagon') {
         return (
             <div>
-                {sd?.lat && sd?.lng ? (
+                {sd ? (
                     <>
-                        {greatCircleDistance(cellToLatLng(details.h), [sd.lat, sd.lng], 'km').toFixed(0)}km to <b>{station}</b>
+                        {greatCircleDistance(cellToLatLng(details.h), sd, 'km').toFixed(0)}km to <b>{station}</b>
                         <hr />
                     </>
                 ) : null}
@@ -136,7 +135,8 @@ export function CoverageDetails({details, setDetails, station, setStation, file}
 
     // Find the station not ideal as linear search so memoize it
     const sd = useMemo(() => {
-        return _find(stationMeta, {station: station});
+        const index = stationMeta ? _findIndex<string>(stationMeta?.name, station) : -1;
+        return index != -1 ? [stationMeta.lng[index], stationMeta.lat[index]] : null;
     }, [station, stationMeta != undefined]);
 
     const clearSelectedH3 = useCallback(() => setDetails({}), [false]);
@@ -199,10 +199,10 @@ export function CoverageDetails({details, setDetails, station, setStation, file}
                         &nbsp;<span> Unlock</span>
                     </button>
                 ) : null}
-                {sd?.lat && sd?.lng ? (
+                {sd ? (
                     <>
                         <br />
-                        Distance to {station}: {greatCircleDistance(cellToLatLng(details.h), [sd.lat, sd.lng], 'km').toFixed(0)}km
+                        Distance to {station}: {greatCircleDistance(cellToLatLng(details.h), sd, 'km').toFixed(0)}km
                     </>
                 ) : null}
                 <br style={{clear: 'both'}} />

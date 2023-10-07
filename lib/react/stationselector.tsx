@@ -23,9 +23,9 @@ export function StationSelector({station, setStation}) {
                     let re = new RegExp(s, 'i');
 
                     const p = _map(
-                        _filter(stationMeta, (v) => v.station.match(re)),
-                        (o) => {
-                            return {value: o.station, label: o.station};
+                        _filter(stationMeta.name, (v) => v.match(re)),
+                        (station) => {
+                            return {value: station, label: station};
                         }
                     );
                     return p;
