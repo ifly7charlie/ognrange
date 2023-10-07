@@ -39,7 +39,7 @@ export default async function getH3Details(req, res) {
     let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
-        if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
+        if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
             fileDateMatch = '' + now.getUTCFullYear();
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
