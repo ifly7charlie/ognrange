@@ -2,6 +2,7 @@ export interface PickableH3Details {
     type: 'hexagon';
     i: number;
     h: [number, number]; //layer.props.data.h3s[i],
+    h3: string;
     a: number;
     b: number;
     c: number;
@@ -23,7 +24,16 @@ export interface PickableStationDetails {
     id: number;
 }
 
-export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | any}}): PickableH3Details | PickableStationDetails {
+export type PickableDetails =
+    | PickableStationDetails
+    | (PickableH3Details & {
+          locked?: boolean;
+      })
+    | {type: 'none'};
+
+import {prefixWithZeros} from '../common/prefixwithzeros';
+
+export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | any}}): PickableDetails {
     const d = layer?.props?.data.d;
     if (d) {
         if ('h3lo' in d) {
@@ -31,6 +41,7 @@ export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | a
                 type: 'hexagon',
                 i,
                 h: [d.h3lo[i], d.h3hi[i]] as [number, number], //layer.props.data.h3s[i],
+                h3: prefixWithZeros(8, d.h3hi[i].toString(16)) + prefixWithZeros(8, d.h3lo[i].toString(16)),
                 a: d.avgSig[i],
                 b: d.minAlt[i],
                 c: d.count[i],

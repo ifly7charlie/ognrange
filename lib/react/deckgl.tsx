@@ -12,13 +12,13 @@ import {ArrowLoader} from '@loaders.gl/arrow';
 
 import ReactDOMServer from 'react-dom/server';
 
-import {getObjectFromIndex} from './pickabledetails';
+import {getObjectFromIndex, PickableDetails} from './pickabledetails';
 
 import {useRouter} from 'next/router';
 
 import {progressFetch} from './progressFetch';
 
-import {map as _map, sortedIndexOf as _sortedIndexOf, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, indexOf as _indexOf, debounce as _debounce} from 'lodash';
+import {map as _map, sortedIndexOf as _sortedIndexOf, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, indexOf as _indexOf, debounce as _debounce, isEqual as _isEqual} from 'lodash';
 
 import {CoverageDetailsToolTip} from './CoverageDetails';
 
@@ -212,8 +212,8 @@ export function CoverageMap(props: {
     //
     env: Record<string, string>;
     mapType: number;
-    details: any;
-    setDetails: (d: any) => void;
+    details?: PickableDetails;
+    setDetails: (d?: PickableDetails) => void;
     highlightStations?: HighlightStationIndicies;
     setHighlightStations: (h: HighlightStationIndicies) => void;
     station: string;
@@ -244,24 +244,27 @@ export function CoverageMap(props: {
     const onClick = useCallback(
         (o) => {
             const object = getObjectFromIndex(o.index, o.layer);
-            if (details.locked && !object) {
-                props.setDetails({});
+            if (!object && details.type === 'hexagon' && details.locked) {
+                props.setDetails();
             }
 
             if (!object) {
                 return;
             }
+
+            // if it's a reclick on the same hexagon
             if (object.type === 'hexagon') {
-                if (details.locked && (!object || object.i == props.details.i)) {
-                    props.setDetails({});
-                } else {
-                    props.setDetails({...object, locked: true});
+                if (_isEqual(object, details)) {
+                    props.setDetails();
+                    return;
                 }
+                props.setDetails({...object, locked: true});
             } else if (object.type === 'station') {
+                props.setDetails();
                 props.setStation(object.name);
             }
         },
-        [props.details, props.details.h?.[0], props.details.locked]
+        [props.details, props.details.type, props.details.type === 'hexagon' ? props.details.h3 + props.details.locked : null]
     );
 
     // Focus any selected station, but only if it's not a fresh page load
@@ -304,14 +307,23 @@ export function CoverageMap(props: {
                 props.visualisation,
                 map2d,
                 onClick,
-                details.locked ? details?.h : null,
+                details.type === 'hexagon' && details.locked ? details?.h : null,
                 setLoaded,
                 () => isLoaded,
                 colourise,
                 fromColour.toString() + toColour.toString(),
                 props.env
             ),
-        [props.station, props.file, map2d, props.visualisation, props.highlightStations, props.details.locked, props.details.h?.[0], props.details.h?.[1], fromColour, toColour]
+        [
+            props.station,
+            props.file,
+            map2d,
+            props.visualisation,
+            props.highlightStations, //
+            props.details.type === 'hexagon' ? props.details.locked + props.details.h3 : null,
+            fromColour,
+            toColour
+        ]
     );
 
     let attribution = `<a href="//www.glidernet.org/">Data from OGN</a> | `;
@@ -325,12 +337,12 @@ export function CoverageMap(props: {
     // Generate tooltip text, and update side panel
     const useToolTipSelection = useCallback(
         ({index: i, layer, picked}) => {
-            if (props.details?.locked) {
+            if (props.details.type === 'hexagon' && props.details.locked) {
                 return null;
             }
             if (!picked) {
                 props.setHighlightStations([]);
-                props.setDetails({});
+                props.setDetails();
                 return null;
             }
 
@@ -340,7 +352,7 @@ export function CoverageMap(props: {
             }
 
             // Add highlight to all stations that are referenced by the point
-            if (object.type === 'hexagon' && object.i != props.details.i) {
+            if (object.type === 'hexagon' && props.details.type === 'hexagon' && object.i != props.details.i) {
                 props.setDetails(object);
 
                 if (!props.tooltips && object.s && stationMeta) {
@@ -372,7 +384,14 @@ export function CoverageMap(props: {
                 return {html};
             }
         },
-        [props.tooltips, props.details, props.details.i, props.details.locked, props.station, props.file, stationMeta]
+        [
+            props.tooltips, //
+            props.details,
+            props.details.type === 'hexagon' ? props.details.i.toString() + props.details.locked : props.details.type,
+            props.station,
+            props.file,
+            stationMeta
+        ]
     );
 
     const loadingLayer = isLoaded ? (

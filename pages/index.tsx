@@ -11,6 +11,8 @@ import {debounce as _debounce} from 'lodash';
 
 import {stationMeta} from '../lib/react/stationMeta';
 
+import type {PickableDetails} from '../lib/react/pickabledetails';
+
 import getConfig from 'next/config';
 const {serverRuntimeConfig} = getConfig();
 
@@ -54,7 +56,8 @@ export default function CombinePage(props) {
     const lat = params.get('lat');
     const lng = params.get('lng');
     const zoom = params.get('zoom');
-    const file = params.get('file');
+    const file = params.get('file')?.toString();
+    //    const h3initial = params.get('h3').toString();
 
     // What the map is looking at
     const [viewport, setViewport] = useState({
@@ -71,7 +74,18 @@ export default function CombinePage(props) {
     });
 
     // Tooltip or sidebar
-    const [details, setDetails] = useState({});
+    const [details, setDetailsInternal] = useState<PickableDetails>({type: 'none'});
+    const setDetails = useCallback(
+        (newDetails?: PickableDetails) => {
+            /*            if (newDetails && newDetails.type === 'hexagon') {
+                updateUrl({h3: newDetails.h3});
+            } else if (details.type === 'hexagon') {
+                updateUrl({h3: null});
+            } */
+            setDetailsInternal(newDetails ?? {type: 'none'});
+        },
+        [true]
+    );
 
     // For highlight which station we are talking about
     const defaultHighlight: number[] = [];

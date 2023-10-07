@@ -4,7 +4,6 @@ import useSWR from 'swr';
 import {stationMeta} from './stationMeta';
 
 import {cellToLatLng, greatCircleDistance, getResolution, getHexagonAreaAvg, UNITS} from 'h3-js';
-import {prefixWithZeros} from '../common/prefixwithzeros';
 
 import {FaUserClock, FaChartBar} from 'react-icons/fa';
 import {IoLockOpenOutline} from 'react-icons/io5';
@@ -107,7 +106,7 @@ export function CoverageDetailsToolTip({details, station}) {
 //
 // Used to generate the tooltip or the information to display in the details panel
 export function CoverageDetails({details, setDetails, station, setStation, file}) {
-    const [doFetch, setDoFetch] = useState(station + details?.h);
+    const [doFetch, setDoFetch] = useState(station + details?.h3);
     const [extraVisible, setExtraVisible] = useState(false);
 
     const updateExtraVisibility = useCallback((visible: boolean) => {
@@ -126,9 +125,9 @@ export function CoverageDetails({details, setDetails, station, setStation, file}
         [details?.locked]
     );
 
-    const {data: byDay, error} = useSWR(
-        station + details?.h == doFetch && details?.h //
-            ? `/api/station/${station || 'global'}/h3details/${prefixWithZeros(8, details.h[1].toString(16))}${prefixWithZeros(8, details.h[0].toString(16))}?file=${file}&lockedH3=${details?.locked ? 1 : 0}`
+    const {data: byDay} = useSWR(
+        station + details?.h3 == doFetch && details?.h3 //
+            ? `/api/station/${station || 'global'}/h3details/${details.h3}?file=${file}&lockedH3=${details?.locked ? 1 : 0}`
             : null,
         fetcher
     );
@@ -385,11 +384,11 @@ function OtherStationsDetails(props) {
     // What URL to use - both return same but act differently
     const url = () =>
         isGlobal //
-            ? `/api/station/global/h3summary/${prefixWithZeros(8, props.h[1].toString(16))}${prefixWithZeros(8, props.h[0].toString(16))}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}`
-            : `/api/station/${props.station}/h3others/${prefixWithZeros(8, props.h[1].toString(16))}${prefixWithZeros(8, props.h[0].toString(16))}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}`;
+            ? `/api/station/global/h3summary/${props.h3}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}`
+            : `/api/station/${props.station}/h3others/${props.h3}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}`;
 
     // Actually load the data when it's time
-    const {data: byDay, error} = useSWR(props.station + props?.h == doFetch && props?.h ? url() : null, fetcher);
+    const {data: byDay} = useSWR(props.station + props?.h3 == doFetch && props?.h3 ? url() : null, fetcher);
 
     function safeZero(x) {
         return isNaN(x) ? 0 : x || 0;
