@@ -2,12 +2,17 @@
 import 'mapbox-gl/dist/mapbox-gl.css';
 import '../styles/styles.css';
 
+import {StationMeta} from '../lib/react/stationmeta';
+
 //import '../styles/onglide.scss';
 
-import {useState} from 'react';
+//import {useState} from 'react';
 
 // This default export is required in a new `pages/_app.js` file.
 export default function MyApp({Component, pageProps}) {
-    //    const [ options, setOptions ] = useState( { mapType: 3 } );
-    return <Component {...pageProps} />;
+    return (
+        <StationMeta env={pageProps.env}>
+            <Component {...pageProps} />
+        </StationMeta>
+    );
 }
