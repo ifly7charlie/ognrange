@@ -1,5 +1,5 @@
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, LabelList} from 'recharts';
-import graphcolours from '../graphcolours.js';
+import graphcolours from '../graphcolours';
 
 import {WaitForGraph} from './waitforgraph';
 
