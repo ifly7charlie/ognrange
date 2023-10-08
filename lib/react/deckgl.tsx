@@ -20,7 +20,7 @@ import {progressFetch} from './progressFetch';
 
 import {map as _map, sortedIndexOf as _sortedIndexOf, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, indexOf as _indexOf, debounce as _debounce, isEqual as _isEqual} from 'lodash';
 
-import {CoverageDetailsToolTip} from './CoverageDetails';
+import {CoverageDetailsToolTip} from './coveragedetails';
 
 import {defaultFromColour, defaultToColour, defaultBaseMap} from './defaults';
 

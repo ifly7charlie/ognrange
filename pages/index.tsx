@@ -77,11 +77,14 @@ export default function CombinePage(props) {
     const [details, setDetailsInternal] = useState<PickableDetails>({type: 'none'});
     const setDetails = useCallback(
         (newDetails?: PickableDetails) => {
-            /*            if (newDetails && newDetails.type === 'hexagon') {
+            if (newDetails && newDetails.type === 'hexagon') {
+                if (details.type === 'hexagon' && details.locked) {
+                    return;
+                }
                 updateUrl({h3: newDetails.h3});
             } else if (details.type === 'hexagon') {
-                updateUrl({h3: null});
-            } */
+                updateUrl({h3: ''});
+            }
             setDetailsInternal(newDetails ?? {type: 'none'});
         },
         [true]

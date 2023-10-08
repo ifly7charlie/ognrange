@@ -4,7 +4,7 @@ import {useState, useCallback, useEffect} from 'react';
 
 import {Settings} from './settings';
 
-import {CoverageDetails} from './CoverageDetails';
+import {CoverageDetails} from './coveragedetails';
 import {VisualisationSelector} from './visualisationselector';
 import {FileSelector} from './fileselector';
 import {StationSelector} from './stationselector';
