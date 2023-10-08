@@ -33,6 +33,36 @@ export type PickableDetails =
 
 import {prefixWithZeros} from '../common/prefixwithzeros';
 
+import {displayedH3s} from './displayedh3s';
+import {h3IndexToSplitLong} from 'h3-js';
+import {sortedIndexOf as _sortedIndexOf, sortedLastIndex as _sortedLastIndex} from 'lodash';
+
+export function getObjectFromH3s(h3: string): PickableDetails {
+    const [h3lo, h3hi] = h3IndexToSplitLong(h3);
+    // Find the first h3hi in the file
+    const index = _sortedIndexOf(displayedH3s.h3hi, h3hi);
+    // none found then it's not in the file
+    if (index == -1) {
+        return {type: 'none'};
+    }
+
+    // We now know the range it could be in
+    const lastIndex = _sortedLastIndex(displayedH3s.h3hi, h3hi);
+
+    // All the rows with h3hi
+    const subset = displayedH3s.h3lo.subarray(index, lastIndex);
+
+    // If one matches
+    const subIndex = _sortedIndexOf(subset, h3lo);
+    if (subIndex == -1) {
+        return {type: 'none'};
+    }
+
+    // Actual index
+    const matchIndex = subIndex + index;
+    return getObjectFromIndex(matchIndex, {props: {data: {displayedH3s}}});
+}
+
 export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | any}}): PickableDetails {
     const d = layer?.props?.data.d;
     if (d) {
@@ -57,7 +87,7 @@ export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | a
             };
         }
         console.log('unexpected layer data', d);
-        return null;
+        return {type: 'none'};
     } else if (layer?.props?.data && i < layer.props.data.length) {
         const dS = layer?.props?.data;
         return {
@@ -68,5 +98,5 @@ export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | a
         };
     }
 
-    return null;
+    return {type: 'none'};
 }

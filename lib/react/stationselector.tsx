@@ -1,7 +1,7 @@
 import {useCallback} from 'react';
 import AsyncSelect from 'react-select/async';
 
-import {stationMeta} from './stationMeta';
+import {useStationMeta} from './stationmeta';
 
 import {debounce as _debounce, map as _map, find as _find, filter as _filter} from 'lodash';
 
@@ -16,6 +16,7 @@ export function StationSelector({station, setStation}) {
         {label: 'All Stations (global)', value: ''}
     ];
 
+    const stationMeta = useStationMeta();
     const findStation = useCallback(
         async (s: string) => {
             if (s.length >= 2) {

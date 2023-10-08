@@ -12,13 +12,25 @@ import {ArrowLoader} from '@loaders.gl/arrow';
 
 import ReactDOMServer from 'react-dom/server';
 
-import {getObjectFromIndex, PickableDetails} from './pickabledetails';
+import {getObjectFromIndex, getObjectFromH3s, PickableDetails} from './pickabledetails';
 
 import {useRouter} from 'next/router';
 
 import {progressFetch} from './progressFetch';
 
-import {map as _map, sortedIndexOf as _sortedIndexOf, reduce as _reduce, chunk as _chunk, zip as _zip, keyBy as _keyby, filter as _filter, indexOf as _indexOf, debounce as _debounce, isEqual as _isEqual} from 'lodash';
+import {
+    map as _map, //
+    reduce as _reduce,
+    sortedIndexOf as _sortedIndexOf,
+    //    sortedLastIndex as _sortedLastIndex,
+    chunk as _chunk,
+    zip as _zip,
+    keyBy as _keyby,
+    filter as _filter,
+    indexOf as _indexOf,
+    debounce as _debounce,
+    isEqual as _isEqual
+} from 'lodash';
 
 import {CoverageDetailsToolTip} from './coveragedetails';
 
@@ -34,7 +46,9 @@ const altitudeFunctions = {
     minAgl: (f) => f.g
 };
 
-import {stationMeta, setStationMeta} from './stationMeta';
+import {useStationMeta, StationMeta} from './stationmeta';
+import {displayedH3s, setDisplayedH3s, ArrowFileType} from './displayedh3s';
+
 let maxCount = 0;
 
 function DeckGLOverlay(
@@ -52,17 +66,33 @@ type HighlightStationIndicies = number[];
 //
 // Responsible for generating the deckGL layers
 //
-function makeLayers(station, file, setStation, highlightStations: HighlightStationIndicies, visualisation, map2d, onClick, lockedH3, setProgress, getProgress, colourise, colours, env) {
+function makeLayers(
+    station, //
+    file,
+    highlightStations: HighlightStationIndicies,
+    visualisation: string,
+    map2d: boolean,
+    onClick,
+    lockedH3: string,
+    setProgress,
+    colourise,
+    colours,
+    env
+) {
+    const stationMeta = useStationMeta();
+
+    //
     const ICON_MAPPING = {
         marker: {x: 0, y: 0, width: 128, height: 128, mask: true}
     };
 
     // Colouring and display options
-    let getStationColor = (d, {index}) => (stationMeta.name[index] == station || highlightStations[index] ? [255, 16, 240] : [0, 0, 192]);
-    //    if (station) {
-    //        getStationColor = (d) => (d.station == station ? [255, 16, 240] : [0, 0, 255]);
-    //    }
-    let getStationSize = (d, {index}) => (stationMeta.name[index] == station || highlightStations[index] ? 7 : 5);
+    let getStationColor = // purple vs blue
+        (_d, {index}) => (stationMeta.name[index] == station || _sortedIndexOf(highlightStations, index) !== -1 ? [255, 16, 240] : [0, 0, 192]);
+    let getStationSize = // bigger if it's selected or in highlight
+        (_d, {index}) => (stationMeta.name[index] == station || _sortedIndexOf(highlightStations, index) !== -1 ? 7 : 5);
+
+    //
     const visualisationFunctions = {
         count: (f, i) => colourise(Math.log2(f.count[i]) * (254 / maxCount)),
         avgSig: (f, i) => colourise(Math.min(f.avgSig[i] * 3, 254)),
@@ -98,8 +128,7 @@ function makeLayers(station, file, setStation, highlightStations: HighlightStati
                   stroked: true,
                   pickable: false,
                   elevationScale: 1,
-                  getPosition: (d, {index, data}) => [stationMeta.lng[d], stationMeta.lat[d]], // data.l[index], //.data.h3s[index],
-                  //                {l: [stationMeta?.lng[index], stationMeta?.lat[index]], index});
+                  getPosition: (d) => [stationMeta.lng[d], stationMeta.lat[d]],
                   getLineColor: [255, 16, 240, 128],
                   getLineWidth: 10,
                   getElevation: 1000,
@@ -138,11 +167,13 @@ function makeLayers(station, file, setStation, highlightStations: HighlightStati
             }
         },
         loaders: ArrowLoader,
-        dataTransform: (d: any & {count: number[]}) => {
+        dataTransform: (d: ArrowFileType) => {
+            setDisplayedH3s(d);
             maxCount = 0;
             for (const v of d.count) {
                 maxCount = Math.max(maxCount, v);
             }
+            setProgress(null);
             return {length: d.avgSig.length, d, maxCount: Math.log2(maxCount)};
         },
         pickable: true,
@@ -174,15 +205,7 @@ function makeLayers(station, file, setStation, highlightStations: HighlightStati
         // Stations
         new IconLayer({
             id: 'icon-layer',
-            data: `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations.arrow`,
-            loaders: [ArrowLoader],
-            dataTransform: (d) => {
-                if (d) {
-                    setStationMeta(d);
-                }
-                d.length = d.id.length;
-                return d;
-            },
+            data: stationMeta,
             // allow hover and click
             pickable: true,
             onClick,
@@ -193,11 +216,10 @@ function makeLayers(station, file, setStation, highlightStations: HighlightStati
             // How big
             sizeScale: 750,
             sizeMinPixels: 6,
-            //            sizeMaxPixels: 30,
             sizeUnits: 'meters',
             getSize: getStationSize,
-            // where and what colour
-            getPosition: (d, {index, data}) => [data.lng[index], data.lat[index]], //.data.h3s[index],
+
+            getPosition: (_d: any, {index, data}: {index: number; data: StationMeta}) => [data.lng[index], data.lat[index]],
             getColor: getStationColor,
             updateTriggers: {
                 getColor: [station, highlightStations],
@@ -212,7 +234,7 @@ export function CoverageMap(props: {
     //
     env: Record<string, string>;
     mapType: number;
-    details?: PickableDetails;
+    details: PickableDetails;
     setDetails: (d?: PickableDetails) => void;
     highlightStations?: HighlightStationIndicies;
     setHighlightStations: (h: HighlightStationIndicies) => void;
@@ -227,7 +249,7 @@ export function CoverageMap(props: {
     dockSplit: number;
 }) {
     const router = useRouter();
-    const [isLoaded, setLoaded] = useState(null);
+    const [isLoaded, setLoaded] = useState<number | null>(null);
     const details = props.details;
 
     const airspaceKey = props.env.NEXT_PUBLIC_AIRSPACE_API_KEY || process.env.NEXT_PUBLIC_AIRSPACE_API_KEY;
@@ -244,17 +266,14 @@ export function CoverageMap(props: {
     const onClick = useCallback(
         (o) => {
             const object = getObjectFromIndex(o.index, o.layer);
-            if (!object && details.type === 'hexagon' && details.locked) {
-                props.setDetails();
-            }
-
             if (!object) {
+                props.setDetails();
                 return;
             }
 
             // if it's a reclick on the same hexagon
             if (object.type === 'hexagon') {
-                if (_isEqual(object, details)) {
+                if (details.type === 'hexagon' && object.i === details.i && details.locked) {
                     props.setDetails();
                     return;
                 }
@@ -269,6 +288,7 @@ export function CoverageMap(props: {
 
     // Focus any selected station, but only if it's not a fresh page load
     // flyToStation is a useState and props.station is from the URL
+    const stationMeta = useStationMeta();
     useEffect(() => {
         if (stationMeta && props.station === props.flyToStation) {
             const metaIndex = _indexOf(stationMeta.name, props.flyToStation);
@@ -290,49 +310,6 @@ export function CoverageMap(props: {
         ); // A
     }, [router.isReady, router.query.fromColour, router.query.toColour]);
 
-    const colourise = (v: number): [number, number, number, number] => {
-        return colourMaps[Math.trunc(((v / 255) * steps) % steps)];
-    };
-
-    //
-    // Generate the deckGL layers
-    // We don't need to do this unless parameters change
-    const {layers} = useMemo(
-        () =>
-            makeLayers(
-                props.station,
-                props.file,
-                props.setStation, //
-                router.query.highlightStations == '0' ? [] : props.highlightStations,
-                props.visualisation,
-                map2d,
-                onClick,
-                details.type === 'hexagon' && details.locked ? details?.h : null,
-                setLoaded,
-                () => isLoaded,
-                colourise,
-                fromColour.toString() + toColour.toString(),
-                props.env
-            ),
-        [
-            props.station,
-            props.file,
-            map2d,
-            props.visualisation,
-            props.highlightStations, //
-            props.details.type === 'hexagon' ? props.details.locked + props.details.h3 : null,
-            fromColour,
-            toColour
-        ]
-    );
-
-    let attribution = `<a href="//www.glidernet.org/">Data from OGN</a> | `;
-    if (props.station) {
-        attribution += `Currently showing station ${props.station}`;
-    } else {
-        attribution += `Currently showing all stations`;
-    }
-
     //
     // Generate tooltip text, and update side panel
     const useToolTipSelection = useCallback(
@@ -352,7 +329,7 @@ export function CoverageMap(props: {
             }
 
             // Add highlight to all stations that are referenced by the point
-            if (object.type === 'hexagon' && props.details.type === 'hexagon' && object.i != props.details.i) {
+            if (object.type === 'hexagon' && (props.details.type !== 'hexagon' || object.i != props.details.i)) {
                 props.setDetails(object);
 
                 if (!props.tooltips && object.s && stationMeta) {
@@ -369,7 +346,7 @@ export function CoverageMap(props: {
                                 return acc;
                             },
                             [] as HighlightStationIndicies
-                        )
+                        ).sort()
                     );
                 }
             }
@@ -393,6 +370,47 @@ export function CoverageMap(props: {
             stationMeta
         ]
     );
+
+    const colourise = (v: number): [number, number, number, number] => {
+        return colourMaps[Math.trunc(((v / 255) * steps) % steps)];
+    };
+
+    //
+    // Generate the deckGL layers
+    // We don't need to do this unless parameters change
+    const {layers} = useMemo(
+        () =>
+            makeLayers(
+                props.station, //
+                props.file,
+                router.query.highlightStations == '0' ? [] : props.highlightStations,
+                props.visualisation,
+                map2d,
+                onClick,
+                details.type === 'hexagon' && details.locked ? details?.h3 : null,
+                setLoaded,
+                colourise,
+                fromColour.toString() + toColour.toString(),
+                props.env
+            ),
+        [
+            props.station,
+            props.file,
+            map2d,
+            props.visualisation,
+            props.highlightStations, //
+            props.details.type === 'hexagon' ? props.details.locked + props.details.h3 : null,
+            fromColour,
+            toColour
+        ]
+    );
+
+    let attribution = `<a href="//www.glidernet.org/">Data from OGN</a> | `;
+    if (props.station) {
+        attribution += `Currently showing station ${props.station}`;
+    } else {
+        attribution += `Currently showing all stations`;
+    }
 
     const loadingLayer = isLoaded ? (
         <div className="progress-bar">

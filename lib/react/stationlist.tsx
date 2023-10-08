@@ -3,7 +3,7 @@ import {useMemo, useCallback} from 'react';
 
 import {reduce as _reduce, sortedIndexOf as _sortedIndexOf} from 'lodash';
 
-import {stationMeta} from './stationMeta';
+import {useStationMeta} from './stationmeta';
 import {cellToLatLng, greatCircleDistance} from 'h3-js';
 
 export function StationList({
@@ -16,6 +16,7 @@ export function StationList({
     selectedH3: [number, number];
     setStation: (a: string) => void;
 }) {
+    const stationMeta = useStationMeta();
     const selectStation = useCallback(
         (e) => {
             setStation(e.currentTarget?.id);

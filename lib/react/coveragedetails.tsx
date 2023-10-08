@@ -1,7 +1,7 @@
 import {useMemo, useState, useCallback} from 'react';
 import useSWR from 'swr';
 
-import {stationMeta} from './stationMeta';
+import {useStationMeta} from './stationmeta';
 import type {PickableDetails} from './pickabledetails';
 
 import {cellToLatLng, greatCircleDistance, getResolution, getHexagonAreaAvg, UNITS} from 'h3-js';
@@ -23,6 +23,8 @@ import {LowestPointDetails} from './coveragedetails/lowestpointdetails';
 const fetcher = (args0, args1) => fetch(args0, args1).then((res) => res.json());
 
 export function CoverageDetailsToolTip({details, station}) {
+    //
+    const stationMeta = useStationMeta();
     const sd = useMemo(() => {
         const index = _findIndex<string>(stationMeta?.name, station ?? 'global');
         return index != -1 ? [stationMeta.lng[index], stationMeta.lat[index]] : null;
@@ -143,6 +145,7 @@ export function CoverageDetails({
     );
 
     // Find the station not ideal as linear search so memoize it
+    const stationMeta = useStationMeta();
     const sd = useMemo(() => {
         const index = stationMeta ? _findIndex<string>(stationMeta?.name, station) : -1;
         return index != -1 ? [stationMeta.lng[index], stationMeta.lat[index]] : null;

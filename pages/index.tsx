@@ -3,18 +3,20 @@ import {useSearchParams} from 'next/navigation';
 
 import dynamic from 'next/dynamic';
 import Head from 'next/head';
-import type {GetServerSideProps} from 'next';
 
-import {useState, useRef, useCallback} from 'react';
+import {useState, useRef, useCallback, useEffect} from 'react';
 
 import {debounce as _debounce} from 'lodash';
 
-import {stationMeta} from '../lib/react/stationMeta';
+import {useStationMeta} from '../lib/react/stationmeta';
+import {displayedH3s} from '../lib/react/displayedh3s';
 
 import type {PickableDetails} from '../lib/react/pickabledetails';
+import {getObjectFromH3s} from '../lib/react/pickabledetails';
 
 import getConfig from 'next/config';
 const {serverRuntimeConfig} = getConfig();
+import type {GetServerSideProps} from 'next';
 
 const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mod.CoverageMap), {
     ssr: false,
@@ -57,7 +59,7 @@ export default function CombinePage(props) {
     const lng = params.get('lng');
     const zoom = params.get('zoom');
     const file = params.get('file')?.toString();
-    //    const h3initial = params.get('h3').toString();
+    const urlH3 = params.get('h3')?.toString();
 
     // What the map is looking at
     const [viewport, setViewport] = useState({
@@ -73,12 +75,14 @@ export default function CombinePage(props) {
         pitch: !(mapType % 2) ? 70 : 0
     });
 
+    const stationMeta = useStationMeta();
+
     // Tooltip or sidebar
     const [details, setDetailsInternal] = useState<PickableDetails>({type: 'none'});
     const setDetails = useCallback(
         (newDetails?: PickableDetails) => {
             if (newDetails && newDetails.type === 'hexagon') {
-                if (details.type === 'hexagon' && details.locked) {
+                if (details.type === 'hexagon' && details.locked && !newDetails.locked) {
                     return;
                 }
                 updateUrl({h3: newDetails.h3});
@@ -89,6 +93,15 @@ export default function CombinePage(props) {
         },
         [true]
     );
+
+    // And also select the URL h3 if it's needed
+    useEffect(() => {
+        console.log(details.type, urlH3, displayedH3s !== undefined);
+        if (details.type === 'none' && urlH3 && displayedH3s) {
+            const matchedRow = getObjectFromH3s(urlH3);
+            setDetails(matchedRow && matchedRow.type === 'hexagon' ? {...matchedRow, locked: true} : undefined);
+        }
+    }, [displayedH3s?.h3lo.length, urlH3, details.type]);
 
     // For highlight which station we are talking about
     const defaultHighlight: number[] = [];
