@@ -112,7 +112,7 @@ export default async function getH3Details(req, res) {
             },
             {date: k, Other: _reduce(v, (r, count) => r + (count || 0), 0)}
         );
-    }).sort((a, b) => a.date.localeCompare(b.date));
+    }).sort((a, b) => b.date.localeCompare(a.date));
 
     //    console.log(total);
 
