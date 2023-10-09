@@ -5,6 +5,7 @@ import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _re
 import {rollupDatabase, purgeDatabase, rollupStartup, RollupDatabaseArgs} from '../worker/rollupworker';
 
 import {allStationsDetails, updateStationStatus} from './stationstatus';
+import {produceStationFile} from './stationfile';
 
 import {Accumulators, getCurrentAccumulators, AccumulatorTypeString, describeAccumulators} from './accumulators';
 
