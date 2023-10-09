@@ -38,13 +38,14 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
     }));
 
     useEffect(() => {
-        load(`${props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations.${file}.arrow`, ArrowLoader)
+        load(`${props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations/stations.${file}.arrow`, ArrowLoader)
             .then((data: StationMeta) => {
                 console.log('setting station meta for', file, 'with', data.id.length, 'stations');
                 setStationMeta({...data, length: data.id.length});
             })
             .catch((e) => {
                 if (e.message.match(/arrow \(404\)/)) {
+                    // Fallback to the old style if it's not found
                     return load(`${props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations.arrow`, ArrowLoader)
                         .then((data: StationMeta) => {
                             console.log('setting station meta', data.id.length, 'stations');

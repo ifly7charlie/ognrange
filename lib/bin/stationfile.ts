@@ -7,7 +7,7 @@ import {gzipSync, createGzip} from 'zlib';
 
 import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
-import type {Accumulators} from './accumulators';
+import type {Accumulators, AccumulatorTypeString} from './accumulators';
 import {allStationsDetails} from './stationstatus';
 
 //
@@ -68,20 +68,21 @@ export async function produceStationFile(accumulators: Accumulators) {
         // for the arrow files, h3 output is the END of the period so the file for the last
         // day in the period is equivalent
         const symlinkAll = (compress: boolean) => {
-            const sourceFile = `stations.day.${accumulators.day.file}.arrow${compress ? '.gz' : ''}`;
+            const sourceFile = `stations/stations.day.${accumulators.day.file}.arrow${compress ? '.gz' : ''}`;
             Object.keys(accumulators)
                 .filter((a) => a !== 'current' && a !== 'day')
                 .forEach((a) => {
-                    symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations.${a}.${accumulators[a].file}.arrow${compress ? '.gz' : ''}`);
-                    symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations.${a}.arrow${compress ? '.gz' : ''}`);
+                    symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations/stations.${a}.${accumulators[a as AccumulatorTypeString].file}.arrow${compress ? '.gz' : ''}`);
+                    symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations/stations.${a}.arrow${compress ? '.gz' : ''}`);
                 });
-            symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations.arrow${compress ? '.gz' : ''}`);
+            symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations/stations.day.arrow${compress ? '.gz' : ''}`);
+            symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations.arrow${compress ? '.gz' : ''}`); //legacy
         };
 
         // And write them out
         if (UNCOMPRESSED_ARROW_FILES) {
             const pt = new PassThrough({objectMode: true});
-            const ws = createWriteStream(OUTPUT_PATH + `stations.day.${accumulators.day.file}.arrow`);
+            const ws = createWriteStream(OUTPUT_PATH + `stations/stations.day.${accumulators.day.file}.arrow`);
             const finished = new Promise((resolve) => {
                 ws.on('close', resolve);
             });
@@ -95,7 +96,7 @@ export async function produceStationFile(accumulators: Accumulators) {
         }
         {
             const pt = new PassThrough({objectMode: true, emitClose: true});
-            const ws = createWriteStream(OUTPUT_PATH + `stations.day.${accumulators.day.file}.arrow.gz`);
+            const ws = createWriteStream(OUTPUT_PATH + `stations/stations.day.${accumulators.day.file}.arrow.gz`);
             const finished = new Promise((resolve) => {
                 ws.on('close', resolve);
             });

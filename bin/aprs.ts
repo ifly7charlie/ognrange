@@ -109,7 +109,7 @@ async function main() {
     // Make sure our paths exist
     try {
         mkdirSync(DB_PATH + 'stations', {recursive: true});
-        mkdirSync(OUTPUT_PATH, {recursive: true});
+        mkdirSync(OUTPUT_PATH + 'stations', {recursive: true});
         mkdirSync(BACKUP_PATH, {recursive: true});
     } catch (e) {
         console.log('error creating directories', e);

@@ -34,11 +34,14 @@ const explicitlyIgnoredStations: Record<string, boolean> = {
     GIGA01: true,
     UNSET: true,
     unknown: true,
+    stations: true, // reserved
+    global: true, // reserved
+    RELAY: true, // relay!
     PWUNSET: true,
     GLIDERNA: true
 };
 
-const ignoreFullRegexp = new RegExp(/^(global|[0-9]*|RELAY)$/, 'i');
+const ignoreFullRegexp = new RegExp(/^[0-9]*$/, 'i');
 const ignoreStartRegexp = new RegExp(/^(FNB|XCG|XCC|OGN|RELAY|RND|FLR|bSky|AIRS).*$/, 'i');
 const ignoreAnyRegexp = new RegExp(/[^A-Za-z0-9_-]/);
 
