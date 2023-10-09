@@ -16,8 +16,6 @@ import {getObjectFromIndex, getObjectFromH3s, PickableDetails} from './pickabled
 
 import {useRouter} from 'next/router';
 
-import {progressFetch} from './progressFetch';
-
 import {
     map as _map, //
     reduce as _reduce,
@@ -36,9 +34,6 @@ import {CoverageDetailsToolTip} from './coveragedetails';
 
 import {defaultFromColour, defaultToColour, defaultBaseMap} from './defaults';
 
-// Lookup the URL for data
-import {NEXT_PUBLIC_DATA_URL} from '../common/config';
-
 const steps = 8;
 
 const altitudeFunctions = {
@@ -47,9 +42,7 @@ const altitudeFunctions = {
 };
 
 import {useStationMeta, StationMeta} from './stationmeta';
-import {displayedH3s, setDisplayedH3s, ArrowFileType} from './displayedh3s';
-
-let maxCount = 0;
+import {useDisplayedH3s} from './displayedh3s';
 
 function DeckGLOverlay(
     props: MapboxOverlayProps & {
@@ -67,19 +60,19 @@ type HighlightStationIndicies = number[];
 // Responsible for generating the deckGL layers
 //
 function makeLayers(
-    station, //
-    file,
+    station: string, //
+    file: string,
     highlightStations: HighlightStationIndicies,
     visualisation: string,
     map2d: boolean,
     onClick,
     lockedH3: string,
-    setProgress,
     colourise,
     colours,
     env
 ) {
     const stationMeta = useStationMeta();
+    const displayedh3s = useDisplayedH3s();
 
     //
     const ICON_MAPPING = {
@@ -94,7 +87,7 @@ function makeLayers(
 
     //
     const visualisationFunctions = {
-        count: (f, i) => colourise(Math.log2(f.count[i]) * (254 / maxCount)),
+        count: (f, i) => colourise(Math.log2(f.count[i]) * (254 / displayedh3s.logMaxCount)),
         avgSig: (f, i) => colourise(Math.min(f.avgSig[i] * 3, 254)),
         maxSig: (f, i) => colourise(Math.min(f.maxSig[i] * 1.3, 254)),
         minAlt: (f, i) => colourise(Math.min(f.minAlt[i] / 20, 254)),
@@ -160,22 +153,7 @@ function makeLayers(
     // So we can check loading status
     const hexLayer = new H3HexagonLayer({
         id: (station || 'global') + (file || 'year'),
-        data: `${env.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL}${station || 'global'}/${station || 'global'}.${file || 'year'}.arrow`,
-        loadOptions: {
-            fetch: (input, init) => {
-                return fetch(input, init).then(progressFetch(setProgress));
-            }
-        },
-        loaders: ArrowLoader,
-        dataTransform: (d: ArrowFileType) => {
-            setDisplayedH3s(d);
-            maxCount = 0;
-            for (const v of d.count) {
-                maxCount = Math.max(maxCount, v);
-            }
-            setProgress(null);
-            return {length: d.avgSig.length, d, maxCount: Math.log2(maxCount)};
-        },
+        data: displayedh3s,
         pickable: true,
         wireframe: false,
         filled: true,
@@ -249,7 +227,6 @@ export function CoverageMap(props: {
     dockSplit: number;
 }) {
     const router = useRouter();
-    const [isLoaded, setLoaded] = useState<number | null>(null);
     const details = props.details;
 
     const airspaceKey = props.env.NEXT_PUBLIC_AIRSPACE_API_KEY || process.env.NEXT_PUBLIC_AIRSPACE_API_KEY;
@@ -259,6 +236,7 @@ export function CoverageMap(props: {
 
     // For remote updating of the map
     const mapRef = useRef(null);
+    const displayedh3s = useDisplayedH3s();
 
     // Map display style
     const map2d = props.mapType > 1;
@@ -388,7 +366,6 @@ export function CoverageMap(props: {
                 map2d,
                 onClick,
                 details.type === 'hexagon' && details.locked ? details?.h3 : null,
-                setLoaded,
                 colourise,
                 fromColour.toString() + toColour.toString(),
                 props.env
@@ -396,6 +373,7 @@ export function CoverageMap(props: {
         [
             props.station,
             props.file,
+            displayedh3s,
             map2d,
             props.visualisation,
             props.highlightStations, //
@@ -411,13 +389,6 @@ export function CoverageMap(props: {
     } else {
         attribution += `Currently showing all stations`;
     }
-
-    const loadingLayer = isLoaded ? (
-        <div className="progress-bar">
-            {(isLoaded * 100).toFixed(0)}%
-            <div className="progress" style={{transform: `scaleX(${isLoaded})`}} />
-        </div>
-    ) : null;
 
     // We keep our saved viewstate up to date in case of re-render
     const onViewStateChange = useCallback(({viewState}) => {
@@ -458,7 +429,7 @@ export function CoverageMap(props: {
                 <ScaleControl position="bottom-left" />
                 <NavigationControl showCompass showZoom position="bottom-left" />
             </Map>
-            {loadingLayer}
+            {displayedh3s.loadingLayer ?? null}
         </>
     );
 }

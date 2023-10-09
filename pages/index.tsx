@@ -9,7 +9,7 @@ import {useState, useRef, useCallback, useEffect} from 'react';
 import {debounce as _debounce} from 'lodash';
 
 import {useStationMeta} from '../lib/react/stationmeta';
-import {displayedH3s} from '../lib/react/displayedh3s';
+import {useDisplayedH3s, DisplayedH3s} from '../lib/react/displayedh3s';
 
 import type {PickableDetails} from '../lib/react/pickabledetails';
 import {getObjectFromH3s} from '../lib/react/pickabledetails';
@@ -76,6 +76,7 @@ export default function CombinePage(props) {
     });
 
     const stationMeta = useStationMeta();
+    const displayedH3s = useDisplayedH3s();
 
     // Tooltip or sidebar
     const [details, setDetailsInternal] = useState<PickableDetails>({type: 'none'});
@@ -97,11 +98,11 @@ export default function CombinePage(props) {
     // And also select the URL h3 if it's needed
     useEffect(() => {
         console.log(details.type, urlH3, displayedH3s !== undefined);
-        if (details.type === 'none' && urlH3 && displayedH3s) {
-            const matchedRow = getObjectFromH3s(urlH3);
+        if (details.type === 'none' && urlH3 && displayedH3s.length) {
+            const matchedRow = getObjectFromH3s(displayedH3s, urlH3);
             setDetails(matchedRow && matchedRow.type === 'hexagon' ? {...matchedRow, locked: true} : undefined);
         }
-    }, [displayedH3s?.h3lo.length, urlH3, details.type]);
+    }, [displayedH3s.length, urlH3, details.type]);
 
     // For highlight which station we are talking about
     const defaultHighlight: number[] = [];
