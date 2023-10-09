@@ -66,6 +66,6 @@ export default async function getH3Details(req, res) {
     });
 
     //
-    res.status(200).json(result.sort((a, b) => b.date.localeCompare(a.date)));
+    res.status(200).json(result.sort((a, b) => a.date.localeCompare(b.date)));
     console.log('<-', Date.now() - now.getTime(), 'msec', result.length, 'rows');
 }

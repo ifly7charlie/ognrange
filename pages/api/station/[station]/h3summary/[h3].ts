@@ -118,7 +118,7 @@ export default async function getH3Details(req, res) {
                 Other: 100
             }
         );
-    }).sort((a, b) => b.date.localeCompare(a.date));
+    }).sort((a, b) => a.date.localeCompare(b.date));
 
     // Return the selected top 5 along with the number left over so we can
     // do a proper graph

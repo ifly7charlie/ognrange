@@ -13,7 +13,7 @@ import LRU from 'lru-cache';
 const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, ttl: 3 * 3600 * 1000},
     cache = new LRU<string, ArrowTableType>(options);
 
-const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
+const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: '2-digit', day: '2-digit', timeZone: 'UTC'});
 
 interface RowResult {
     h3lo: number;
