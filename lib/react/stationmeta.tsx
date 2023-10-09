@@ -1,5 +1,12 @@
 import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 
+import {createContext, useContext, useEffect, useState} from 'react';
+
+import {ArrowLoader} from '@loaders.gl/arrow';
+import {load} from '@loaders.gl/core';
+
+const StationMetaContext = createContext<StationMeta | null>(null);
+
 export interface StationMeta {
     name: string[];
     lng: number[];
@@ -7,13 +14,6 @@ export interface StationMeta {
     id: number[];
     length: number;
 }
-
-import {createContext, useContext, useEffect, useState} from 'react';
-
-import {ArrowLoader} from '@loaders.gl/arrow';
-import {load} from '@loaders.gl/core';
-
-const StationMetaContext = createContext<StationMeta | null>(null);
 
 export function useStationMeta() {
     return useContext(StationMetaContext);
