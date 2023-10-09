@@ -83,8 +83,8 @@ export async function searchMatchingArrowFiles(station: string, fileDateMatch: s
             .map((fn) => {
                 return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz$/)?.[1] || '', fileName: fn};
             })
-            .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch)
-            .sort((a, b) => a.fileName.localeCompare(b.fileName));
+            .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch);
+        //            .sort((a, b) => a.fileName.localeCompare(b.fileName));
 
         for (const file of files) {
             const fileDate = new Date(file.date);
