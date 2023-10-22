@@ -70,7 +70,7 @@ export function Dock(props: {
         >
             <div>
                 <span style={{padding: '0px', border: '5px solid white'}}>
-                    <img width="100" height="100" src="http://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />
+                    <img width="100" height="100" src="https://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />
                 </span>
             </div>
 
