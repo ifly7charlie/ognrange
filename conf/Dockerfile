@@ -57,6 +57,7 @@ COPY ./package.json ./
 COPY ./public ./public
 COPY --from=next-build-image /ognrange/.next/static ./.next/static
 COPY --from=next-build-image /ognrange/.next/ ./.next/
+COPY --from=next-build-image /ognrange/.env.local ./.env.local
 EXPOSE 3000
 CMD yarn next start
 
