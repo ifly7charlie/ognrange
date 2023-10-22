@@ -20,7 +20,6 @@ export function Dock(props: {
     setFile: (file: string) => void;
     file: string;
     hoverDetails: PickableDetails;
-    setHoverDetails: (details: any) => void;
     selectedDetails: PickableDetails;
     setSelectedDetails: (sd?: PickableDetails) => void;
     setVisualisation: (visualisation: string) => void;
