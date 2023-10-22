@@ -43,7 +43,7 @@ export function FileSelector({station, file, setFile}) {
             : null;
 
         return [selects, selected];
-    }, [file, data?.files?.day?.current]);
+    }, [file, data?.files?.day?.current, station]);
 
     const selectFileOnChange = useCallback((v) => setFile(v.value), [false]);
 
