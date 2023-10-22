@@ -24,12 +24,7 @@ export interface PickableStationDetails {
     id: number;
 }
 
-export type PickableDetails =
-    | PickableStationDetails
-    | (PickableH3Details & {
-          locked?: boolean;
-      })
-    | {type: 'none'};
+export type PickableDetails = PickableStationDetails | PickableH3Details | {type: 'none'};
 
 import {prefixWithZeros} from '../common/prefixwithzeros';
 
@@ -39,9 +34,12 @@ import {sortedIndexOf as _sortedIndexOf, sortedLastIndex as _sortedLastIndex} fr
 
 export function getObjectFromH3s(displayedH3s: DisplayedH3sType, h3: string): PickableDetails {
     //    const displayedH3s = useDisplayedH3s();
-    console.log(displayedH3s);
+    if (!displayedH3s.length) {
+        return {type: 'none'};
+    }
 
     const [h3lo, h3hi] = h3IndexToSplitLong(h3);
+
     // Find the first h3hi in the file
     const index = _sortedIndexOf(displayedH3s.d.h3hi, h3hi);
     // none found then it's not in the file
@@ -63,7 +61,7 @@ export function getObjectFromH3s(displayedH3s: DisplayedH3sType, h3: string): Pi
 
     // Actual index
     const matchIndex = subIndex + index;
-    return getObjectFromIndex(matchIndex, {props: {data: {displayedH3s}}});
+    return getObjectFromIndex(matchIndex, {props: {data: {...displayedH3s}}});
 }
 
 export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | any}}): PickableDetails {

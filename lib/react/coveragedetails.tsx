@@ -100,22 +100,24 @@ export function CoverageDetailsToolTip({details, station}) {
 // Used to generate the tooltip or the information to display in the details panel
 export function CoverageDetails({
     details,
-    setDetails,
+    locked,
+    setSelectedDetails,
     station,
     setStation,
     file
 }: //
 {
     details: PickableDetails;
-    setDetails: (sd?: PickableDetails) => void;
+    locked: boolean;
+    setSelectedDetails: (sd?: PickableDetails) => void;
     station: string;
     setStation: (s: string) => void;
     file: string;
 }) {
     // Tidy up code later by simplifying typescript types
     const h3 = details.type === 'hexagon' ? details.h3 : '';
-    const key = station + (details.type === 'hexagon' ? details.h3 + (details.locked ? 'L' : '') : details.type);
-    const isLocked = details.type === 'hexagon' && details.locked;
+    const key = station + (details.type === 'hexagon' ? details.h3 + (locked ? 'L' : '') : details.type);
+    const isLocked = details.type === 'hexagon' && locked;
 
     //
     const [doFetch, setDoFetch] = useState(key);
@@ -151,7 +153,7 @@ export function CoverageDetails({
         return index != -1 ? [stationMeta.lng[index], stationMeta.lat[index]] : null;
     }, [station, stationMeta != undefined]);
 
-    const clearSelectedH3 = useCallback(() => setDetails(), [false]);
+    const clearSelectedH3 = useCallback(() => setSelectedDetails({type: 'none'}), [false]);
 
     if (details.type === 'none' || !h3) {
         return (
@@ -205,8 +207,8 @@ export function CoverageDetails({
                         <hr />
                     </>
                 ) : null}
-                <b>Details at {details.locked ? 'specific point' : 'mouse point'}</b>
-                {details.locked ? (
+                <b>Details at {locked ? 'specific point' : 'mouse point'}</b>
+                {locked ? (
                     <button style={{float: 'right', padding: '10px'}} onClick={clearSelectedH3}>
                         <IoLockOpenOutline style={{paddingTop: '2px'}} />
                         &nbsp;<span> Unlock</span>
@@ -229,12 +231,12 @@ export function CoverageDetails({
                 <CountDetails c={details.c} byDay={byDay} />
                 <StationList encodedList={details.s} selectedH3={details.h} setStation={setStation} />
                 <br />
-                {details.locked && byDay ? ( //
+                {locked && byDay ? ( //
                     <VisibilitySensor onChange={updateExtraVisibility}>
                         <>
                             <div style={{height: '10px'}}></div>
                             {extraVisible ? ( //
-                                <OtherStationsDetails h3={details.h3} file={file} station={station} locked={details.locked} />
+                                <OtherStationsDetails h3={details.h3} file={file} station={station} locked={locked} />
                             ) : (
                                 <span>Loading...</span>
                             )}

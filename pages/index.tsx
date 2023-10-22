@@ -4,7 +4,7 @@ import {useSearchParams} from 'next/navigation';
 import dynamic from 'next/dynamic';
 import Head from 'next/head';
 
-import {useState, useRef, useCallback, useEffect} from 'react';
+import {useState, useMemo, useRef, useCallback, useEffect} from 'react';
 
 import {debounce as _debounce} from 'lodash';
 
@@ -79,34 +79,20 @@ export default function CombinePage(props) {
     const displayedH3s = useDisplayedH3s();
 
     // Tooltip or sidebar
-    const [details, setDetailsInternal] = useState<PickableDetails>({type: 'none'});
-    const setDetails = useCallback(
+    const [hoverDetails, setHoverDetails] = useState<PickableDetails>({type: 'none'});
+    const selectedDetails = useMemo<PickableDetails>(() => getObjectFromH3s(displayedH3s, urlH3), [displayedH3s.length, urlH3]);
+
+    const setSelectedDetails = useCallback(
         (newDetails?: PickableDetails) => {
-            if (newDetails && newDetails.type === 'hexagon') {
-                if (details.type === 'hexagon' && details.locked && !newDetails.locked) {
-                    return;
-                }
+            if (newDetails && newDetails.type === 'hexagon' && JSON.stringify(selectedDetails) != JSON.stringify(newDetails)) {
                 updateUrl({h3: newDetails.h3});
-            } else if (details.type === 'hexagon') {
+            } else {
                 updateUrl({h3: ''});
             }
-            setDetailsInternal(newDetails ?? {type: 'none'});
+            setHoverDetails({type: 'none'});
         },
-        [true]
+        [displayedH3s.length, urlH3]
     );
-
-    // And also select the URL h3 if it's needed
-    useEffect(() => {
-        console.log(details.type, urlH3, displayedH3s !== undefined);
-        if (details.type === 'none' && urlH3 && displayedH3s.length) {
-            const matchedRow = getObjectFromH3s(displayedH3s, urlH3);
-            setDetails(matchedRow && matchedRow.type === 'hexagon' ? {...matchedRow, locked: true} : undefined);
-        }
-    }, [displayedH3s.length, urlH3, details.type]);
-
-    // For highlight which station we are talking about
-    const defaultHighlight: number[] = [];
-    const [highlightStations, setHighlightStations] = useState<number[]>(defaultHighlight);
 
     // Update the station by updating the query url preserving all parameters but station
     const setStation = useCallback(
@@ -220,11 +206,11 @@ export default function CombinePage(props) {
                         setViewport={setViewportUrl}
                         mapType={mapType}
                         tooltips={false}
-                        highlightStations={highlightStations}
-                        setHighlightStations={setHighlightStations}
-                        details={details}
-                        setDetails={setDetails}
+                        setHoverDetails={setHoverDetails}
+                        setSelectedDetails={setSelectedDetails}
                         dockSplit={dockSplit}
+                        hoverDetails={hoverDetails}
+                        selectedDetails={selectedDetails}
                     ></CoverageMap>
                 </div>
                 <Dock //
@@ -235,8 +221,9 @@ export default function CombinePage(props) {
                     setVisualisation={setVisualisation}
                     file={file}
                     setFile={setFile}
-                    details={details}
-                    setDetails={setDetails}
+                    hoverDetails={hoverDetails}
+                    setSelectedDetails={setSelectedDetails}
+                    selectedDetails={selectedDetails}
                     updateUrl={updateUrl}
                     dockSplit={dockSplit}
                     setDockSplit={setDockSplit}

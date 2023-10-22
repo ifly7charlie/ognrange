@@ -1,4 +1,4 @@
-import React, {useState, useCallback, useMemo, useRef, useEffect} from 'react';
+import React, {useCallback, useMemo, useRef, useEffect} from 'react';
 import {MapboxOverlay, MapboxOverlayProps} from '@deck.gl/mapbox';
 
 import Map, {Source, Layer, useControl, NavigationControl, ScaleControl} from 'react-map-gl';
@@ -8,11 +8,10 @@ import {H3HexagonLayer} from '@deck.gl/geo-layers';
 
 import {AttributionControl} from 'react-map-gl';
 
-import {ArrowLoader} from '@loaders.gl/arrow';
-
 import ReactDOMServer from 'react-dom/server';
+import {useSearchParams} from 'next/navigation';
 
-import {getObjectFromIndex, getObjectFromH3s, PickableDetails} from './pickabledetails';
+import {getObjectFromIndex, PickableDetails} from './pickabledetails';
 
 import {useRouter} from 'next/router';
 
@@ -60,20 +59,18 @@ type HighlightStationIndicies = number[];
 // Responsible for generating the deckGL layers
 //
 function makeLayers(
+    stationMeta: StationMeta,
+    displayedh3s: any,
     station: string, //
     file: string,
     highlightStations: HighlightStationIndicies,
     visualisation: string,
     map2d: boolean,
-    onClick,
+    onClick: (a: any) => void,
     lockedH3: string,
     colourise,
-    colours,
-    env
+    colours
 ) {
-    const stationMeta = useStationMeta();
-    const displayedh3s = useDisplayedH3s();
-
     //
     const ICON_MAPPING = {
         marker: {x: 0, y: 0, width: 128, height: 128, mask: true}
@@ -190,7 +187,7 @@ function makeLayers(
             // What icon to display
             iconAtlas: 'https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/icon-atlas.png',
             iconMapping: ICON_MAPPING,
-            getIcon: (d) => 'marker',
+            getIcon: (_d: unknown) => 'marker',
             // How big
             sizeScale: 750,
             sizeMinPixels: 6,
@@ -212,10 +209,10 @@ export function CoverageMap(props: {
     //
     env: Record<string, string>;
     mapType: number;
-    details: PickableDetails;
-    setDetails: (d?: PickableDetails) => void;
-    highlightStations?: HighlightStationIndicies;
-    setHighlightStations: (h: HighlightStationIndicies) => void;
+    selectedDetails: PickableDetails;
+    hoverDetails: PickableDetails;
+    setSelectedDetails: (d: PickableDetails) => void;
+    setHoverDetails: (d: PickableDetails) => void;
     station: string;
     setStation: (s: any) => void;
     flyToStation: string;
@@ -226,8 +223,13 @@ export function CoverageMap(props: {
     setViewport: Function;
     dockSplit: number;
 }) {
+    const stationMeta = useStationMeta();
+    const displayedh3s = useDisplayedH3s();
     const router = useRouter();
-    const details = props.details;
+    const params = useSearchParams();
+    const doHighlightStations = (params.get('highlightStations') || '1') !== '0';
+
+    const details = props.selectedDetails.type === 'none' ? props.hoverDetails : props.selectedDetails;
 
     const airspaceKey = props.env.NEXT_PUBLIC_AIRSPACE_API_KEY || process.env.NEXT_PUBLIC_AIRSPACE_API_KEY;
 
@@ -236,7 +238,6 @@ export function CoverageMap(props: {
 
     // For remote updating of the map
     const mapRef = useRef(null);
-    const displayedh3s = useDisplayedH3s();
 
     // Map display style
     const map2d = props.mapType > 1;
@@ -244,29 +245,37 @@ export function CoverageMap(props: {
     const onClick = useCallback(
         (o) => {
             const object = getObjectFromIndex(o.index, o.layer);
-            if (!object) {
-                props.setDetails();
-                return;
-            }
-
             // if it's a reclick on the same hexagon
-            if (object.type === 'hexagon') {
-                if (details.type === 'hexagon' && object.i === details.i && details.locked) {
-                    props.setDetails();
-                    return;
-                }
-                props.setDetails({...object, locked: true});
-            } else if (object.type === 'station') {
-                props.setDetails();
+            if (object.type === 'station') {
                 props.setStation(object.name);
             }
+            props.setSelectedDetails(object);
         },
-        [props.details, props.details.type, props.details.type === 'hexagon' ? props.details.h3 + props.details.locked : null]
+        [props.setSelectedDetails, props.setStation]
     );
+
+    const highlightStations = useMemo((): HighlightStationIndicies => {
+        console.log('highlightStations', doHighlightStations, details);
+        if (details.type === 'hexagon' && doHighlightStations) {
+            const parts = details.s.split(',');
+            return _reduce(
+                parts,
+                (acc, x) => {
+                    const sid = parseInt(x, 36) >> 4;
+                    const index = _sortedIndexOf(stationMeta?.id, sid);
+                    if (index != -1 && !isNaN(stationMeta?.lat[index])) {
+                        acc.push(index);
+                    }
+                    return acc;
+                },
+                [] as HighlightStationIndicies
+            ).sort();
+        }
+        return [];
+    }, [JSON.stringify(details), stationMeta.length, doHighlightStations]);
 
     // Focus any selected station, but only if it's not a fresh page load
     // flyToStation is a useState and props.station is from the URL
-    const stationMeta = useStationMeta();
     useEffect(() => {
         if (stationMeta && props.station === props.flyToStation) {
             const metaIndex = _indexOf(stationMeta.name, props.flyToStation);
@@ -292,12 +301,11 @@ export function CoverageMap(props: {
     // Generate tooltip text, and update side panel
     const useToolTipSelection = useCallback(
         ({index: i, layer, picked}) => {
-            if (props.details.type === 'hexagon' && props.details.locked) {
+            if (props.selectedDetails.type !== 'none') {
                 return null;
             }
             if (!picked) {
-                props.setHighlightStations([]);
-                props.setDetails();
+                props.setHoverDetails({type: 'none'});
                 return null;
             }
 
@@ -307,26 +315,8 @@ export function CoverageMap(props: {
             }
 
             // Add highlight to all stations that are referenced by the point
-            if (object.type === 'hexagon' && (props.details.type !== 'hexagon' || object.i != props.details.i)) {
-                props.setDetails(object);
-
-                if (!props.tooltips && object.s && stationMeta) {
-                    const parts = object.s.split(',');
-                    props.setHighlightStations(
-                        _reduce(
-                            parts,
-                            (acc, x) => {
-                                const sid = parseInt(x, 36) >> 4;
-                                const index = _sortedIndexOf(stationMeta?.id, sid);
-                                if (index != -1 && !isNaN(stationMeta?.lat[index])) {
-                                    acc.push(index);
-                                }
-                                return acc;
-                            },
-                            [] as HighlightStationIndicies
-                        ).sort()
-                    );
-                }
+            if (object.type === 'hexagon' && (props.hoverDetails.type !== 'hexagon' || object.i != props.hoverDetails.i)) {
+                props.setHoverDetails(object);
             }
 
             if (props.tooltips || object.type === 'station') {
@@ -341,8 +331,8 @@ export function CoverageMap(props: {
         },
         [
             props.tooltips, //
-            props.details,
-            props.details.type === 'hexagon' ? props.details.i.toString() + props.details.locked : props.details.type,
+            JSON.stringify(props.hoverDetails),
+            JSON.stringify(props.selectedDetails),
             props.station,
             props.file,
             stationMeta
@@ -359,16 +349,17 @@ export function CoverageMap(props: {
     const {layers} = useMemo(
         () =>
             makeLayers(
+                stationMeta,
+                displayedh3s,
                 props.station, //
                 props.file,
-                router.query.highlightStations == '0' ? [] : props.highlightStations,
+                highlightStations,
                 props.visualisation,
                 map2d,
                 onClick,
-                details.type === 'hexagon' && details.locked ? details?.h3 : null,
+                props.selectedDetails.type === 'hexagon' ? props.selectedDetails.h3 : null,
                 colourise,
-                fromColour.toString() + toColour.toString(),
-                props.env
+                fromColour.toString() + toColour.toString()
             ),
         [
             props.station,
@@ -376,8 +367,8 @@ export function CoverageMap(props: {
             displayedh3s,
             map2d,
             props.visualisation,
-            props.highlightStations, //
-            props.details.type === 'hexagon' ? props.details.locked + props.details.h3 : null,
+            highlightStations, //
+            JSON.stringify(props.selectedDetails),
             fromColour,
             toColour
         ]

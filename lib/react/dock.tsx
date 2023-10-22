@@ -12,14 +12,17 @@ import {StationSelector} from './stationselector';
 import {map as _map, find as _find, filter as _filter} from 'lodash';
 
 import {Dock as ReactDock} from 'react-dock';
+import type {PickableDetails} from './pickabledetails';
 
 export function Dock(props: {
     setStation: (station: string) => void; //
     station: string;
     setFile: (file: string) => void;
     file: string;
-    setDetails: (details: any) => void;
-    details: any;
+    hoverDetails: PickableDetails;
+    setHoverDetails: (details: any) => void;
+    selectedDetails: PickableDetails;
+    setSelectedDetails: (sd?: PickableDetails) => void;
     setVisualisation: (visualisation: string) => void;
     visualisation: string;
     updateUrl: (a: Record<string, string>) => void;
@@ -82,8 +85,9 @@ export function Dock(props: {
                 <hr />
                 {expanded ? (
                     <CoverageDetails //
-                        details={props.details}
-                        setDetails={props.setDetails}
+                        details={props.selectedDetails.type !== 'none' ? props.selectedDetails : props.hoverDetails}
+                        locked={props.selectedDetails.type !== 'none'}
+                        setSelectedDetails={props.setSelectedDetails}
                         station={props.station}
                         setStation={props.setStation}
                         file={props.file}
