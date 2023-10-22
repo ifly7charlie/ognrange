@@ -255,7 +255,6 @@ export function CoverageMap(props: {
     );
 
     const highlightStations = useMemo((): HighlightStationIndicies => {
-        console.log('highlightStations', doHighlightStations, details);
         if (details.type === 'hexagon' && doHighlightStations) {
             const parts = details.s.split(',');
             return _reduce(
