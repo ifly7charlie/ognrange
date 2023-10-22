@@ -248,8 +248,9 @@ export function CoverageMap(props: {
             // if it's a reclick on the same hexagon
             if (object.type === 'station') {
                 props.setStation(object.name);
+            } else {
+                props.setSelectedDetails(object);
             }
-            props.setSelectedDetails(object);
         },
         [props.setSelectedDetails, props.setStation]
     );
