@@ -10,7 +10,7 @@ import Select from 'react-select';
 export function FileSelector({station, file, setFile}) {
     // Load the associated index
     //    const DATA_URL = env.NEXT_PUBLIC_DATA_URL || process.env.NEXT_PUBLIC_DATA_URL || '/data/';
-    const {data, error} = useSWR(`/api/station/${station || 'global'}`, fetcher);
+    const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
 
     // Display the right ones to the user
     const [availableFiles, selectedFile] = useMemo((): [any, any] => {
@@ -34,8 +34,8 @@ export function FileSelector({station, file, setFile}) {
                 }).reverse()
             };
         }).reverse();
-        const effectiveFile = file && file != '' ? file : files.year.current;
-        const [type] = file?.split('.') || ['year'];
+        const effectiveFile = file && file != '' ? file : 'year';
+        const [type] = effectiveFile.split('.') || [effectiveFile];
         const selected = selects
             ? _find(_find(selects, {label: type})?.options || [], (o) => {
                   return effectiveFile.slice(-o.value.length) == o.value;
