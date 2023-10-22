@@ -36,9 +36,9 @@ export function StationSelector({station, setStation}) {
             }
             return [{value: '', label: 'All Stations (global)'}];
         },
-        [false]
+        [stationMeta.length]
     );
-    const selectStationOnChange = useCallback((v) => setStation(v.value), [false]);
+    const selectStationOnChange = useCallback((v: {value: string}) => setStation(v.value), [false]);
 
     return (
         <>
