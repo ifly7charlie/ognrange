@@ -28,6 +28,32 @@ export interface StationDetails {
     valid?: boolean;
     outputEpoch?: Epoch;
     outputDate?: string;
+
+    stats: {
+        ignoredPAW: number; // we ignore from PAW devices
+        ignoredTracker: number; //  OGNTRK or not sent to qA first (ie repeated)
+        invalidTracker: number; // invalid flarmid
+        invalidTimestamp: number; // no timestamp in message
+        ignoredStationary: number; // device not moving at all
+        ignoredSignal0: number; // no signal strength
+        ignoredH3stationary: number; // device jumping between only a few locations
+        ignoredElevation: number; // unable to determine elevation of coordinates
+        count: number; // total packets
+    };
+}
+
+function emptyStats() {
+    return {
+        ignoredTracker: 0, //
+        invalidTracker: 0,
+        invalidTimestamp: 0,
+        ignoredStationary: 0,
+        ignoredSignal0: 0,
+        ignoredPAW: 0,
+        ignoredH3stationary: 0,
+        ignoredElevation: 0,
+        count: 0
+    };
 }
 
 const stations: Map<StationName, StationDetails> = new Map<StationName, StationDetails>(); // map from string to details
@@ -54,6 +80,7 @@ export async function loadStationStatus() {
         await statusDb.open();
 
         for await (const [name, details] of statusDb.iterator()) {
+            details.stats ??= emptyStats();
             stations.set(name, details);
             stationIds.set(details.id, name);
         }
@@ -87,7 +114,12 @@ export function getStationDetails(stationName: StationName, serialise = true): S
     let details = stations.get(stationName);
 
     if (!details) {
-        details = {station: stationName, id: (stationid = Atomics.add(nextStation, 0, 1) as StationId)};
+        details = {
+            station: stationName, //
+            id: (stationid = Atomics.add(nextStation, 0, 1) as StationId),
+            stats: emptyStats()
+        };
+
         stations.set(stationName, details);
         stationIds.set(stationid, stationName);
         console.log(`allocated id ${stationid} to ${stationName}, ${stations.size} have metadata`);
@@ -102,7 +134,7 @@ export function getStationDetails(stationName: StationName, serialise = true): S
 export function allStationsDetails({includeGlobal}: {includeGlobal: boolean} = {includeGlobal: false}): StationDetails[] {
     const values = [...stations.values()];
     if (includeGlobal) {
-        values.unshift({station: 'global' as StationName, id: 0 as StationId});
+        values.unshift({station: 'global' as StationName, id: 0 as StationId, stats: emptyStats()});
     }
     return values;
 }
