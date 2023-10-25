@@ -149,9 +149,9 @@ export function CoverageDetails({
     // Find the station not ideal as linear search so memoize it
     const stationMeta = useStationMeta();
     const sd = useMemo(() => {
-        const index = stationMeta ? _findIndex<string>(stationMeta?.name, station) : -1;
-        return index != -1 ? [stationMeta.lng[index], stationMeta.lat[index]] : null;
-    }, [station, stationMeta != undefined]);
+        const index = stationMeta && station ? _findIndex<string>(stationMeta?.name, (a) => a === station) : -1;
+        return index != -1 ? [stationMeta.lat[index], stationMeta.lng[index]] : null;
+    }, [station, stationMeta.length]);
 
     const clearSelectedH3 = useCallback(() => setSelectedDetails({type: 'none'}), [false]);
 
