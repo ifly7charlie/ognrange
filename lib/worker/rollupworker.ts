@@ -97,6 +97,10 @@ export async function flushPendingH3s(accumulators: Accumulators): Promise<Rollu
 }
 
 export async function shutdownRollupWorker() {
+    //make sure the flush is finished
+    await Promise.allSettled(h3promises);
+    // and anything else that is running
+    await Promise.allSettled(Object.values(promises));
     // Do the sync in the worker thread
     return postMessage({action: 'shutdown'});
 }
@@ -110,11 +114,6 @@ export async function rollupAbortStartup() {
     return postMessage({station: 'all', action: 'abortstartup', now: Date.now() as EpochMS});
 }
 export async function rollupDatabase(station: StationName, commonArgs: RollupDatabaseArgs): Promise<RollupResult | void> {
-    // Safety check
-    if (h3promises.length) {
-        console.error(`rollupDatabase ${station} requested but h3s pending to disk`);
-        throw new Error('sequence error - pendingH3s not flushed before rollup');
-    }
     return postMessage({station, action: 'rollup', commonArgs, now: Date.now() as EpochMS});
 }
 
@@ -190,10 +189,10 @@ if (!isMainThread) {
                         out = await backupDatabaseInternal(db, task);
                         break;
                 }
-                await db!.close();
             } catch (e) {
                 console.error(e, '->', JSON.stringify(task, null, 4));
             }
+            db?.close(); // done allow it to close
             parentPort!.postMessage({action: task.action, station: task.station, ...out});
         } catch (e) {
             console.error(task, e);
@@ -212,7 +211,7 @@ else {
         if (resolver) {
             resolver(data);
         } else {
-            console.error(`missing resolve function for ${promiseKey}/`);
+            console.error(`missing resolve function for ${promiseKey}`);
         }
     });
 }
@@ -221,8 +220,15 @@ async function postMessage(command: RollupWorkerCommands): Promise<any> {
     if (!worker) {
         return;
     }
+    const key = `${'station' in command && command.station ? command.station : 'all'}_${command.action}`;
+
+    if (promises[key]) {
+        console.error(new Error(`duplicate postMessage for ${key}`), command);
+        return;
+    }
+
     return new Promise<RollupWorkerResult>((resolve) => {
-        promises[`${'station' in command && command.station ? command.station : 'all'}_${command.action}`] = {resolve};
+        promises[key] = {resolve};
         worker.postMessage(command);
     });
 }

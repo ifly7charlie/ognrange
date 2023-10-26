@@ -13,7 +13,7 @@ import LRU from 'lru-cache';
 const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, ttl: 3 * 3600 * 1000},
     cache = new LRU<string, ArrowTableType>(options);
 
-const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: 'short', day: 'numeric', timeZone: 'UTC'});
+const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: '2-digit', day: '2-digit', timeZone: 'UTC'});
 
 interface RowResult {
     h3lo: number;
@@ -83,8 +83,8 @@ export async function searchMatchingArrowFiles(station: string, fileDateMatch: s
             .map((fn) => {
                 return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz$/)?.[1] || '', fileName: fn};
             })
-            .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch)
-            .sort((a, b) => a.fileName.localeCompare(b.fileName));
+            .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch);
+        //            .sort((a, b) => a.fileName.localeCompare(b.fileName));
 
         for (const file of files) {
             const fileDate = new Date(file.date);

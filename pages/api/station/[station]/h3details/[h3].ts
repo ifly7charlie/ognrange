@@ -34,14 +34,14 @@ export default async function getH3Details(req, res) {
     let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
-        if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
+        if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
             fileDateMatch = '' + now.getUTCFullYear();
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
-    console.log(now.toISOString(), 'h3details', subdir, selectedFile, fileDateMatch, req.query.h3, h3SplitLong, lockedH3);
+    console.log(now.toISOString(), 'h3details', subdir, selectedFile, fileDateMatch, oldest?.toISOString(), req.query.h3, h3SplitLong, lockedH3);
 
     // One dir for each station
     await searchMatchingArrowFiles(subdir, fileDateMatch, h3SplitLong, oldest, (json, date) => {
@@ -66,6 +66,6 @@ export default async function getH3Details(req, res) {
     });
 
     //
-    res.status(200).json(result);
+    res.status(200).json(result.sort((a, b) => a.date.localeCompare(b.date)));
     console.log('<-', Date.now() - now.getTime(), 'msec', result.length, 'rows');
 }

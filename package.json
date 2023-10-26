@@ -21,6 +21,7 @@
         "@loaders.gl/json": "^2.0",
         "@mapbox/tilebelt": "^1.0.2",
         "apache-arrow": "^13.0.0",
+        "async-lock": "^1.4.0",
         "classic-level": "^1.2.0",
         "deck.gl": ">8.5.2",
         "dotenv": "^16.0.0",
@@ -44,7 +45,7 @@
         "react-select": "^5.2.2",
         "react-visibility-sensor": "^5.1.1",
         "recharts": "^2.1.12",
-        "swr": "^1.2.2",
+        "swr": "^2.2.4",
         "yargs": "^17.3.1"
     },
     "devDependencies": {

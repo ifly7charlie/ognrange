@@ -91,7 +91,22 @@ if (!existsSync('package.json')) {
     process.exit();
 }
 
-let packetStats = {ignoredStation: 0, ignoredTracker: 0, invalidTracker: 0, ignoredStationary: 0, ignoredSignal0: 0, ignoredPAW: 0, ignoredH3stationary: 0, count: 0, rawCount: 0, pps: '', rawPps: ''};
+let packetStats = {
+    invalidPacket: 0, // packet couldn't be parsed
+    ignoredStation: 0, //
+    ignoredPAW: 0,
+    ignoredTracker: 0,
+    invalidTracker: 0,
+    invalidTimestamp: 0,
+    ignoredStationary: 0,
+    ignoredSignal0: 0,
+    ignoredH3stationary: 0,
+    ignoredElevation: 0,
+    count: 0,
+    rawCount: 0,
+    pps: '',
+    rawPps: ''
+};
 
 // Run stuff magically
 main().then(() => console.log('initialised'));
@@ -101,7 +116,7 @@ main().then(() => console.log('initialised'));
 async function main() {
     if (ROLLUP_PERIOD_MINUTES < 12) {
         console.log(`ROLLUP_PERIOD_MINUTES is too short, it must be more than 12 minutes`);
-        process.exit();
+        //        process.exit();
     }
 
     console.log(`Configuration loaded DB@${DB_PATH} Output@${OUTPUT_PATH} Backups@${BACKUP_PATH}, Version ${gv}`);
@@ -109,7 +124,7 @@ async function main() {
     // Make sure our paths exist
     try {
         mkdirSync(DB_PATH + 'stations', {recursive: true});
-        mkdirSync(OUTPUT_PATH, {recursive: true});
+        mkdirSync(OUTPUT_PATH + 'stations', {recursive: true});
         mkdirSync(BACKUP_PATH, {recursive: true});
     } catch (e) {
         console.log('error creating directories', e);
@@ -195,6 +210,7 @@ async function handleExit(signal: string) {
     process.exit();
 }
 process.on('SIGINT', handleExit);
+process.on('SIGHUP', handleExit);
 process.on('SIGQUIT', handleExit);
 process.on('SIGTERM', handleExit);
 
@@ -266,7 +282,10 @@ async function startAprsListener() {
                         } else if (packet.type == 'status' && packet.body) {
                             updateStationBeacon(station, packet.body, packet.timestamp as Epoch);
                         } else {
-                            console.log(data, packet);
+                            // For error codes see:
+                            // https://github.com/W9CR/p25nx2/blob/592d472fd2a3346a8f284cfd76881660b9dfdb25/FAP.pm#L98
+                            console.log('invalid packet', packet.resultCode, data);
+                            packetStats.invalidPacket++;
                         }
                     }
                 }
@@ -351,13 +370,6 @@ async function setupPeriodicFunctions() {
             console.log(JSON.stringify(rollupStats));
             console.log(`h3s: ${h3length} delta ${h3delta} (${((h3delta * 100) / h3length).toFixed(0)}%): `, ` expired ${h3expired} (${((h3expired * 100) / h3length).toFixed(0)}%), written ${h3written} (${((h3written * 100) / h3length).toFixed(0)}%)[${flushStats.databases} stations]`, ` ${((h3written * 100) / packets).toFixed(1)}% ${(h3written / (H3_CACHE_FLUSH_PERIOD_MS / 1000)).toFixed(1)}/s ${(packets / h3written).toFixed(0)}:1`);
 
-            // Although this isn't an error it does mean that there will be churn in the DB cache and
-            // that will increase load - which is not ideal because we are obviously busy otherwise we wouldn't have
-            // so many stations sending us traffic...
-            if (flushStats.databases > MAX_STATION_DBS * 0.9) {
-                console.log(`** please increase the database cache (MAX_STATION_DBS) it should be larger than the number of stations receiving traffic in H3_CACHE_FLUSH_PERIOD_MINUTES`);
-            }
-
             // purge and flush H3s to disk
             // carry forward state for stats next time round
             lastPacketCount = packetStats.count;
@@ -428,22 +440,6 @@ class AprsLocationPacket extends aprsPacket {
 //
 // collect points, emit to competition db every 30 seconds
 async function processPacket(packet: AprsLocationPacket) {
-    // Flarm ID we use is last 6 characters, check if OGN tracker or regular flarm
-    const flarmId = packet.sourceCallsign?.slice(packet.sourceCallsign?.length - 6);
-    const pawTracker = packet.sourceCallsign?.slice(0, 3) == 'PAW';
-
-    if (pawTracker) {
-        packetStats.ignoredPAW++;
-        return;
-    }
-
-    // Make sure it's valid
-    if (flarmId?.length != 6) {
-        console.log(packet.sourceCallsign?.slice(packet.sourceCallsign?.length - 6));
-        packetStats.invalidTracker++;
-        return;
-    }
-
     // Lookup the altitude adjustment for the
     const station = normaliseCase(packet.digipeaters?.pop()?.callsign || 'unknown') as StationName;
 
@@ -452,12 +448,36 @@ async function processPacket(packet: AprsLocationPacket) {
         packetStats.ignoredStation++;
         return;
     }
-    if (!packet.timestamp) {
+
+    // Find the id for the station or allocate
+    const stationDetails = getStationDetails(station);
+
+    // Flarm ID we use is last 6 characters, check if OGN tracker or regular flarm
+    const flarmId = packet.sourceCallsign?.slice(packet.sourceCallsign?.length - 6);
+    const pawTracker = packet.sourceCallsign?.slice(0, 3) == 'PAW';
+
+    if (pawTracker) {
+        packetStats.ignoredPAW++;
+        stationDetails.stats.ignoredPAW++;
+        return;
+    }
+
+    // Make sure it's valid
+    if (flarmId?.length != 6) {
+        console.log(packet.sourceCallsign?.slice(packet.sourceCallsign?.length - 6));
         packetStats.invalidTracker++;
+        stationDetails.stats.invalidTracker++;
+        return;
+    }
+
+    if (!packet.timestamp) {
+        packetStats.invalidTimestamp++;
+        stationDetails.stats.invalidTimestamp++;
         return;
     }
     if (packet.destCallsign == 'OGNTRK' && packet.digipeaters?.[0]?.callsign?.slice(0, 2) != 'qA') {
         packetStats.ignoredTracker++;
+        stationDetails.stats.ignoredTracker++;
         return;
     }
 
@@ -478,6 +498,7 @@ async function processPacket(packet: AprsLocationPacket) {
         const rawVC = parseFloat((packet.comment.match(reExtractVC) || [0, '0'])[1]);
         if (rawRot == 0.0 && rawVC < 30) {
             packetStats.ignoredStationary++;
+            stationDetails.stats.ignoredStationary++;
             aircraft.seen = packet.timestamp;
             return;
         }
@@ -542,6 +563,7 @@ async function processPacket(packet: AprsLocationPacket) {
         const s = aircraft.h3s.size;
         if (aircraft.packets / s > 90) {
             packetStats.ignoredH3stationary++;
+            stationDetails.stats.ignoredStationary++;
             return;
         }
     }
@@ -558,21 +580,20 @@ async function processPacket(packet: AprsLocationPacket) {
     // come from or why they exist...
     if (signal <= 0) {
         packetStats.ignoredSignal0++;
+        stationDetails.stats.ignoredSignal0++;
         return;
     }
 
     packetStats.count++;
+    stationDetails.stats.count++;
 
     // Enrich with elevation and send to everybody, this is async
     // and we don't need it's results to say we logged the packet
     getElevationOffset(packet.latitude, packet.longitude, async (gl: number) => {
         const agl = Math.round(Math.max(altitude - gl, 0));
 
-        // Find the id for the station or allocate
-        const stationDetails = getStationDetails(station);
-
         // Packet for station marks it for dumping next time round
-        stationDetails.lastPacket = packet.timestamp as Epoch;
+        stationDetails.lastPacket = Math.max(packet.timestamp, stationDetails.lastPacket ?? 0) as Epoch;
 
         // What hexagon are we working with
         const h3id = h3.latLngToCell(packet.latitude, packet.longitude, H3_STATION_CELL_LEVEL);
@@ -595,5 +616,7 @@ async function processPacket(packet: AprsLocationPacket) {
         mergeDataIntoDatabase(0 as StationId, stationDetails.id, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL) as H3);
     }).catch((e) => {
         console.error(`exception calling getElevationOffset for ${station}, ${packet.latitude}, ${packet.longitude}, ${altitude}`, e);
+        stationDetails.stats.ignoredElevation++;
+        packetStats.ignoredElevation++;
     });
 }

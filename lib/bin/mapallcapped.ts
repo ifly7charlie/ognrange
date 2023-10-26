@@ -70,16 +70,11 @@ async function worker<T>(id: number, gen: G<T>, callback: CbFunctionType<T>) {
 
 function* arrayGenerator<T>(id: string, array: T[]): G<T> {
     const start = Date.now();
-    let last = start;
     for (let index = 0; index < array.length; index++) {
         const currentValue = array[index];
         yield [currentValue, index, array];
-        const now = Date.now();
-        if (now - last > 30_000) {
-            last = now;
-            const elapsed = (now - start) / 1000;
-            status[id] = ` ${((index * 100) / array.length).toFixed(0)}% [${index}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${speed(index, elapsed)}`;
-        }
+        const elapsed = (Date.now() - start) / 1000;
+        status[id] = ` ${((index * 100) / array.length).toFixed(0)}% [${index}/${array.length}] ${elapsed.toFixed(0)}s elapsed, ${speed(index, elapsed)}`;
     }
 }
 

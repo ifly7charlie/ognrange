@@ -33,14 +33,14 @@ export default async function getH3Details(req, res) {
     let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
-        if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
+        if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
             fileDateMatch = '' + now.getUTCFullYear();
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
             fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
-    const globalFileName = `${fileDateMatch.indexOf('-') ? 'month' : 'year'}.${fileDateMatch}`;
+    const globalFileName = `${fileDateMatch.indexOf('-') != -1 ? 'month' : 'year'}.${fileDateMatch}`;
 
     console.log(now.toISOString(), ' h3others', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
 
@@ -112,7 +112,7 @@ export default async function getH3Details(req, res) {
             },
             {date: k, Other: _reduce(v, (r, count) => r + (count || 0), 0)}
         );
-    });
+    }).sort((a, b) => a.date.localeCompare(b.date));
 
     //    console.log(total);
 

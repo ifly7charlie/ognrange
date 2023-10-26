@@ -42,7 +42,12 @@ export async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, bu
                 return {type: 'put', key: h3k.dbKey(), value: buffer};
             });
 
+    let cleanupDB: DB | undefined;
+
     await getDbThrow(station)
+        .then((db: DB) => {
+            return (cleanupDB = db);
+        })
         .then((db: DB) => getOperation(db))
         .then((operation) => {
             if (operation) {
@@ -51,6 +56,9 @@ export async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, bu
         })
         .catch((e) => {
             console.error(`unable to find db for id ${h3k.dbid}/${station}, ${e}`);
+        })
+        .finally(() => {
+            cleanupDB?.close();
         });
 }
 
@@ -66,21 +74,26 @@ export async function flushH3DbOps(accumulators: Accumulators): Promise<{databas
         promises.push(
             new Promise<void>((resolve) => {
                 //
+                let cleanupDB: DB | undefined;
                 getDbThrow(station)
                     .then((db: DB | undefined) => {
                         if (!db) {
                             throw new Error(`unable to find db for ${station}`);
                         }
-                        return db;
+                        return (cleanupDB = db);
                     })
                     // Make sure we have updated the meta data before we write the batch
                     .then((db: DB) => saveAccumulatorMetadata(db, accumulators))
                     // Execute all changes as a batch
-                    .then((db: DB) => db.batch(v))
+                    .then((db: DB) => {
+                        db.batch(v);
+                        return db;
+                    })
                     .catch((e) => {
                         console.error(`${station}: error flushing ${v.length} db operations: ${e}`);
                     })
                     .finally(() => {
+                        cleanupDB?.close();
                         resolve();
                     });
             })

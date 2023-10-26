@@ -39,7 +39,7 @@ export default async function getH3Details(req, res) {
     let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
     let oldest: Date | undefined = undefined;
     if (!fileDateMatch) {
-        if (!selectedFile || selectedFile == 'undefined' || selectedFile == 'year') {
+        if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
             fileDateMatch = '' + now.getUTCFullYear();
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         } else {
@@ -118,7 +118,7 @@ export default async function getH3Details(req, res) {
                 Other: 100
             }
         );
-    });
+    }).sort((a, b) => a.date.localeCompare(b.date));
 
     // Return the selected top 5 along with the number left over so we can
     // do a proper graph

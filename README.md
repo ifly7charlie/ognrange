@@ -19,7 +19,6 @@ docker compose up -d
 
 If you want to store the data files locally you should change the volume config in `docker-compose.yml`
 
-
 ### Locally without docker, perhaps testing etc.
 
 Copy the .env.local file from ./conf/.env.local to the current directory and update to suit
@@ -93,7 +92,7 @@ Only active files will changed, meaning that historical data will
 remain in this directory unless deleted. Although the front end has no
 way of selecting it this feature could be easily added.
 
-## Terms
+### Terminology
 
 H3 is the Hexagon layout. It's from Uber see https://h3geo.org/ for
 information but it's generally heirarchical (or close to) and a fairly
@@ -155,6 +154,41 @@ of stations.
     cells with coverage from multiple receivers should have a very low expected value
     even if the coverage of some is poor
 
+### Packets considered for coverage mapping
+
+APRS packets are NOT recorded in the following situations:
+
+1. Do not parse correctly
+
+-   including not having AX25 addresses,
+-   not having both latitude & longitude values,
+-   not having a comment that stats with 'id'
+
+2. they are from PAW devices (sourceCallsign starts with PAW). These devices have a hard coded the received signal strength to a large number destroying the coverage map)
+3. Their station name is excluded by the file [https://github.com/ifly7charlie/ognrange/blob/d0862f6dddbb7d748d3108e3526b2904197b78e1/lib/common/ignorestation.ts ignorestation.ts] this includes (for example)
+
+-   ones that start with FNB, XCG, XCC, OGN, RELAY, RND, FLR, bSky, AIRS, N0TEST-
+-   a list of ones matching TEST, UNKNOWN, GLOBAL, STATIONS, and others etc
+-   numeric only station names
+-   any station that has a non ANSI alphanumeric character (eg not A-Z & 0-9)
+
+4. Have an source callsign length < 6 characters
+5. Have no timestamp
+6. have a dest callsign of OGNTRK, or their first Digipeaters entry is not qA
+7. Are stationary or nearly stationary (more specifically bouncing between a small number of locations)
+8. Have no signal strength
+9. Have invalid coordinates
+
+If you wish to update the list of stations that are excluded please raise a pull request to change the file `ignorestation.ts`. For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in `bin/aprs.ts`
+
+### Ignoring a station
+
+If you wish to ignore a station please add it to `ignorestation.ts` and raise a PR for the repo.
+
+You can also deleting the datafiles, but without doing both you will not remove it from the DB!
+
+Generally speaking if the station is not receiving packets very little disk space will be used.
+
 ## Datafiles
 
 There are two primary types of files - a collection of databases
@@ -178,7 +212,7 @@ basically the same, except the record is a simple CoverageRecord
 
 _status/_ contains summary records for each station in JSON
 
-### Output files
+### Output files (Arrow)
 
 These are in the OUTPUT_PATH directory. It contains a set of
 subdirectories one for each station and one for the global data.
@@ -196,7 +230,7 @@ ognrange/output/global/global.year.arrow.gz
 ```
 
 These files are produced during the aggregation process and contain
-information from the time period. Once the aggregation is done the
+information from the time period. Once the aggregation period is finished the
 file will remain unchanged and can serve as an archive of the data or
 be deleted. For example keeping previous month would allow you to
 compare coverage over time in the browser. (in browser because the
@@ -214,6 +248,23 @@ when it was created and some diagnostic information
 
 This is the overall stations list used for displaying stations on the
 map and information about them
+
+It is safe to delete files if they are no longer needed. Be aware that the dates
+on the files are not updated once they have been finished, for example with
+
+```
+find ogrange/output/ -name "*day*arrow.gz" -mtime +90 -delete
+```
+
+Note the use of `*day*arrow.gz` to filter it just to arrow files. There
+are also .json files that contain meta data you may want to remove at some
+point as well. Run without the `-delete` to see what will be deleted
+
+You probably want to keep the `*month*` and `*year*` files
+
+The front end will only display available files so deleting them from the
+disk is sufficient to change what is displayed to the user, though there
+may be a lag if a web content cache is being used. (eg cloudflare)
 
 ## Aggregation & accumulators
 

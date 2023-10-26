@@ -7,34 +7,32 @@ import LRUCache from 'lru-cache';
 // Map id to name
 import {StationName, EpochMS} from '../bin/types';
 
-import {H3_CACHE_FLUSH_PERIOD_MS, MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from '../common/config';
+import {MAX_STATION_DBS, STATION_DB_EXPIRY_MS, DB_PATH} from '../common/config';
 
 export type BatchOperation = ClassicBatchOperation<DB, string, Uint8Array>;
 
 const options = {
     max: MAX_STATION_DBS + 1, // global is stored in the cache
-    dispose: function (db: Promise<DB>, key: StationName, r: string) {
-        db.then((db) => {
-            if (db.status == 'closed') {
-                return; // if it's already closed then that's cool let it go
-            }
+    dispose: function (db: DB, key: StationName, r: string) {
+        if (r === 'evict' && db.status != 'closed') {
             return db.dispose();
-        }).catch((_e) => {
-            /**/
-        });
+        }
     },
     updateAgeOnGet: true,
     allowStale: true,
     ttl: STATION_DB_EXPIRY_MS
 };
 
+const openStations = new Map<StationName, DB>();
+const stationDbCache = new LRUCache<StationName, DB>(options);
+
 //
 // Instantiate - we drop the type because we
-const stationDbCache = new LRUCache<StationName, Promise<DB>>(options);
 export class DB extends ClassicLevel<string, Uint8Array> {
     ognInitialTS: EpochMS;
     ognStationName: StationName;
     global: boolean;
+    referenceCount: number;
 
     constructor(stationName: StationName) {
         const path = stationName === 'global' ? DB_PATH + stationName : DB_PATH + '/stations/' + stationName;
@@ -44,41 +42,84 @@ export class DB extends ClassicLevel<string, Uint8Array> {
         this.ognStationName = stationName;
         this.ognInitialTS = Date.now() as EpochMS;
         this.global = stationName === 'global';
-        this.manuallyClosed = false;
+        this.referenceCount = 0;
+
+        //        console.log(`opening ${stationName} from ${openStations.has(stationName) ? 'open list' : stationDbCache.has(this.ognStationName) ? 'cached list' : 'disk'} ${openStations.size}o ${stationDbCache.size}c`);
+
+        this.use();
     }
 
+    //
     async close() {
-        return this.dispose(true);
+        //        console.log(`closing ${this.ognStationName} ${this.referenceCount}`);
+        this.referenceCount -= 1;
+        if (!this.referenceCount && !this.global) {
+            openStations.delete(this.ognStationName);
+            stationDbCache.set(this.ognStationName, this);
+        }
     }
 
-    async dispose(manualClose: boolean = false) {
-        if (!manualClose || stationDbCache.getRemainingTTL(this.ognStationName) < H3_CACHE_FLUSH_PERIOD_MS / 1000) {
-            console.log(`Closing database ${this.ognStationName} while it's still needed. You should increase MAX_STATION_DBS in .env.local [db status ${this.status}]`);
+    private use() {
+        //        console.log(`opening ${this.ognStationName} ${this.referenceCount}`);
+        if (!this.referenceCount) {
+            openStations.set(this.ognStationName, this);
+            stationDbCache.delete(this.ognStationName);
+        }
+        this.referenceCount += 1;
+        return this;
+    }
+
+    // Called when it drops out of the LRU cache
+    async dispose() {
+        if (this.referenceCount > 0) {
+            console.error(new Error(`Closing database ${this.ognStationName} while it's still needed ${this.referenceCount}`));
         }
 
         try {
             await super.close();
         } catch (e) {
-            console.log(`error closing ${this.ognStationName}: ${e} closeReason: ${manualClose ? 'manual' : 'cache dispose'}`);
+            console.log(`error closing ${this.ognStationName}: ${e}`);
         }
 
         stationDbCache.delete(this.ognStationName);
-        //        return super.close();
     }
 
-    private manuallyClosed: boolean;
-}
+    // Helper for opening the database
+    static async getDbThrow(
+        stationName: StationName, //
+        options: {open?: boolean; existingOnly?: boolean} = {open: true}
+    ): Promise<DB> {
+        //
+        let stationDb: DB | undefined = openStations.get(stationName) ?? stationDbCache.get(stationName);
 
-export async function getDb(
-    stationName: StationName, //
-    options: {open?: boolean; existingOnly?: boolean; throw?: boolean} = {open: true}
-): Promise<DB | undefined> {
-    return getDbThrow(stationName, options).catch((e) => {
-        if (options.throw) {
-            throw e;
+        if (stationDb) {
+            return stationDb.use();
         }
-        return undefined;
-    });
+
+        if (options.existingOnly) {
+            throw new Error(`Unable to create ${stationName} as only existing db requested`);
+        }
+
+        const db = new DB(stationName);
+
+        // We are supposed to open the database
+        return db
+            .open()
+            .then(() => {
+                if (!(db.status == 'open' || db.status == 'opening')) {
+                    console.log(stationName, db.status, new Error('db status invalid'));
+                    throw new Error(`Db ${stationName} status invalid, ${db.status}`);
+                }
+                return db;
+            })
+            .catch((e: any) => {
+                console.log(`${stationName}: Failed to open: ${db.status}: ${e.cause?.code || e.code}`);
+                db.close().catch((e) => {
+                    /* ignore */
+                });
+                throw e;
+            });
+    }
 }
 
 //
@@ -87,67 +128,37 @@ export async function getDbThrow(
     stationName: StationName, //
     options: {open?: boolean; existingOnly?: boolean} = {open: true}
 ): Promise<DB> {
-    //
-    let stationDbPromise: Promise<DB> | undefined = stationDbCache.get(stationName);
-
-    if (!stationDbPromise) {
-        stationDbPromise = new Promise<DB>((resolve, reject) => {
-            if (options.existingOnly) {
-                reject(new Error(`Unable to create ${stationName} as only existing db requested`));
-                return;
-            }
-
-            const stationDb = new DB(stationName) as DB;
-
-            // We are supposed to open the database
-            stationDb
-                .open()
-                .then(() => {
-                    if (stationDb !== undefined && !(stationDb.status == 'open' || stationDb.status == 'opening')) {
-                        console.log(stationName, stationDb.status, new Error('db status invalid'));
-                        reject(new Error(`Db ${stationName} status invalid, ${stationDb.status}`));
-                    }
-                    resolve(stationDb);
-                })
-                .catch((e: any) => {
-                    console.log(`${stationName}: Failed to open: ${stationDb.status}: ${e.cause?.code || e.code}`);
-                    stationDb.close().catch((e) => {
-                        /* ignore */
-                    });
-                    reject(e);
-                });
-        });
-    }
-
-    // Return the promise, we now cache promises ;)
-    stationDbCache.set(stationName, stationDbPromise);
-    return stationDbPromise;
-}
-
-// Size excluding global
-export function getStationDbCacheSize(): number {
-    return stationDbCache.size;
+    return DB.getDbThrow(stationName, options);
 }
 
 //
 // Purge all entries - will call the dispose function thereby closing the database entry
 export async function closeAllStationDbs(): Promise<void> {
-    // Temp copy and clear as non-interruptable operation
+    // Temp copy and clear as non-interruptable but async operation
     const numberOfDbs = stationDbCache.size;
-    const dbs = stationDbCache.rvalues();
+    const dbs = [...stationDbCache.rvalues()];
+    const open = [...openStations.entries()];
+    stationDbCache.clear();
+    openStations.clear();
 
-    // Close all the databases
+    // Force close all the databases, will cause errors as DBs are probably still in use
     const promises: Promise<void>[] = [];
-    for (const v of dbs) {
+    for (const db of dbs) {
         promises.push(
-            v
-                .then((db: DB) => db.close())
-                .catch((_e) => {
-                    /**/
-                })
+            db.dispose().catch((_e) => {
+                /**/
+            })
         );
     }
+
+    for (const [_name, db] of open) {
+        promises.push(
+            db.dispose().catch((_e) => {
+                /**/
+            })
+        );
+    }
+
     await Promise.allSettled(promises);
-    stationDbCache.clear();
     console.log(`closed ${numberOfDbs} station databases`);
 }

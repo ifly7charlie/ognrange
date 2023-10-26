@@ -9,6 +9,8 @@ import {CoverageRecord, bufferTypes} from './coveragerecord';
 import {createGzip} from 'node:zlib';
 import {UNCOMPRESSED_ARROW_FILES} from '../common/config';
 
+const blockSize = 10_000;
+
 export class CoverageRecordWriter {
     private _schema: Schema;
 
@@ -47,7 +49,7 @@ export class CoverageRecordWriter {
         const builderOptions = {
             type: message_type,
             nullValues: null,
-            highWaterMark: 10000,
+            highWaterMark: blockSize,
             queueingStrategy: 'count'
         };
 
@@ -65,7 +67,7 @@ export class CoverageRecordWriter {
     // Append to the builder, flushing if needed
     append(hr: CoverageHeader, cr: CoverageRecord) {
         this._builder.append(cr.arrowFormat(hr.h3splitlong));
-        if (this._builder.length > 4500) {
+        if (this._builder.length >= blockSize) {
             this.flushBlock();
         }
     }
