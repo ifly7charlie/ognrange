@@ -38,7 +38,7 @@ export interface RollupResult extends RollupWorkerResult {
 
 export interface RollupDatabaseArgs {
     validStations?: Set<StationId>;
-    now: number;
+    now: Epoch;
     accumulators: Accumulators;
     needValidPurge: boolean;
     stationMeta: StationDetails | undefined;
@@ -67,7 +67,6 @@ export async function rollupDatabaseInternal(
 ): Promise<RollupResult> {
     //
     //
-    const nowEpoch = Math.floor(now / 1000) as Epoch;
     const startTime = Date.now();
     const name = db.ognStationName;
     let currentMeta = {};
@@ -363,32 +362,13 @@ export async function rollupDatabaseInternal(
         arrowRecords += r.stats.arrowRecords = await r.arrow.finalize();
 
         try {
-            writeFileSync(OUTPUT_PATH + accumulatorName + '.json', JSON.stringify(r.meta, null, 2));
+            const output = (stationMeta ?? {}) as any;
+            output.lastOutputFile = now;
+            output.rollups = r.meta;
+            writeFileSync(OUTPUT_PATH + `${name}/${name}.${rType}.${accumulators[rType]!.file}.json`, JSON.stringify(output, null, 2));
+            symlink(`${name}.${rType}.${accumulators[rType]!.file}.json`, OUTPUT_PATH + `${name}/${name}.${rType}.json`);
         } catch (err) {
             console.log('rollup json metadata write failed', err);
-        }
-
-        // Fix directory index
-        let index: any = {};
-        try {
-            const data = readFileSync(OUTPUT_PATH + `${name}/${name}.index.json`, 'utf8');
-            index = JSON.parse(data);
-        } catch (e: any) {
-            if (e.code != 'ENOENT') {
-                console.log(`unable to read file index ${name} ${e}`);
-            }
-        }
-
-        if (!index.files) {
-            index.files = {};
-        }
-
-        index.files[r.type] = {current: accumulatorName, all: _uniq([...(index.files[r.type]?.all || []), accumulatorName])};
-
-        try {
-            writeFileSync(OUTPUT_PATH + `${name}/${name}.index.json`, JSON.stringify(index, null, 2));
-        } catch (err) {
-            console.log(`station ${name} index write error`, err);
         }
 
         // link it all up for latest
@@ -401,7 +381,7 @@ export async function rollupDatabaseInternal(
 
     // Only output if we have some meta
     if (stationMeta) {
-        stationMeta.lastOutputFile = nowEpoch;
+        stationMeta.lastOutputFile = now;
 
         // record when we wrote for the whole station
         try {
@@ -465,7 +445,7 @@ export async function rollupDatabaseInternal(
 //
 export async function rollupDatabaseStartup(
     db: DB, //
-    {now, accumulators: expectedAccumulators, stationMeta}: {now: number; accumulators: Accumulators; stationMeta: any}
+    {now, accumulators: expectedAccumulators, stationMeta}: {now: Epoch; accumulators: Accumulators; stationMeta: any}
 ) {
     const accumulatorsToPurge: Record<string, string> = {}; // purge no other action
     const allAccumulators: Record<string, CoverageHeader> = {};
@@ -616,14 +596,6 @@ function symlink(src: string, dest: string) {
 
 // Clear data from the db
 async function purge(db: DB, hr: CoverageHeader) {
-    // See if there are actually data entries
-    //    const first100KeyCount = (await db.keys({...CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, false), limit: 50}).all()).length;
-
     // Now clear and compact
     await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
-
-    // And provide a status update
-    //    if (first100KeyCount) {
-    //        console.log(`${db.ognStationName}: ${hr.typeName} - ${hr.dbKey()} purged [${first100KeyCount > 49 ? '>49' : first100KeyCount}] entries successfully`);
-    //    }
 }
