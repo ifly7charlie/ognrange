@@ -45,7 +45,7 @@
         "react-select": "^5.2.2",
         "react-visibility-sensor": "^5.1.1",
         "recharts": "^2.1.12",
-        "swr": "^1.2.2",
+        "swr": "^2.2.4",
         "yargs": "^17.3.1"
     },
     "devDependencies": {
