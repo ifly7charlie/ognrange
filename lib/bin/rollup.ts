@@ -202,7 +202,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
         );
 
         // And the global json
-        produceStationFile(accumulators);
+        await produceStationFile(accumulators);
 
         // Wait for all to be done
         await promise;
