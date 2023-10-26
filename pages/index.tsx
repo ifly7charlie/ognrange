@@ -58,7 +58,7 @@ export default function CombinePage(props) {
     const lat = params.get('lat');
     const lng = params.get('lng');
     const zoom = params.get('zoom');
-    const file = params.get('file')?.toString();
+    const file = params.get('file')?.toString() || 'year';
     const urlH3 = params.get('h3')?.toString();
 
     // What the map is looking at
