@@ -90,6 +90,7 @@ export function Dock(props: {
                         station={props.station}
                         setStation={props.setStation}
                         file={props.file}
+                        env={props.env}
                     />
                 ) : null}
             </div>

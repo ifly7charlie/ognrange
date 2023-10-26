@@ -20,7 +20,23 @@ import {CountDetails} from './coveragedetails/countdetails';
 import {SignalDetails} from './coveragedetails/signaldetails';
 import {LowestPointDetails} from './coveragedetails/lowestpointdetails';
 
-const fetcher = (args0, args1) => fetch(args0, args1).then((res) => res.json());
+import {NEXT_PUBLIC_DATA_URL} from '../common/config';
+
+const fetcher = (url: string) => fetch(url).then((res) => res.json());
+
+// // Get one of two urls on a fallback
+// const fetchFallback = async ([firstUrl, secondUrl]: [firstUrl: string, secondUrl: string], b) => {
+//     console.log(firstUrl, secondUrl, b);
+//     return fetch(firstUrl)
+//         .then((res) => res.json())
+//         .catch(async (e: any) => {
+//             if (e.message.match(/\(404\)/)) {
+//                 // Fallback to the old style if it's not found
+//                 return fetch(secondUrl).then((res) => res.json());
+//             }
+//             throw e;
+//         });
+// };
 
 export function CoverageDetailsToolTip({details, station}) {
     //
@@ -104,7 +120,8 @@ export function CoverageDetails({
     setSelectedDetails,
     station,
     setStation,
-    file
+    file,
+    env
 }: //
 {
     details: PickableDetails;
@@ -113,6 +130,7 @@ export function CoverageDetails({
     station: string;
     setStation: (s: string) => void;
     file: string;
+    env: any;
 }) {
     // Tidy up code later by simplifying typescript types
     const h3 = details.type === 'hexagon' ? details.h3 : '';
@@ -153,10 +171,31 @@ export function CoverageDetails({
         return index != -1 ? [stationMeta.lat[index], stationMeta.lng[index]] : null;
     }, [station, stationMeta.length]);
 
+    //
+    const {data: stationDataLatest} = useSWR(
+        !h3 //
+            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.json`
+            : null,
+        fetcher
+    );
+    const {data: stationDataDate} = useSWR(
+        !h3 //
+            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.${file}.json`
+            : null,
+        fetcher
+    );
+
+    // Find the one that actually has some content
+    const stationData = stationDataDate && stationDataDate.lastOutputEpoch ? stationDataDate : stationDataLatest;
+
     const clearSelectedH3 = useCallback(() => setSelectedDetails({type: 'none'}), [false]);
 
-    if (details.type === 'none' || !h3) {
-        return (
+    console.log(stationData, !h3);
+
+    delayedUpdateFrom(key);
+
+    const instructions =
+        details.type === 'none' || !h3 ? (
             <>
                 Hover over somewhere on the map to see details.
                 <br />
@@ -167,32 +206,7 @@ export function CoverageDetails({
                 You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information
                 <br />
             </>
-        );
-    }
-
-    delayedUpdateFrom(key);
-
-    // Either a station
-    if (details.type === 'station') {
-        return (
-            <>
-                <b>{details.name}</b>
-                <br />
-            </>
-        );
-
-        /*                {false && details.status && (
-                    <div
-                        style={{
-                            width: '350px',
-                            overflowWrap: 'anywhere',
-                            fontSize: 'small'
-                        }}
-                    >
-                        {details.status}
-                    </div>
-                )}*/
-    }
+        ) : null;
 
     if (details.type === 'hexagon') {
         return (
@@ -247,5 +261,45 @@ export function CoverageDetails({
         );
     }
 
-    return <div>there</div>;
+    if (stationData) {
+        return (
+            <>
+                <b>{station}</b>
+                <br />
+                {stationData?.stats ? (
+                    <>
+                        <p>Statistics at {new Date(stationData.outputEpoch * 1000).toISOString()}</p>
+                        <table>
+                            {Object.keys(stationData.stats).map((key) => (
+                                <tr>
+                                    <td>{key}</td>
+                                    <td>{stationData.stats[key]}</td>
+                                </tr>
+                            ))}
+                        </table>
+                    </>
+                ) : null}
+                {stationData?.status ? (
+                    <>
+                        <br />
+                        <b>Last Beacon</b>
+                        <br />
+                        <div
+                            style={{
+                                width: '350px',
+                                overflowWrap: 'anywhere',
+                                fontSize: 'small'
+                            }}
+                        >
+                            {stationData.status}
+                        </div>
+                    </>
+                ) : null}
+
+                <p style={{height: '5rem'}} />
+            </>
+        );
+    }
+
+    return instructions;
 }
