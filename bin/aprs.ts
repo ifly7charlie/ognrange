@@ -285,6 +285,7 @@ async function startAprsListener() {
                             // For error codes see:
                             // https://github.com/W9CR/p25nx2/blob/592d472fd2a3346a8f284cfd76881660b9dfdb25/FAP.pm#L98
                             console.log('invalid packet', packet.resultCode, data);
+                            packetStats.invalidPacket++;
                         }
                     }
                 }
