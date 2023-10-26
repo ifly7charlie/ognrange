@@ -24,20 +24,6 @@ import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-// // Get one of two urls on a fallback
-// const fetchFallback = async ([firstUrl, secondUrl]: [firstUrl: string, secondUrl: string], b) => {
-//     console.log(firstUrl, secondUrl, b);
-//     return fetch(firstUrl)
-//         .then((res) => res.json())
-//         .catch(async (e: any) => {
-//             if (e.message.match(/\(404\)/)) {
-//                 // Fallback to the old style if it's not found
-//                 return fetch(secondUrl).then((res) => res.json());
-//             }
-//             throw e;
-//         });
-// };
-
 export function CoverageDetailsToolTip({details, station}) {
     //
     const stationMeta = useStationMeta();
@@ -190,23 +176,7 @@ export function CoverageDetails({
 
     const clearSelectedH3 = useCallback(() => setSelectedDetails({type: 'none'}), [false]);
 
-    console.log(stationData, !h3);
-
     delayedUpdateFrom(key);
-
-    const instructions =
-        details.type === 'none' || !h3 ? (
-            <>
-                Hover over somewhere on the map to see details.
-                <br />
-                Click to lock the sidebar display to that location.
-                <br />
-                Click on a station marker to show coverage records only for that station.
-                <br />
-                You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information
-                <br />
-            </>
-        ) : null;
 
     if (details.type === 'hexagon') {
         return (
@@ -301,5 +271,16 @@ export function CoverageDetails({
         );
     }
 
-    return instructions;
+    return (
+        <>
+            Hover over somewhere on the map to see details.
+            <br />
+            Click to lock the sidebar display to that location.
+            <br />
+            Click on a station marker to show coverage records only for that station.
+            <br />
+            You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information
+            <br />
+        </>
+    );
 }
