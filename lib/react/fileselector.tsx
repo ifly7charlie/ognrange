@@ -1,7 +1,7 @@
 import {useState, useRef, useMemo, useEffect, useCallback} from 'react';
 
 import useSWR from 'swr';
-const fetcher = (arg0: any, arg1: any) => fetch(arg0, arg1).then((res) => res.json());
+const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 import {map as _map, find as _find} from 'lodash';
 

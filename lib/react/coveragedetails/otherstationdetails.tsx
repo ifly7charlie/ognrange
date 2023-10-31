@@ -1,6 +1,6 @@
 import {useState, useCallback, useMemo} from 'react';
 import useSWR from 'swr';
-const fetcher = (args0, args1) => fetch(args0, args1).then((res) => res.json());
+const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 import {
     LineChart, //
