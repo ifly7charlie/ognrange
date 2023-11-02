@@ -4,7 +4,7 @@ This is a complete replacement for the old glidernet/ognrange project. You can r
 
 ## Viewing Data
 
-You can see this project running at https://ognrange.onglide.com
+You can see this project running at https://ognrange.glidernet.org or https://ognrange.onglide.com
 
 ## Getting Started
 
