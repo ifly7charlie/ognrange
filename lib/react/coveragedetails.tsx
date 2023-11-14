@@ -249,6 +249,14 @@ export function CoverageDetails({
                         </table>
                     </>
                 ) : null}
+                {stationData?.notice ? (
+                    <>
+                        <br />
+                        <b>Notice</b>
+                        <br />
+                        {stationData.notice}
+                    </>
+                ) : null}
                 {stationData?.status ? (
                     <>
                         <br />
