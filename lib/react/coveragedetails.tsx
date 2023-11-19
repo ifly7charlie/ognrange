@@ -159,13 +159,13 @@ export function CoverageDetails({
 
     //
     const {data: stationDataLatest} = useSWR(
-        !h3 //
+        !h3 && station //
             ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.json`
             : null,
         fetcher
     );
     const {data: stationDataDate} = useSWR(
-        !h3 //
+        !h3 && station //
             ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.${file}.json`
             : null,
         fetcher
