@@ -42,15 +42,16 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
     const setStationMeta = useCallback(
         (data) => {
             const validFilter = (_value: any, index: number) => data.valid[index];
-            const filteredData = allStations
-                ? data
-                : {
-                      name: data.name.filter(validFilter), //
-                      lng: data.lng.filter(validFilter),
-                      lat: data.lat.filter(validFilter),
-                      id: data.id.filter(validFilter),
-                      valid: data.valid.filter(validFilter)
-                  };
+            const filteredData =
+                allStations || !('valid' in data)
+                    ? data
+                    : {
+                          name: data.name.filter(validFilter), //
+                          lng: data.lng.filter(validFilter),
+                          lat: data.lat.filter(validFilter),
+                          id: data.id.filter(validFilter),
+                          valid: data.valid.filter(validFilter)
+                      };
             setStationMetaInternal({...filteredData, length: filteredData.id.length});
         },
         [allStations]

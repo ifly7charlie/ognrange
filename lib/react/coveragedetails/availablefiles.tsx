@@ -10,7 +10,8 @@ const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 function getDaysBetween(start: string, end: string): Map<number, 0 | 1> {
     let result = new Map<number, 0 | 1>();
-    for (let c = new Date(start); c <= new Date(end); c.setDate(c.getDate() + 1)) {
+    const endDate = new Date(end + 'T00:00:00Z');
+    for (let c = new Date(start + 'T00:00:00Z'); c <= endDate; c.setUTCDate(c.getUTCDate() + 1)) {
         result.set(c.valueOf(), 0);
     }
     return result;
@@ -30,10 +31,10 @@ const fileFormatter = {
     year: (tick: number) => 'year.' + new Date(tick).toJSON().substring(0, 4)
 };
 
-const suffux = {
-    day: '',
-    month: '-01',
-    year: '-01-01'
+const suffix = {
+    day: 'T00:00:00Z',
+    month: '-01T00:00:00Z',
+    year: '-01-01T00:00:00Z'
 };
 
 //const yTickFormatter = (tick: number) => (tick ? 'available' : '');
@@ -44,6 +45,7 @@ const CustomTooltip = ({active, payload, label, tickFormatter}: {active?: any; p
             <div className="tooltip" style={{background: 'white', paddingLeft: '10px', paddingRight: '10px', border: '1px solid grey'}}>
                 <p className="label">
                     <b>{tickFormatter(label)}</b>: {payload[0].value ? 'available' : ''}
+                    <br />
                 </p>
             </div>
         );
@@ -70,7 +72,6 @@ export function AvailableFiles({
     const processed = useMemo(
         () =>
             all?.reduce((out: Map<number, 0 | 1>, fileName: string) => {
-                out.set(new Date((fileName + suffux[displayType]).slice(-10)).valueOf(), 1);
                 return out;
             }, getDaysBetween(all[0].slice(-10), all[all.length - 1].slice(-10))),
         [station, data]
