@@ -6,8 +6,6 @@ import {Checkbox} from './checkbox';
 
 import {useStationMeta} from './stationmeta';
 
-import {debounce as _debounce, map as _map, find as _find, filter as _filter} from 'lodash';
-
 export function StationSelector({
     station, //
     setStation,
@@ -34,27 +32,27 @@ export function StationSelector({
     const setAllStations = useCallback(
         (value: boolean) => {
             if (allStations != value) {
-                updateUrl({allStations: value ? 1 : 0});
+                updateUrl({allStations: value ? '1' : undefined});
             }
         },
         [allStations]
     );
 
     const findStation = useCallback(
-        async (s: string) => {
+        async (s: string): Promise<{value: string; label: string}[]> => {
             if (s.length >= 2) {
                 try {
                     let re = new RegExp(s, 'i');
 
-                    const p = _map(
-                        _filter(stationMeta.name, (v) => v.match(re)),
-                        (station) => {
+                    const p = stationMeta.name
+                        .filter((v) => v.match(re))
+                        .map((station) => {
                             return {value: station, label: station};
-                        }
-                    );
+                        });
+                    console.log(p);
                     return p;
                 } catch (e) {
-                    return [];
+                    return [{value: '', label: 'All Stations (global)'}];
                 }
             }
             return [{value: '', label: 'All Stations (global)'}];

@@ -38,7 +38,7 @@ const suffux = {
 
 //const yTickFormatter = (tick: number) => (tick ? 'available' : '');
 
-const CustomTooltip = ({active, payload, label, tickFormatter}) => {
+const CustomTooltip = ({active, payload, label, tickFormatter}: {active?: any; payload?: any; label?: number; tickFormatter: (_a: number) => string}) => {
     if (active && payload && payload.length) {
         return (
             <div className="tooltip" style={{background: 'white', paddingLeft: '10px', paddingRight: '10px', border: '1px solid grey'}}>
