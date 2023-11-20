@@ -45,7 +45,6 @@ const CustomTooltip = ({active, payload, label, tickFormatter}: {active?: any; p
             <div className="tooltip" style={{background: 'white', paddingLeft: '10px', paddingRight: '10px', border: '1px solid grey'}}>
                 <p className="label">
                     <b>{tickFormatter(label)}</b>: {payload[0].value ? 'available' : ''}
-                    <br />
                 </p>
             </div>
         );
@@ -72,6 +71,7 @@ export function AvailableFiles({
     const processed = useMemo(
         () =>
             all?.reduce((out: Map<number, 0 | 1>, fileName: string) => {
+                out.set(new Date((fileName + suffix[displayType]).slice(-20)).valueOf(), 1);
                 return out;
             }, getDaysBetween(all[0].slice(-10), all[all.length - 1].slice(-10))),
         [station, data]
