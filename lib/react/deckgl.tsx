@@ -78,7 +78,12 @@ function makeLayers(
 
     // Colouring and display options
     let getStationColor = // purple vs blue
-        (_d, {index}) => (stationMeta.name[index] == station || _sortedIndexOf(highlightStations, index) !== -1 ? [255, 16, 240] : [0, 0, 192]);
+        (_d, {index}) =>
+            stationMeta.name[index] == station || _sortedIndexOf(highlightStations, index) !== -1
+                ? [255, 16, 240] //
+                : !stationMeta.valid || stationMeta.valid[index]
+                ? [0, 0, 192]
+                : [255, 64, 64];
     let getStationSize = // bigger if it's selected or in highlight
         (_d, {index}) => (stationMeta.name[index] == station || _sortedIndexOf(highlightStations, index) !== -1 ? 7 : 5);
 
@@ -369,6 +374,7 @@ export function CoverageMap(props: {
             props.visualisation,
             highlightStations, //
             JSON.stringify(props.selectedDetails),
+            stationMeta.length,
             fromColour,
             toColour
         ]
@@ -378,7 +384,7 @@ export function CoverageMap(props: {
     if (props.station) {
         attribution += `Currently showing station ${props.station}`;
     } else {
-        attribution += `Currently showing all stations`;
+        attribution += `Currently showing all stations (${stationMeta.length})`;
     }
 
     // We keep our saved viewstate up to date in case of re-render

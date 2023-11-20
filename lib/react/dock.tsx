@@ -75,7 +75,7 @@ export function Dock(props: {
             </div>
 
             <div style={{padding: '7px'}}>
-                <StationSelector station={props.station} setStation={props.setStation} />
+                <StationSelector station={props.station} setStation={props.setStation} updateUrl={props.updateUrl} />
                 <br />
                 <FileSelector station={props.station} setFile={props.setFile} file={props.file} />
                 <br />
@@ -90,6 +90,7 @@ export function Dock(props: {
                         station={props.station}
                         setStation={props.setStation}
                         file={props.file}
+                        setFile={props.setFile}
                         env={props.env}
                     />
                 ) : null}

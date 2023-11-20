@@ -19,6 +19,7 @@ import {OtherStationsDetails} from './coveragedetails/otherstationdetails';
 import {CountDetails} from './coveragedetails/countdetails';
 import {SignalDetails} from './coveragedetails/signaldetails';
 import {LowestPointDetails} from './coveragedetails/lowestpointdetails';
+import {AvailableFiles} from './coveragedetails/availablefiles';
 
 import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 
@@ -107,6 +108,7 @@ export function CoverageDetails({
     station,
     setStation,
     file,
+    setFile,
     env
 }: //
 {
@@ -116,6 +118,7 @@ export function CoverageDetails({
     station: string;
     setStation: (s: string) => void;
     file: string;
+    setFile: (s: string) => void;
     env: any;
 }) {
     // Tidy up code later by simplifying typescript types
@@ -157,16 +160,17 @@ export function CoverageDetails({
         return index != -1 ? [stationMeta.lat[index], stationMeta.lng[index]] : null;
     }, [station, stationMeta.length]);
 
-    //
-    const {data: stationDataLatest} = useSWR(
+    const {data: stationDataDate, error} = useSWR(
         !h3 && station //
-            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.json`
+            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.${file}.json`
             : null,
         fetcher
     );
-    const {data: stationDataDate} = useSWR(
-        !h3 && station //
-            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.${file}.json`
+
+    //
+    const {data: stationDataLatest} = useSWR(
+        !h3 && station && (error || !stationDataDate?.lastOutputEpoch) //
+            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.json`
             : null,
         fetcher
     );
@@ -236,16 +240,23 @@ export function CoverageDetails({
             <>
                 <b>{station}</b>
                 <br />
+                <br />
+                <AvailableFiles station={station} setFile={setFile} displayType="day" />
+                <AvailableFiles station={station} setFile={setFile} displayType="month" />
+                <AvailableFiles station={station} setFile={setFile} displayType="year" />
+
                 {stationData?.stats ? (
                     <>
-                        <p>Statistics at {new Date(stationData.outputEpoch * 1000).toISOString()}</p>
+                        <b>Statistics</b> at {new Date(stationData.outputEpoch * 1000).toISOString().replace('.000', '')}
                         <table>
-                            {Object.keys(stationData.stats).map((key) => (
-                                <tr>
-                                    <td>{key}</td>
-                                    <td>{stationData.stats[key]}</td>
-                                </tr>
-                            ))}
+                            <tbody>
+                                {Object.keys(stationData.stats).map((key) => (
+                                    <tr key={key}>
+                                        <td>{key}</td>
+                                        <td>{stationData.stats[key]}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
                         </table>
                     </>
                 ) : null}
@@ -257,10 +268,36 @@ export function CoverageDetails({
                         {stationData.notice}
                     </>
                 ) : null}
+                <>
+                    <br />
+                    <b>Times</b>
+                    <table>
+                        <tbody>
+                            {stationData?.lastLocation ? (
+                                <tr key="location">
+                                    <td>Location</td>
+                                    <td>{new Date((stationData.lastLocation ?? 0) * 1000).toISOString().replace('.000', '')}</td>
+                                </tr>
+                            ) : null}
+                            {stationData?.lastPacket ? (
+                                <tr key="packet">
+                                    <td>Packet</td>
+                                    <td>{new Date((stationData.lastPacket ?? 0) * 1000).toISOString().replace('.000', '')}</td>
+                                </tr>
+                            ) : null}
+                            {stationData?.outputDate ? (
+                                <tr key="output">
+                                    <td>Output File</td>
+                                    <td>{stationData.outputDate?.replace(/\.[0-9]*Z/, 'Z')}</td>
+                                </tr>
+                            ) : null}
+                        </tbody>
+                    </table>
+                </>
                 {stationData?.status ? (
                     <>
                         <br />
-                        <b>Last Beacon</b>
+                        <b>Last Status Message</b>
                         <br />
                         <div
                             style={{

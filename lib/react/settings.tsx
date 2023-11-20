@@ -12,12 +12,7 @@ import {HexAlphaColorPicker} from 'react-colorful';
 
 import {defaultFromColour, defaultToColour, defaultBaseMap} from './defaults';
 
-const Checkbox = ({children, ...props}) => (
-    <label style={{marginRight: '1em'}}>
-        <input type="checkbox" {...props} />
-        {children}
-    </label>
-);
+import {Checkbox} from './checkbox';
 
 export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_PUBLIC_AIRSPACE_API_KEY?: string}}) {
     const router = useRouter();
