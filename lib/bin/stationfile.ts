@@ -2,7 +2,7 @@ import {writeFileSync, unlinkSync, symlinkSync} from 'fs';
 import {writeFile} from 'fs/promises';
 import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
-import {Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
+import {Bool, Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
 import {gzipSync, createGzip} from 'zlib';
 
 import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
@@ -18,7 +18,7 @@ export async function produceStationFile(accumulators: Accumulators) {
     const stationDetailsArray = allStationsDetails();
     // Form a list of hashes
     let statusOutput = stationDetailsArray.filter((v) => {
-        return v.valid && v.lastPacket;
+        return !!v.lastPacket;
     });
 
     // Write this to the stations.json file
@@ -40,7 +40,7 @@ export async function produceStationFile(accumulators: Accumulators) {
             name = makeBuilder({type: new Utf8()}),
             lat = makeBuilder({type: new Float32()}),
             lng = makeBuilder({type: new Float32()}),
-            lastBeacon = makeBuilder({type: new Uint32()}),
+            valid = makeBuilder({type: new Bool()}),
             lastPacket = makeBuilder({type: new Uint32()});
 
         // Output an id sorted list of stations
@@ -49,7 +49,7 @@ export async function produceStationFile(accumulators: Accumulators) {
             name.append(station.station);
             lat.append(station.lat);
             lng.append(station.lng);
-            lastBeacon.append(station.lastBeacon);
+            valid.append(station.valid);
             lastPacket.append(station.lastPacket);
         }
 
@@ -59,7 +59,7 @@ export async function produceStationFile(accumulators: Accumulators) {
             name: name.finish().toVector(),
             lat: lat.finish().toVector(),
             lng: lng.finish().toVector(),
-            lastBeacon: lastBeacon.finish().toVector(),
+            valid: valid.finish().toVector(),
             lastPacket: lastPacket.finish().toVector()
         };
         const tableUpdates = new Table(arrow);

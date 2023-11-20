@@ -1,11 +1,20 @@
 import {useCallback} from 'react';
+import {useSearchParams} from 'next/navigation';
 import AsyncSelect from 'react-select/async';
+
+import {Checkbox} from './checkbox';
 
 import {useStationMeta} from './stationmeta';
 
-import {debounce as _debounce, map as _map, find as _find, filter as _filter} from 'lodash';
-
-export function StationSelector({station, setStation}) {
+export function StationSelector({
+    station, //
+    setStation,
+    updateUrl
+}: {
+    station: string;
+    setStation: (name: string) => void;
+    updateUrl: (a: Record<string, string>) => void;
+}) {
     const selectedStation = {
         value: station || 'global',
         label: station || 'All Stations (global)'
@@ -17,21 +26,33 @@ export function StationSelector({station, setStation}) {
     ];
 
     const stationMeta = useStationMeta();
+    const params = useSearchParams();
+    const allStations = !!parseInt(params.get('allStations')?.toString() ?? '0');
+
+    const setAllStations = useCallback(
+        (value: boolean) => {
+            if (allStations != value) {
+                updateUrl({allStations: value ? '1' : undefined});
+            }
+        },
+        [allStations]
+    );
+
     const findStation = useCallback(
-        async (s: string) => {
+        async (s: string): Promise<{value: string; label: string}[]> => {
             if (s.length >= 2) {
                 try {
                     let re = new RegExp(s, 'i');
 
-                    const p = _map(
-                        _filter(stationMeta.name, (v) => v.match(re)),
-                        (station) => {
+                    const p = stationMeta.name
+                        .filter((v) => v.match(re))
+                        .map((station) => {
                             return {value: station, label: station};
-                        }
-                    );
+                        });
+                    console.log(p);
                     return p;
                 } catch (e) {
-                    return [];
+                    return [{value: '', label: 'All Stations (global)'}];
                 }
             }
             return [{value: '', label: 'All Stations (global)'}];
@@ -50,6 +71,11 @@ export function StationSelector({station, setStation}) {
                 onChange={selectStationOnChange}
                 noOptionsMessage={() => 'Start typing to search'}
             />
+
+            <Checkbox checked={allStations} onChange={(v) => setAllStations(!!v.target.checked)}>
+                Show offline stations
+            </Checkbox>
+            <br />
         </>
     );
 }
