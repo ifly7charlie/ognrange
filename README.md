@@ -181,6 +181,20 @@ APRS packets are NOT recorded in the following situations:
 
 If you wish to update the list of stations that are excluded please raise a pull request to change the file `ignorestation.ts`. For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in `bin/aprs.ts`
 
+In the user interface the stats are:
+
+```
+ignoredTracker: ignored a *repeated* packet from an OGN tracker (digipeaters don't start qA)
+invalidTracker: tracker id (alarm id) is not 6 characters
+invalidTimestamp: packet doesn't have a reasonable timestamp
+ignoredSignal0: means there is no signal strength in the received packet
+ignoredStationary: means that a device isn't moving, repeated packets are ignored
+ignoredH3stationary: means that a device is moving but only between a very small number of locations (eg due to poor GPS reception - indoors etc)
+ignoredPAW: Means PAW tracker that is ignored (source callsign begins PAW)
+ignoredElevation: Unable to do elevation lookup of packet - probably means lat/lng is not valid
+count: total number of packets
+```
+
 ### Ignoring a station
 
 If you wish to ignore a station please add it to `ignorestation.ts` and raise a PR for the repo.
