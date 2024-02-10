@@ -43,7 +43,7 @@ const explicitlyIgnoredStations: Record<Uppercase<string>, boolean> = {
 };
 
 const ignoreFullRegexp = new RegExp(/^[0-9]*$/, 'i');
-const ignoreStartRegexp = new RegExp(/^(FNB|XCG|XCC|OGN|RELAY|RND|FLR|bSky|AIRS|N0TEST-).*$/, 'i');
+const ignoreStartRegexp = new RegExp(/^(FNB|XCG|XCC|OGN|RELAY|RND|FLR|bSky|AIRS[0-9]+|N0TEST-).*$/, 'i');
 const ignoreAnyRegexp = new RegExp(/[^A-Za-z0-9_-]/);
 
 export function ignoreStation(stationName: string) {
