@@ -68,15 +68,15 @@ export async function produceStationFile(accumulators: Accumulators) {
         // for the arrow files, h3 output is the END of the period so the file for the last
         // day in the period is equivalent
         const symlinkAll = (compress: boolean) => {
-            const sourceFile = `stations/stations.day.${accumulators.day.file}.arrow${compress ? '.gz' : ''}`;
+            const sourceFile = `stations.day.${accumulators.day.file}.arrow${compress ? '.gz' : ''}`;
             Object.keys(accumulators)
                 .filter((a) => a !== 'current' && a !== 'day')
                 .forEach((a) => {
-                    symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations/stations.${a}.${accumulators[a as AccumulatorTypeString].file}.arrow${compress ? '.gz' : ''}`);
-                    symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations/stations.${a}.arrow${compress ? '.gz' : ''}`);
+                    symlink(sourceFile, OUTPUT_PATH + `stations/stations.${a}.${accumulators[a as AccumulatorTypeString].file}.arrow${compress ? '.gz' : ''}`);
+                    symlink(sourceFile, OUTPUT_PATH + `stations/stations.${a}.arrow${compress ? '.gz' : ''}`);
                 });
-            symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations/stations.day.arrow${compress ? '.gz' : ''}`);
-            symlink(OUTPUT_PATH + sourceFile, OUTPUT_PATH + `stations.arrow${compress ? '.gz' : ''}`); //legacy
+            symlink(sourceFile, OUTPUT_PATH + `stations/stations.day.arrow${compress ? '.gz' : ''}`);
+            symlink(sourceFile, OUTPUT_PATH + `stations.arrow${compress ? '.gz' : ''}`); //legacy
         };
 
         // And write them out
