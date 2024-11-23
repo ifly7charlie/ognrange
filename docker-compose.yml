@@ -1,4 +1,3 @@
-version: '3.9'
 services:
     next:
         image: ghcr.io/ifly7charlie/ogr-next:latest

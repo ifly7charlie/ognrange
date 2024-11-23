@@ -91,6 +91,10 @@ function makeLayers(
     const visualisationFunctions = {
         count: (f, i) => colourise(Math.log2(f.count[i]) * (254 / displayedh3s.logMaxCount)),
         avgSig: (f, i) => colourise(Math.min(f.avgSig[i] * 3, 254)),
+        avgSigExp1: (f, i) => colourise(Math.min((Math.log2(f.avgSig[i] << 1) - 2) * 40, 254)),
+        avgSigExp: (f, i) => colourise(Math.min((Math.log2(f.avgSig[i]) - 1) * 24, 254)),
+        maxSigExp: (f, i) => colourise(Math.min((Math.log2(f.maxSig[i] << 1) - 1) * 24, 254)),
+        maxSigExp1: (f, i) => colourise(Math.min((Math.log2(f.maxSig[i] << 1) - 2) * 48, 254)),
         maxSig: (f, i) => colourise(Math.min(f.maxSig[i] * 1.3, 254)),
         minAlt: (f, i) => colourise(Math.min(f.minAlt[i] / 20, 254)),
         minAgl: (f, i) => colourise(Math.min(f.minAgl[i] / 20, 254)),

@@ -1,5 +1,5 @@
 # disposable to find github version, only used for that
-FROM node:18.16-alpine as version
+FROM node:20-alpine AS version
 WORKDIR /ognrange
 COPY .git/HEAD .git/HEAD
 COPY .git/refs/heads .git/refs/heads
@@ -7,9 +7,9 @@ COPY ./conf/.env.local ./.env.local
 RUN echo "NEXT_PUBLIC_GIT_REF=$(cat /ognrange/.git/`cat .git/HEAD | cut -f2 -d ' '`)" >> ./.env.local
 
 ######## builders
-FROM node:18.16-alpine as gyp
+FROM node:20-alpine AS gyp
 
-FROM gyp as build-image
+FROM gyp AS build-image
 WORKDIR /ognrange
 ARG NEXT_PUBLIC_SITEURL
 ARG NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
@@ -39,12 +39,12 @@ RUN yarn aprs:build
 
 
 ########### production images
-FROM build-image as base-image
+FROM build-image AS base-image
 WORKDIR /ognrange
 RUN yarn install --production  --frozen-lockfile
 
 
-FROM node:18.16-alpine AS node-base
+FROM node:20-alpine AS node-base
 WORKDIR /ognrange
 COPY --from=build-image /ognrange/node_modules ./node_modules
 COPY ./LICENSE ./LICENSE

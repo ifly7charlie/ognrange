@@ -76,7 +76,7 @@ export async function produceStationFile(accumulators: Accumulators) {
                     symlink(sourceFile, OUTPUT_PATH + `stations/stations.${a}.arrow${compress ? '.gz' : ''}`);
                 });
             symlink(sourceFile, OUTPUT_PATH + `stations/stations.day.arrow${compress ? '.gz' : ''}`);
-            symlink(sourceFile, OUTPUT_PATH + `stations.arrow${compress ? '.gz' : ''}`); //legacy
+            symlink('stations/' + sourceFile, OUTPUT_PATH + `stations.arrow${compress ? '.gz' : ''}`); //legacy
         };
 
         // And write them out
