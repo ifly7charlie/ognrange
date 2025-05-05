@@ -14,7 +14,22 @@ const explicitlyIgnoredStations: Record<Uppercase<string>, boolean> = {
     CAPTURS: true,
     LT24: true,
     SKYLINES: true,
-    NEMO: true,
+    NEMO: true, // Nemo trackers use a closed protocol and are unseen by OGN base stations: nemoscout.com
+        CYZR1: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CYCK1: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CYQS1: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CYSA3: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CYKF2: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CNZ8A: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CYHS1: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CNC4A: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CZBA3: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        AUBR2: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CNC3C: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CYEE1: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CNK4A: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CYOO1: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CNF4A: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
     ANDROID: true,
     SAFESKY: true,
     IGCDROID: true,
