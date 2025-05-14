@@ -23,6 +23,7 @@ const explicitlyIgnoredStations: Record<Uppercase<string>, boolean> = {
         CNZ8A: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
         CYHS1: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
         CNC4A: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
+        CPC3A: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
         CZBA3: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
         AUBR2: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
         CNC3C: true, // This is a Nemo station, does not RX any FLARMs or OGN trackers
