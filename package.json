@@ -23,7 +23,7 @@
         "apache-arrow": "^18.0.0",
         "async-lock": "^1.4.0",
         "classic-level": "^1.2.0",
-        "deck.gl": ">8.5.2",
+        "deck.gl": "^8.5.2",
         "dotenv": "^16.0.0",
         "h3-js": "^4.1.0",
         "js-aprs-fap": "^1.1.5",

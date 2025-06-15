@@ -33,13 +33,13 @@ import {reduce as _reduce} from 'lodash';
 
 // track any setInterval/setTimeout calls so we can stop them when asked to exit
 // also the async rollups we do during startup
-let intervals: NodeJS.Timer[] = [];
+let intervals: NodeJS.Timeout[] = [];
 let timeouts: Record<string, NodeJS.Timeout> = {};
 let startupPromise: Promise<void> | null = null;
 
 // APRS connection
 class OgnSocket extends ISSocket {
-    interval?: NodeJS.Timer;
+    interval?: NodeJS.Timeout;
     exiting?: boolean;
     valid?: boolean;
     aprsc?: string;

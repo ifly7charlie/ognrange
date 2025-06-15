@@ -74,7 +74,7 @@ export async function flushH3(station: StationName, h3lockkey: H3LockKey, buffer
     // special post as it needs to transfer the buffer rather than copy it
     const donePromise = new Promise<void>((resolve) => {
         promises[h3lockkey + '_flushH3'] = {resolve};
-        worker.postMessage({action: 'flushH3', now: Date.now(), station, h3lockkey, buffer}, [buffer.buffer]);
+        worker.postMessage({action: 'flushH3', now: Date.now(), station, h3lockkey, buffer}, [buffer.buffer as ArrayBuffer]);
     });
 
     // Keep copy so we can wait for it and also return it so the caller can wait

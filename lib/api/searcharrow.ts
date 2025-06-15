@@ -61,11 +61,11 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
         }
 
         try {
-            if (fileName.match(/.gz$/)) {
-                arrowFileContents = gunzipSync(arrowFileContents);
-            }
+			const fileContents = fileName.match(/.gz$/) ? 
+                  gunzipSync(arrowFileContents) :
+				  arrowFileContents;
 
-            table = tableFromIPC([arrowFileContents]);
+            table = tableFromIPC([fileContents]);
             cache.set(fileName, table);
             searchTableForH3(fileName, table, h3SplitLong, resolve);
         } catch (e) {
@@ -188,9 +188,9 @@ export function searchStationArrowFile(id: number): Record<string, any> | null {
         if (!arrowStationTable) {
             let arrowFileContents = readFileSync(fileName);
 
-            if (fileName.match(/.gz$/)) {
-                arrowFileContents = gunzipSync(arrowFileContents);
-            }
+			const fileContents = fileName.match(/.gz$/) ?
+				  gunzipSync(arrowFileContents) :
+				  arrowFileContents;
 
             arrowStationTable = tableFromIPC<any>([arrowFileContents]);
         }

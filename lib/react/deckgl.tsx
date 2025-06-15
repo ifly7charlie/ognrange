@@ -131,7 +131,7 @@ function makeLayers(
                   getLineColor: [255, 16, 240, 128],
                   getLineWidth: 10,
                   getElevation: 1000,
-                  getFillColor: [, 150],
+//                  getFillColor: [, 150],
                   lineWidthMinPixels: 2,
                   lineWidthMaxPixels: 5
               })
@@ -157,7 +157,7 @@ function makeLayers(
         : undefined;
 
     // So we can check loading status
-    const hexLayer = new H3HexagonLayer({
+    const hexLayer = new H3HexagonLayer<typeof displayedh3s>({
         id: (station || 'global') + (file || 'year'),
         data: displayedh3s,
         pickable: true,
