@@ -6,6 +6,9 @@ import Head from 'next/head';
 
 import {useState, useMemo, useRef, useCallback, useEffect} from 'react';
 
+import {useTranslation} from 'next-i18next';
+import {serverSideTranslations} from 'next-i18next/serverSideTranslations';
+
 import {debounce as _debounce} from 'lodash';
 
 import {useStationMeta} from '../lib/react/stationmeta';
@@ -50,6 +53,7 @@ export default function CombinePage(props) {
     // classes. If no class is set then assume the first one
     const router = useRouter();
     const params = useSearchParams();
+    const {t} = useTranslation('common');
     const [flyToStation, setFlyToStation] = useState<string>();
 
     const station = params.get('station');
@@ -190,7 +194,7 @@ export default function CombinePage(props) {
     return (
         <>
             <Head>
-                <title>OGN Range</title>
+                <title>{t('page_title')}</title>
             </Head>
 
             <div>
@@ -236,7 +240,7 @@ export default function CombinePage(props) {
 }
 
 // Just to force server side rendering
-export const getServerSideProps = (async () => {
+export const getServerSideProps = (async ({locale}) => {
     return {
         props: {
             env: {
@@ -244,7 +248,8 @@ export const getServerSideProps = (async () => {
                 NEXT_PUBLIC_SITEURL: serverRuntimeConfig.NEXT_PUBLIC_SITEURL,
                 NEXT_PUBLIC_DATA_URL: serverRuntimeConfig.NEXT_PUBLIC_DATA_URL,
                 NEXT_PUBLIC_AIRSPACE_API_KEY: serverRuntimeConfig.NEXT_PUBLIC_AIRSPACE_API_KEY
-            }
+            },
+            ...(await serverSideTranslations(locale, ['common']))
         }
     };
 }) satisfies GetServerSideProps<{env: Record<string, string>}>;

@@ -7,7 +7,7 @@ import {ignoreStation} from '../../../lib/common/ignorestation';
 
 import {readdirSync} from 'fs';
 
-const fileMatcher = /\.(day|month|year)\.([0-9-]+)\.arrow\.gz$/;
+const fileMatcher = /\.(day|month|year|yearnz)\.([0-9-]+)([nz]*)\.arrow\.gz$/;
 
 export default async function getH3Details(req, res) {
     const stationName: string = req.query.station;
@@ -56,5 +56,5 @@ export default async function getH3Details(req, res) {
 
     // Return the selected top 5 along with the number left over so we can
     // do a proper graph
-    res.status(200).json({files: {day: files.day, month: files.month, year: files.year}});
+    res.status(200).json({files: {day: files.day, month: files.month, year: files.year, yearnz: files.yearnz}});
 }

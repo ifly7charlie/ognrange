@@ -2,6 +2,8 @@ import {useState, useCallback, useMemo} from 'react';
 import useSWR from 'swr';
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
+import {useTranslation} from 'next-i18next';
+
 import {
     LineChart, //
     Line,
@@ -27,6 +29,8 @@ import graphcolours from '../graphcolours';
 // COSTLY
 export function OtherStationsDetails(props: {h3: string; file: string; station: string; locked: boolean}) {
     const [doFetch, setDoFetch] = useState(null);
+    const {t} = useTranslation('common', {keyPrefix: 'details.stations'});
+    const n = (name) => (name === 'Other' || name === 'unknown' ? t(name) : name);
 
     //
     // Get the grouped value - we use a delay for this so we don't hit server unless they wait
@@ -79,7 +83,7 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
 
     return (
         <>
-            {isGlobal ? <>Top 5 stations by percentage:</> : <>Top 5 other stations total packet count:</>}
+            {t(isGlobal ? 'percentage.top5' : 'count.top5otherbyday')}
             <br />
             {byDay?.data?.length > 0 ? (
                 <>
@@ -87,7 +91,7 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
                         <PieChart width={480} height={180} margin={{top: 5, right: 30, left: 20, bottom: 5}}>
                             <Pie
                                 data={_map(byDay.series, (v, i) => {
-                                    return {...v, fill: graphcolours[i]};
+                                    return {...v, fill: graphcolours[i], s: n(v.s)};
                                 })}
                                 dataKey="c"
                                 nameKey="s"
@@ -102,7 +106,7 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
                     <br />
                     {!isGlobal ? (
                         <>
-                            Top 5 other stations packet count by day:
+                            {t('count.top5bydayother')}: //
                             <br />
                             <br />
                             <ResponsiveContainer width="100%" height={150} key="countovertime">
@@ -113,14 +117,14 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
                                     <Tooltip key="ttcot" />
                                     <Legend />
                                     {_map(byDay.series, (v, i) => (
-                                        <Line key={v.s} isAnimationActive={false} type="monotone" dataKey={v.s} stroke={graphcolours[i]} dot={{r: 1}} />
+                                        <Line name={n(v.s)} key={v.s} isAnimationActive={false} type="monotone" dataKey={v.s} stroke={graphcolours[i]} dot={{r: 1}} />
                                     ))}
                                 </LineChart>
                             </ResponsiveContainer>
                             <br />
                         </>
                     ) : null}
-                    Top 5 other stations percentage by day:
+                    {t('percentage.top5byday')}
                     <br />
                     <br />
                     <ResponsiveContainer width="100%" height={150} key="percentageovertime">
@@ -131,7 +135,7 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
                             <Tooltip />
                             <Legend />
                             {_map(byDay.series, (v, i) => (
-                                <Bar key={'ot' + v.s} isAnimationActive={false} type="monotone" stackId="a" dataKey={v.s} stroke={graphcolours[i]} fill={graphcolours[i]} />
+                                <Bar name={n(v.s)} key={'ot' + v.s} isAnimationActive={false} type="monotone" stackId="a" dataKey={v.s} stroke={graphcolours[i]} fill={graphcolours[i]} />
                             ))}
                         </BarChart>
                     </ResponsiveContainer>

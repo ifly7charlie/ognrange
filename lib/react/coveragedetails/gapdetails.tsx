@@ -1,5 +1,7 @@
-import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, LabelList} from 'recharts';
+import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer} from 'recharts';
 import graphcolours from '../graphcolours';
+
+import {useTranslation} from 'next-i18next';
 
 import {WaitForGraph} from './waitforgraph';
 
@@ -10,14 +12,15 @@ export function GapDetails(props: //
     p: number;
     byDay: any;
 }) {
+    const {t} = useTranslation('common', {keyPrefix: 'details.gap'});
     return (
         <>
-            <b>Time between received packets</b>
+            <b>{t('title')}</b>
             <br />
-            Avg Gap: {props.p >> 2}s{' '}
+            {t('summary', {average: props.p >> 2})}{' '}
             {(props.q ?? true) !== true && props.stationCount > 1 ? (
                 <>
-                    (expected: {props.q >> 2}s)
+                    {t('summary_expected', {expected: props.q >> 2})}
                     <br />
                 </>
             ) : (
@@ -33,8 +36,8 @@ export function GapDetails(props: //
                             <YAxis unit="s" style={{fontSize: '0.8rem'}} />
                             <Tooltip />
                             <Legend />
-                            <Line name="Average Gap" isAnimationActive={false} type="monotone" dataKey="avgGap" stroke={graphcolours[0]} dot={{r: 1}} />
-                            {'expectedGap' in props.byDay[0] ? <Line name="Expected Gap" type="monotone" isAnimationActive={false} dataKey="expectedGap" stroke={graphcolours[1]} dot={{r: 1}} /> : null}
+                            <Line name={t('average')} isAnimationActive={false} type="monotone" dataKey="avgGap" stroke={graphcolours[0]} dot={{r: 1}} />
+                            {'expectedGap' in props.byDay[0] ? <Line name={t('expected')} type="monotone" isAnimationActive={false} dataKey="expectedGap" stroke={graphcolours[1]} dot={{r: 1}} /> : null}
                         </LineChart>
                     </ResponsiveContainer>
                 </>

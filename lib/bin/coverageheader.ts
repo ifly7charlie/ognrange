@@ -13,13 +13,14 @@ import {H3LockKey, StationId, As} from './types';
 
 export type AccumulatorBucket = number & As<'AccumulatorBucket'>;
 
-export type AccumulatorTypeString = 'current' | 'day' | 'month' | 'year';
+export type AccumulatorTypeString = 'current' | 'day' | 'month' | 'year' | 'yearnz';
 export enum AccumulatorType {
     current = 0,
     day = 1,
     //    week = 2,
     month = 3,
-    year = 4
+    year = 4,
+    yearnz = 5
 }
 
 export const accumulatorTypes: Record<AccumulatorTypeString, AccumulatorType> = {
@@ -27,10 +28,11 @@ export const accumulatorTypes: Record<AccumulatorTypeString, AccumulatorType> = 
     day: AccumulatorType.day,
     //    week: AccumulatorType.week,
     month: AccumulatorType.month,
-    year: AccumulatorType.year
+    year: AccumulatorType.year,
+    yearnz: AccumulatorType.yearnz
 };
 
-export const accumulatorNames = ['current', 'day', 'week', 'month', 'year'];
+export const accumulatorNames = ['current', 'day', 'week', 'month', 'year', 'yearnz'];
 
 export type AccumulatorTypeAndBucket = number & As<'AccumulatorTypeAndBucket'>;
 

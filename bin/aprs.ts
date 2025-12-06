@@ -278,7 +278,7 @@ async function startAprsListener() {
                     const station: StationName = normaliseCase(packet.sourceCallsign) as StationName;
                     if ((packet.destCallsign == 'OGNSDR' || data.match(/qAC/)) && !ignoreStation(station)) {
                         if (packet.type == 'location') {
-                            checkStationMoved(station, packet.latitude as Latitude, packet.longitude as Longitude, packet.timestamp as Epoch);
+                            checkStationMoved(station, packet.latitude as Latitude, packet.longitude as Longitude, packet.timestamp as Epoch, data);
                         } else if (packet.type == 'status' && packet.body) {
                             updateStationBeacon(station, packet.body, packet.timestamp as Epoch);
                         } else {

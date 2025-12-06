@@ -14,6 +14,7 @@ import {useSearchParams} from 'next/navigation';
 import {getObjectFromIndex, PickableDetails} from './pickabledetails';
 
 import {useRouter} from 'next/router';
+import {useTranslation} from 'next-i18next';
 
 import {
     map as _map, //
@@ -131,7 +132,7 @@ function makeLayers(
                   getLineColor: [255, 16, 240, 128],
                   getLineWidth: 10,
                   getElevation: 1000,
-//                  getFillColor: [, 150],
+                  //                  getFillColor: [, 150],
                   lineWidthMinPixels: 2,
                   lineWidthMaxPixels: 5
               })
@@ -236,6 +237,7 @@ export function CoverageMap(props: {
     const displayedh3s = useDisplayedH3s();
     const router = useRouter();
     const params = useSearchParams();
+    const {t} = useTranslation();
     const doHighlightStations = (params.get('highlightStations') || '1') !== '0';
 
     const details = props.selectedDetails.type === 'none' ? props.hoverDetails : props.selectedDetails;
@@ -384,11 +386,11 @@ export function CoverageMap(props: {
         ]
     );
 
-    let attribution = `<a href="//www.glidernet.org/">Data from OGN</a> | `;
+    let attribution = `<a href="//www.glidernet.org/">${t('source')}</a> | `;
     if (props.station) {
-        attribution += `Currently showing station ${props.station}`;
+        attribution += t('map.showing', {station: props.station});
     } else {
-        attribution += `Currently showing all stations (${stationMeta.length})`;
+        attribution += t('map.all', {count: stationMeta.length});
     }
 
     // We keep our saved viewstate up to date in case of re-render

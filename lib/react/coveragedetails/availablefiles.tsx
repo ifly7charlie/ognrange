@@ -1,3 +1,5 @@
+import {useTranslation} from 'next-i18next';
+
 import {BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer} from 'recharts';
 import graphcolours from '../graphcolours';
 
@@ -60,10 +62,11 @@ export function AvailableFiles({
 }: //
 {
     station: string;
-    displayType: 'day' | 'month' | 'year';
+    displayType: 'day' | 'month' | 'year' | 'yearnz';
     setFile: (file: string) => void;
 }) {
     const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
+    const {t} = useTranslation();
 
     // Find the available range and then produce a set with flags indicating if it
     // is actually available
@@ -94,7 +97,7 @@ export function AvailableFiles({
 
     return (
         <>
-            <b>{displayType}s available</b>
+            <b>{t(`available.${displayType}`)}</b>
             {data ? (
                 <ResponsiveContainer width="100%" height={75}>
                     <BarChart width={480} height={180} data={processedArray} margin={{top: 5, right: 30, left: 0, bottom: 5}} syncId={'date' + displayType}>
