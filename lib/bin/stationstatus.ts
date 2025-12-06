@@ -151,7 +151,7 @@ export function getStationName(stationId: StationId): StationName | undefined {
 }
 
 // Check if we have moved too far ( a little wander is considered ok )
-export function checkStationMoved(stationName: StationName, latitude: Latitude, longitude: Longitude, timestamp: Epoch): void {
+export function checkStationMoved(stationName: StationName, latitude: Latitude, longitude: Longitude, timestamp: Epoch, packet: string): void {
     let details = getStationDetails(stationName);
 
     if (!details.primary_location) {
@@ -169,6 +169,7 @@ export function checkStationMoved(stationName: StationName, latitude: Latitude, 
         const previous_distance = h3.greatCircleDistance(details.previous_location, [latitude, longitude], 'km');
         if (previous_distance > STATION_MOVE_THRESHOLD_KM) {
             details.notice = `${Math.round(distance)}km move detected ${new Date(timestamp * 1000).toISOString()} resetting history`;
+            console.log(packet);
             console.log(`station ${stationName} has moved location to ${latitude},${longitude} which is ${distance.toFixed(1)}km ${JSON.stringify(details, null, 4)}`);
             details.moved = true; // we need to persist this, and relock on new location
             details.previous_location = details.primary_location;
@@ -181,6 +182,7 @@ export function checkStationMoved(stationName: StationName, latitude: Latitude, 
             delete details.bouncing;
             details.primary_location = [latitude, longitude];
         } else {
+            console.log(packet);
             console.log(`station ${stationName} bouncing between two locations ${h3.greatCircleDistance(details.previous_location, details.primary_location, 'km').toFixed(1)}km (merging)`);
             details.notice = 'station appears to be bouncing between two locations, merging data';
             delete details.moved;

@@ -1,22 +1,11 @@
-import {useState, useRef, useMemo, useEffect, useCallback} from 'react';
+import {useMemo, useCallback} from 'react';
+import {useTranslation} from 'next-i18next';
+
 import Select from 'react-select';
 
-const normalVisualisations = [
-    {label: 'Average Signal Strength', value: 'avgSig'},
-    {label: 'Maximum Signal Strength', value: 'maxSig'},
-    {label: 'Count', value: 'count'},
-    {label: 'Minimum Altitude', value: 'minAlt'},
-    {label: 'Minimum Altitude AGL', value: 'minAgl'},
-    {label: 'Max Signal @ Minimum Altitude', value: 'minAltSig'},
-    {label: 'Avg CRC errors', value: 'avgCrc'},
-    {label: 'Average between packet gap', value: 'avgGap'}
-];
+const normalVisualisations = ['avgSig', 'maxSig', 'count', 'minAlt', 'minAgl', 'minAltSig', 'avgCrc', 'avgGap'];
 
-const globalVisualisations = [
-    {label: 'Expected between packet gap', value: 'expectedGap'},
-    {label: 'Number of stations', value: 'stations'},
-    {label: 'Primary station', value: 'primaryStation'}
-];
+const globalVisualisations = ['expectedGap', 'stations', 'primaryStation'];
 
 const defaultVisualisation = 'avgSig';
 
@@ -30,9 +19,12 @@ export function VisualisationSelector({
     station?: string | null;
     setVisualisation: (a: string) => void;
 }) {
+    const {t} = useTranslation();
+
     // Figure out our visualisations
     const [visualisations, selectedVisualisation] = useMemo((): [any, any] => {
-        const vis = [...normalVisualisations, ...((station || 'global') == 'global' ? globalVisualisations : [])];
+        const vis = [...normalVisualisations, ...((station || 'global') == 'global' ? globalVisualisations : [])] //
+            .map((value) => ({label: t(`visualisation.${value}`), value}));
         return [vis, vis.find((a) => a.value === (visualisation || defaultVisualisation))];
     }, [visualisation, station]);
 
@@ -40,7 +32,7 @@ export function VisualisationSelector({
 
     return (
         <>
-            <b>Select visualisation:</b>
+            <b>{t('selectors.visualisation')}:</b>
             <Select options={visualisations} value={selectedVisualisation} onChange={selectVisualisationOnChange} />
         </>
     );

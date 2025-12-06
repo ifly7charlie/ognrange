@@ -1,14 +1,17 @@
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer} from 'recharts';
 import graphcolours from '../graphcolours';
 
+import {useTranslation} from 'next-i18next';
+
 import {WaitForGraph} from './waitforgraph';
 
 export function LowestPointDetails(props: {d: number; b: number; g: number; byDay: any}) {
+    const {t} = useTranslation('common', {keyPrefix: 'details.lowest'});
     return (
         <>
-            <b>Lowest Point</b>
+            <b>{t('title')}</b>
             <br />
-            {(props.d / 4).toFixed(1)} dB @ {props.b} m ({props.g} m agl)
+            {t('summary', {strength: (props.d / 4).toFixed(1), altitude: props.b, agl: props.g})}
             <br />
             {props.byDay && props.byDay.length > 0 ? (
                 <>
@@ -21,8 +24,8 @@ export function LowestPointDetails(props: {d: number; b: number; g: number; byDa
                             <YAxis unit=" m" yAxisId={1} orientation="right" style={{fontSize: '0.8rem'}} />
                             <Tooltip />
                             <Legend />
-                            <Line name="Strength" isAnimationActive={false} type="monotone" dataKey="minAltSig" stroke={graphcolours[0]} dot={{r: 1}} />
-                            <Line name="Height Above Ground" yAxisId={1} isAnimationActive={false} type="monotone" dataKey="minAgl" stroke={graphcolours[1]} dot={{r: 1}} />
+                            <Line name={t('strength')} isAnimationActive={false} type="monotone" dataKey="minAltSig" stroke={graphcolours[0]} dot={{r: 1}} />
+                            <Line name={t('agl')} yAxisId={1} isAnimationActive={false} type="monotone" dataKey="minAgl" stroke={graphcolours[1]} dot={{r: 1}} />
                         </LineChart>
                     </ResponsiveContainer>
                 </>

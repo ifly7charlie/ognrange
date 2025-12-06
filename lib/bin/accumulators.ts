@@ -67,6 +67,8 @@ export function whatAccumulators(now: Date): Accumulators {
         m: prefixWithZeros(2, String(now.getUTCMonth() + 1)),
         y: now.getUTCFullYear()
     };
+    const nzStartSeason = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+
     return {
         current: {
             bucket: newAccumulatorBucket as AccumulatorBucket,
@@ -87,6 +89,11 @@ export function whatAccumulators(now: Date): Accumulators {
             bucket: now.getUTCFullYear() as AccumulatorBucket, //
             file: `${n.y}`,
             effectiveStart: Math.trunc(Date.UTC(now.getUTCFullYear(), 0) / 1000) as Epoch
+        },
+        yearnz: {
+            bucket: nzStartSeason as AccumulatorBucket,
+            file: `${nzStartSeason}nz`,
+            effectiveStart: Math.trunc(Date.UTC(nzStartSeason, 6, 1) / 1000) as Epoch
         }
     };
 }

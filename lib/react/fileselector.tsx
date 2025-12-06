@@ -1,6 +1,8 @@
 import {useState, useRef, useMemo, useEffect, useCallback} from 'react';
 
 import useSWR from 'swr';
+import {useTranslation} from 'next-i18next';
+
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 import {map as _map, find as _find} from 'lodash';
@@ -11,24 +13,26 @@ export function FileSelector({station, file, setFile}) {
     // Load the associated index
     //    const DATA_URL = env.NEXT_PUBLIC_DATA_URL || process.env.NEXT_PUBLIC_DATA_URL || '/data/';
     const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
+    const {t} = useTranslation('common', {keyPrefix: 'selectors'});
 
     // Display the right ones to the user
     const [availableFiles, selectedFile] = useMemo((): [any, any] => {
         const files = data?.files || {year: {current: 'year', all: ['year']}};
         const selects = _map(files, (value, key) => {
+            console.log(value, key);
             return {
-                label: key,
+                label: t(key),
                 options: _map(value.all, (cfile) => {
                     // latest is also symbolic linked, we use that instead
                     if (cfile == value.current) {
                         return {
-                            label: 'Current ' + key + ' (' + (cfile.match(/([0-9-]+)$/) || [cfile])[0] + ')',
+                            label: t('current_' + key, {value: (cfile.match(/([0-9-]+)$/) || [cfile])[0]}),
                             value: key
                         };
                     } else {
                         return {
                             label: (cfile.match(/([0-9-]+)$/) || [cfile])[0],
-                            value: (cfile.match(/((day|month|year)\.[0-9-]+)$/) || [cfile])[0]
+                            value: (cfile.match(/((day|month|year|yearnz)\.[0-9-]+[nz]*)$/) || [cfile])[0]
                         };
                     }
                 }).reverse()
@@ -49,7 +53,7 @@ export function FileSelector({station, file, setFile}) {
 
     return (
         <>
-            <b>Select available time period to display:</b>
+            <b>{t('period')}:</b>
             <Select options={availableFiles} value={selectedFile} onChange={selectFileOnChange} />
         </>
     );

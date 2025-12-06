@@ -3,6 +3,7 @@ import {IoSettingsOutline} from 'react-icons/io5';
 import {useState} from 'react';
 import {useCallback} from 'react';
 import {useRouter} from 'next/router';
+import {useTranslation} from 'next-i18next';
 
 import Select from 'react-select';
 
@@ -17,6 +18,7 @@ import {Checkbox} from './checkbox';
 export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_PUBLIC_AIRSPACE_API_KEY?: string}}) {
     const router = useRouter();
     const [settingsVisible, setSettingsVisible] = useState(false);
+    const {t} = useTranslation('common', {keyPrefix: 'settings'});
 
     const toggleSettings = () => {
         setSettingsVisible(!settingsVisible);
@@ -56,22 +58,22 @@ export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_P
         <div style={{padding: '10px', position: 'absolute', bottom: '10px', right: '20px'}}>
             <button style={{padding: '5px'}} onClick={toggleSettings}>
                 <IoSettingsOutline style={{paddingTop: '2px'}} />
-                &nbsp;<span> Settings</span>
+                &nbsp;<span> {t('title')}</span>
             </button>
         </div>
     ) : (
         <div style={{padding: '10px', position: 'absolute', bottom: '10px', left: '20px', width: '90%', minHeight: '800px', overflow: 'vertical', background: 'white', borderStyle: 'ridge'}}>
-            <h4>Settings</h4>
+            <h4>{t('title')}</h4>
             <hr style={{paddingTop: '0px'}} />
-            <b>Data Visualisation Colouring:</b>
+            <b>{t('colouring')}:</b>
             <table style={{width: '100%'}}>
                 <thead>
                     <tr>
                         <td style={{width: '50%'}}>
-                            <b>From</b>
+                            <b>{t('from')}</b>
                         </td>
                         <td style={{width: '50%'}}>
-                            <b>To</b>
+                            <b>{t('to')}</b>
                         </td>
                     </tr>
                 </thead>
@@ -86,20 +88,20 @@ export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_P
                     </tr>
                 </tbody>
             </table>
-            <b>Select base map style:</b>
+            <b>{t('select_style')}:</b>
             <Select options={baseMaps} value={selectedValue} onChange={(v) => setSetting('mapStyle', v.value)} />
             <br />
             <Checkbox checked={parseInt(router.query.highlightStations?.toString() ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
-                Show distance circles
+                {t('distance_circles')}
             </Checkbox>
             {props.env.NEXT_PUBLIC_AIRSPACE_API_KEY ? (
                 <Checkbox checked={parseInt(router.query.airspace?.toString() ?? '0') ? true : false} onChange={(v) => setSetting('airspace', v.target.checked ? '1' : '0')}>
-                    Show airspace
+                    {t('airspace')}
                 </Checkbox>
             ) : null}
             <hr />
             <button style={{padding: '5px'}} onClick={toggleSettings}>
-                &nbsp;<span> Close</span>
+                &nbsp;<span> {t('close')}</span>
             </button>
             <div style={{fontSize: 'x-small', color: 'grey', position: 'absolute', bottom: '5px', right: '5px'}}>v{process.env.NEXT_PUBLIC_GIT_REF}</div>
         </div>

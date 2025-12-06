@@ -9,14 +9,17 @@ import {
     ResponsiveContainer
 } from 'recharts';
 
+import {useTranslation} from 'next-i18next';
+
 import {findIndex as _findIndex, reduce as _reduce, debounce as _debounce, map as _map} from 'lodash';
 
 import graphcolours from '../graphcolours';
 
 export function CountDetails(props: {byDay: any; c: number}) {
+    const {t} = useTranslation();
     return (
         <>
-            Number of packets: {props.c}
+            {t('details.packets.summary', {count: props.c})}
             <br />
             {props.byDay && props.byDay.length > 0 ? (
                 <>
@@ -28,7 +31,7 @@ export function CountDetails(props: {byDay: any; c: number}) {
                             <YAxis style={{fontSize: '0.8rem'}} />
                             <Tooltip />
                             <Legend />
-                            <Line name="Count" isAnimationActive={false} type="monotone" dataKey="count" stroke={graphcolours[0]} dot={{r: 1}} />
+                            <Line name={t('details.packets.count')} isAnimationActive={false} type="monotone" dataKey="count" stroke={graphcolours[0]} dot={{r: 1}} />
                         </LineChart>
                     </ResponsiveContainer>
                 </>

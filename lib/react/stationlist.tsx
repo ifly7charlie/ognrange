@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import {useMemo, useCallback} from 'react';
+import {useTranslation} from 'next-i18next';
 
 import {reduce as _reduce, sortedIndexOf as _sortedIndexOf} from 'lodash';
 
@@ -16,6 +17,7 @@ export function StationList({
     selectedH3: [number, number];
     setStation: (a: string) => void;
 }) {
+    const {t} = useTranslation('common', {keyPrefix: 'details.stations'});
     const stationMeta = useStationMeta();
     const selectStation = useCallback(
         (e) => {
@@ -43,7 +45,7 @@ export function StationList({
                         <tr key={sid}>
                             <td>
                                 <Link replace onClick={selectStation} href={'#'} id={name}>
-                                    {name || 'Unknown'}
+                                    {name || t('unknown')}
                                 </Link>
                             </td>
                             <td>{dist}</td>
@@ -64,7 +66,7 @@ export function StationList({
 
     return (
         <>
-            <b>Stations ({splitList.length})</b>
+            <b>{t('title', {count: splitList.length})}</b>
             <br />
             <table className="stationList">
                 <tbody>{stationList}</tbody>

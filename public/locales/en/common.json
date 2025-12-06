@@ -1,0 +1,131 @@
+{
+    "selectors": {
+        "station": "Select station to display",
+        "period": "Select time period to display",
+        "visualisation": "Select visualisation"
+    },
+    "period": {
+        "year": "Year (Northern Hemisphere)",
+        "yearnz": "Year (Southern Hemisphere)",
+        "month": "Month",
+        "day": "Day",
+        "current_year": "Current Year ({{value}})",
+        "current_yearnz": "Current Year  ({{value}})",
+        "current_month": "Current Month  ({{value}})",
+        "current_day": "Current Day  ({{value}})"
+    },
+    "available": {
+        "year": "Years available (Northern Hemisphere)",
+        "yearnz": "Years available (Southern Hemisphere)",
+        "month": "Months available",
+        "day": "Days available"
+    },
+    "visualisation": {
+        "maxSig": "Maximum Signal Strength",
+        "avgSig": "Average Signal Strength",
+        "count": "Count",
+        "minAlt": "Minimum Altitude",
+        "minAgl": "Minimum Altitude (AGL)",
+        "minAltSig": "Max Signal @ Minimum Altitude",
+        "avgCrc": "Average CRC errors",
+        "avgGap": "Average between packet gap",
+        "expectedGap": "Expected between packet gap",
+        "stations": "Number of stations",
+        "primaryStation": "Primary station"
+    },
+    "stations": {
+        "global": "All stations (global)",
+        "offline": "Show offline stations",
+        "showing": "Currently showing all stations ${value}",
+        "search": "Start typing to search"
+    },
+    "settings": {
+        "title": "Settings",
+        "colouring": "Data Visualisation Colouring",
+        "from": "From",
+        "to": "To",
+        "select_style": "Select base map style",
+        "distance_circles": "Show distance circles",
+        "airspace": "Show airspace",
+        "close": "Close"
+    },
+    "map": {
+        "showing": "Currently showing {{station}}",
+        "all": "Currently showing all stations ({{count}})",
+        "source": "Data from OGN"
+    },
+    "page_title": "OGN Range",
+    "details": {
+        "title_specific": "Details at specific point",
+        "title_mouse": "Details at mouse position",
+        "unlock": "Unlock",
+        "distance": "Distance to {{station}}: {{km}}km",
+        "lowest": {
+            "title": "Lowest point",
+            "summary": "{{strength}} dB @ {{altitude}}m ({{agl}}m agl)",
+            "strength": "Strength",
+            "agl": "Height Above Ground"
+        },
+        "signal": {
+            "title": "Signal Strength",
+            "summary": "Average: {{average}} dB, Max: {{max}} dB",
+            "average": "Average",
+            "max": "Maximum",
+            "atminalt": "At Minimum Altitude"
+        },
+        "gap": {
+            "title": "Time between received packets",
+            "summary": "Avg Gap: {{average}}s",
+            "summary_expected": "(expected: {{expected}}s)",
+            "average": "Average Gap",
+            "expected": "Expected Gap"
+        },
+        "crc": {
+            "summary": "Avg CRC errors: {{crc}}"
+        },
+        "packets": {
+            "summary": "Number of packets: {{count}}",
+            "count": "Count"
+        },
+        "stations": {
+            "title": "Stations ({{count}})",
+            "distance": "{{distance}} km",
+            "percentage": {
+                "top5": "Top 5 stations by percentage:",
+                "top5otherbyday": "Top 5 other stations percentage by day:",
+                "top5byday": "Top 5 stations percentage by day:"
+            },
+            "count": {
+                "top5": "Top 5 stations by count:",
+                "top5otherbyday": "Top 5 other stations packet count by day"
+            },
+            "Other": "Other",
+            "unknown": "Unknown"
+        },
+        "statistics": {
+            "title": "Statistics at {{when}}",
+            "ignoredTracker": "Ignored (OGN Tracker)",
+            "invalidTracker": "Invalid (OGN Tracker",
+            "invalidTimestamp": "Invalid Timestamp",
+            "ignoredStationary": "Ignored (Stationary)",
+            "ignoredSignal0": "Ignored (No signal strength)",
+            "ignoredPAW": "Ignored (PAW/fake signal strength)",
+            "ignoredH3stationary": "Ignored (Mostly Stationary)",
+            "ignoredElevation": "Ignored (Corrupt elevation)"
+        },
+        "times": {
+            "title": "Times",
+            "location": "Location",
+            "packet": "Packet",
+            "output": "File output"
+        },
+        "cells": {
+            "number": "{{count}} coverage cells",
+            "area": "{{area}} sq km"
+        },
+        "status": {
+            "title": "Last status message"
+        },
+        "help": "Hover over somewhere on the map to see details.<br/>Click to lock the sidebar display to that location.<br/>Click on a station marker to show coverage records only for that station.<br/>You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information"
+    }
+}

@@ -1,6 +1,8 @@
 import {useMemo, useState, useCallback} from 'react';
 import useSWR from 'swr';
 
+import {useTranslation, Trans} from 'next-i18next';
+
 import {useStationMeta} from './stationmeta';
 import type {PickableDetails} from './pickabledetails';
 
@@ -27,6 +29,7 @@ const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 export function CoverageDetailsToolTip({details, station}) {
     //
+    const {t} = useTranslation();
     const stationMeta = useStationMeta();
     const sd = useMemo(() => {
         const index = _findIndex<string>(stationMeta?.name, station ?? 'global');
@@ -72,9 +75,9 @@ export function CoverageDetailsToolTip({details, station}) {
                         <hr />
                     </>
                 ) : null}
-                <b>Lowest Point</b>
+                <b>{t('lowest.title')}</b>
                 <br />
-                {(details.d / 4).toFixed(1)} dB @ {details.b} m ({details.g} m agl)
+                {t('lowest.summary', {strength: (details.d / 4).toFixed(1), altitude: details.b, agl: details.g})}
                 <hr />
                 <b>Signal Strength</b>
                 <br />
@@ -89,10 +92,10 @@ export function CoverageDetailsToolTip({details, station}) {
                 ) : (
                     <br />
                 )}
-                Avg CRC errors: {details.f / 10}
+                {t('crc.summary', {crc: details.f / 10})}
                 <br />
                 <hr />
-                Number of packets: {details.c}
+                {t('packets.summary', {count: details.c})}
             </div>
         );
     }
@@ -129,6 +132,7 @@ export function CoverageDetails({
     //
     const [doFetch, setDoFetch] = useState(key);
     const [extraVisible, setExtraVisible] = useState(false);
+    const {t} = useTranslation('common', {keyPrefix: 'details'});
 
     const updateExtraVisibility = useCallback((visible: boolean) => {
         if (!extraVisible && visible) {
@@ -188,24 +192,24 @@ export function CoverageDetails({
                 {details?.length ? (
                     <>
                         <hr />
-                        {details.length} coverage cells
+                        {t('cells.number', {count: details.length})}
                         <br />
-                        {Math.round(details.length * 0.0737327598) * 10} sq km
+                        {t('cells.area', {area: Math.round(details.length * 0.0737327598) * 10})}
                         <br />
                         <hr />
                     </>
                 ) : null}
-                <b>Details at {locked ? 'specific point' : 'mouse point'}</b>
+                <b>{t(locked ? 'title_specific' : 'title_mouse')}</b>
                 {locked ? (
                     <button style={{float: 'right', padding: '10px'}} onClick={clearSelectedH3}>
                         <IoLockOpenOutline style={{paddingTop: '2px'}} />
-                        &nbsp;<span> Unlock</span>
+                        &nbsp;<span>{t('unlock')}</span>
                     </button>
                 ) : null}
                 {sd ? (
                     <>
                         <br />
-                        Distance to {station}: {greatCircleDistance(cellToLatLng(details.h), sd, 'km').toFixed(0)}km
+                        {t('distance', {station, km: greatCircleDistance(cellToLatLng(details.h), sd, 'km').toFixed(0)})}
                     </>
                 ) : null}
                 <br style={{clear: 'both'}} />
@@ -213,7 +217,7 @@ export function CoverageDetails({
                 <LowestPointDetails d={details.d} b={details.b} g={details.g} byDay={byDay} />
                 <SignalDetails a={details.a} e={details.e} byDay={byDay} />
                 <GapDetails p={details.p} q={details.q} stationCount={details.t} byDay={byDay} />
-                Avg CRC errors: {details.f / 10}
+                {t('crc.summary', {crc: details.f / 10})}
                 <br />
                 <hr />
                 <CountDetails c={details.c} byDay={byDay} />
@@ -247,12 +251,12 @@ export function CoverageDetails({
 
                 {stationData?.stats ? (
                     <>
-                        <b>Statistics</b> at {new Date(stationData.outputEpoch * 1000).toISOString().replace('.000', '')}
+                        <b>{t('statistics.title', {when: new Date(stationData.outputEpoch * 1000).toISOString().replace('.000', '')})}</b>
                         <table>
                             <tbody>
                                 {Object.keys(stationData.stats).map((key) => (
                                     <tr key={key}>
-                                        <td>{key}</td>
+                                        <td>{t(`statistics.${key}`)}</td>
                                         <td>{stationData.stats[key]}</td>
                                     </tr>
                                 ))}
@@ -270,24 +274,24 @@ export function CoverageDetails({
                 ) : null}
                 <>
                     <br />
-                    <b>Times</b>
+                    <b>{t('times.title')}</b>
                     <table>
                         <tbody>
                             {stationData?.lastLocation ? (
                                 <tr key="location">
-                                    <td>Location</td>
+                                    <td>{t('times.location')}</td>
                                     <td>{new Date((stationData.lastLocation ?? 0) * 1000).toISOString().replace('.000', '')}</td>
                                 </tr>
                             ) : null}
                             {stationData?.lastPacket ? (
                                 <tr key="packet">
-                                    <td>Packet</td>
+                                    <td>{t('times.packet')}</td>
                                     <td>{new Date((stationData.lastPacket ?? 0) * 1000).toISOString().replace('.000', '')}</td>
                                 </tr>
                             ) : null}
                             {stationData?.outputDate ? (
                                 <tr key="output">
-                                    <td>Output File</td>
+                                    <td>{t('times.output')}</td>
                                     <td>{stationData.outputDate?.replace(/\.[0-9]*Z/, 'Z')}</td>
                                 </tr>
                             ) : null}
@@ -297,7 +301,7 @@ export function CoverageDetails({
                 {stationData?.status ? (
                     <>
                         <br />
-                        <b>Last Status Message</b>
+                        <b>{t('status.title')}</b>
                         <br />
                         <div
                             style={{
@@ -317,7 +321,7 @@ export function CoverageDetails({
     }
 
     return (
-        <>
+        <Trans t={t} i18nKey="help">
             Hover over somewhere on the map to see details.
             <br />
             Click to lock the sidebar display to that location.
@@ -325,7 +329,6 @@ export function CoverageDetails({
             Click on a station marker to show coverage records only for that station.
             <br />
             You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information
-            <br />
-        </>
+        </Trans>
     );
 }

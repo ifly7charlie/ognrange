@@ -2,6 +2,8 @@ import {useCallback} from 'react';
 import {useSearchParams} from 'next/navigation';
 import AsyncSelect from 'react-select/async';
 
+import {useTranslation} from 'next-i18next';
+
 import {Checkbox} from './checkbox';
 
 import {useStationMeta} from './stationmeta';
@@ -15,14 +17,16 @@ export function StationSelector({
     setStation: (name: string) => void;
     updateUrl: (a: Record<string, string>) => void;
 }) {
+    const {t} = useTranslation();
+
     const selectedStation = {
         value: station || 'global',
-        label: station || 'All Stations (global)'
+        label: station || t('stations.global')
     };
 
     const defaultStationSelection = [
-        {label: 'Start typing to search', value: ''},
-        {label: 'All Stations (global)', value: ''}
+        {label: t('stations.search'), value: ''},
+        {label: t('stations.global'), value: ''}
     ];
 
     const stationMeta = useStationMeta();
@@ -52,10 +56,10 @@ export function StationSelector({
                     console.log(p);
                     return p;
                 } catch (e) {
-                    return [{value: '', label: 'All Stations (global)'}];
+                    return [{value: '', label: t('stations.global')}];
                 }
             }
-            return [{value: '', label: 'All Stations (global)'}];
+            return [{value: '', label: t('stations.global')}];
         },
         [stationMeta.length]
     );
@@ -63,17 +67,17 @@ export function StationSelector({
 
     return (
         <>
-            <b>Select station to display:</b>
+            <b>{t('selectors.station')}:</b>
             <AsyncSelect
                 loadOptions={findStation} //
                 value={selectedStation}
                 defaultOptions={defaultStationSelection}
                 onChange={selectStationOnChange}
-                noOptionsMessage={() => 'Start typing to search'}
+                noOptionsMessage={() => t('stations.search')}
             />
 
             <Checkbox checked={allStations} onChange={(v) => setAllStations(!!v.target.checked)}>
-                Show offline stations
+                {t('stations.offline')}
             </Checkbox>
             <br />
         </>
