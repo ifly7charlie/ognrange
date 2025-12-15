@@ -5,6 +5,7 @@
         "visualisation": "Select visualisation"
     },
     "period": {
+        "title": "Select time period to display",
         "year": "Year (Northern Hemisphere)",
         "yearnz": "Year (Southern Hemisphere)",
         "month": "Month",

@@ -13,7 +13,7 @@ export function FileSelector({station, file, setFile}) {
     // Load the associated index
     //    const DATA_URL = env.NEXT_PUBLIC_DATA_URL || process.env.NEXT_PUBLIC_DATA_URL || '/data/';
     const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
-    const {t} = useTranslation('common', {keyPrefix: 'selectors'});
+    const {t} = useTranslation('common', {keyPrefix: 'period'});
 
     // Display the right ones to the user
     const [availableFiles, selectedFile] = useMemo((): [any, any] => {
@@ -53,7 +53,7 @@ export function FileSelector({station, file, setFile}) {
 
     return (
         <>
-            <b>{t('period')}:</b>
+            <b>{t('title')}:</b>
             <Select options={availableFiles} value={selectedFile} onChange={selectFileOnChange} />
         </>
     );
