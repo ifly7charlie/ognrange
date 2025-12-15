@@ -29,8 +29,8 @@ export async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, bu
     const getOperation = (db: DB): Promise<BatchOperation | null> =>
         db
             .get(h3k.dbKey())
-            .then((dbData: Uint8Array): BatchOperation | null => {
-                const newCr = cr.rollup(new CoverageRecord(dbData));
+            .then((dbData: Uint8Array | undefined): BatchOperation | null => {
+                const newCr = dbData ? cr.rollup(new CoverageRecord(dbData)) : undefined;
                 if (newCr) {
                     return {type: 'put', key: h3k.dbKey(), value: newCr.buffer()};
                 } else {

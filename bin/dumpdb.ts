@@ -32,7 +32,7 @@ async function main() {
         dbPath += 'global';
     }
 
-    let db = null;
+    let db: ClassicLevel<string, Uint8Array> | null = null;
 
     try {
         db = new ClassicLevel<string, Uint8Array>(dbPath, {valueEncoding: 'view', createIfMissing: false});
@@ -52,7 +52,7 @@ async function main() {
     let n = db.iterator();
     let accumulators: Record<string, any> = {};
     let x = n.next();
-    let y = null;
+    let y: Awaited<typeof x> = undefined;
     while ((y = await x)) {
         const [key, value] = y;
         let hr = new CoverageHeader(key);
@@ -62,9 +62,8 @@ async function main() {
                 accumulators[hr.accumulator] = {hr: hr, meta: JSON.parse(String(value)), count: 0, size: 0};
                 console.log(hr.dbKey(), String(value));
                 if (args.size) {
-                    db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
-                        accumulators[hr.accumulator].size = r;
-                    });
+                    const r = await db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+                    accumulators[hr.accumulator].size = r;
                 }
             } else {
                 if (accumulators[hr.accumulator]) {
@@ -74,9 +73,8 @@ async function main() {
                 }
 
                 if (accumulators[hr.accumulator].count == 1 && args.size) {
-                    db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket), (e, r) => {
-                        accumulators[hr.accumulator].size = r;
-                    });
+                    const r = await db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+                    accumulators[hr.accumulator].size = r;
                 }
                 if (args.all) {
                     console.log(hr.dbKey(), JSON.stringify(new CoverageRecord(value).toObject()));
