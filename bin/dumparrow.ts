@@ -22,7 +22,7 @@ async function dump() {
         .alias('help', 'h').argv;
 
     console.log(OUTPUT_PATH, {...args});
-    const fd = await open(args.stations ? OUTPUT_PATH + 'stations.arrow' : OUTPUT_PATH + args.station + '/' + args.station + '.' + args.file + '.gz');
+    const fd = await open((args.stations ? OUTPUT_PATH + 'stations.arrow' : OUTPUT_PATH + args.station + '/' + args.station + '.' + args.file) + '.gz');
 
     const reader = await RecordBatchStreamReader.from(fd.createReadStream().pipe(createGunzip()));
 
@@ -36,9 +36,11 @@ async function dump() {
             let out = '';
             const json = columns.toJSON();
 
-            json.h3 = prefixWithZeros(7, json.h3hi?.toString(16) || 'null') + prefixWithZeros(8, json.h3lo?.toString(16) || 'null');
-            //            delete json.h3lo;
-            //            delete json.h3hi;
+            if (json.h3hi) {
+                json.h3 = prefixWithZeros(7, json.h3hi?.toString(16) || 'null') + prefixWithZeros(8, json.h3lo?.toString(16) || 'null');
+                //            delete json.h3lo;
+                //            delete json.h3hi;
+            }
             console.log(JSON.stringify(json));
         }
     }

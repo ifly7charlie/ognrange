@@ -61,9 +61,7 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
         }
 
         try {
-			const fileContents = fileName.match(/.gz$/) ? 
-                  gunzipSync(arrowFileContents) :
-				  arrowFileContents;
+            const fileContents = fileName.match(/.gz$/) ? gunzipSync(arrowFileContents) : arrowFileContents;
 
             table = tableFromIPC([fileContents]);
             cache.set(fileName, table);
@@ -188,11 +186,9 @@ export function searchStationArrowFile(id: number): Record<string, any> | null {
         if (!arrowStationTable) {
             let arrowFileContents = readFileSync(fileName);
 
-			const fileContents = fileName.match(/.gz$/) ?
-				  gunzipSync(arrowFileContents) :
-				  arrowFileContents;
+            const fileContents = fileName.match(/.gz$/) ? gunzipSync(arrowFileContents) : arrowFileContents;
 
-            arrowStationTable = tableFromIPC<any>([arrowFileContents]);
+            arrowStationTable = tableFromIPC<any>([fileContents]);
         }
 
         //
@@ -202,7 +198,7 @@ export function searchStationArrowFile(id: number): Record<string, any> | null {
             return null;
         }
 
-        // Find the first h3hi in the file
+        // Find the sid in the file
         const index = sortedIndexOf(idArray, id);
 
         // none found then it's not in the file
