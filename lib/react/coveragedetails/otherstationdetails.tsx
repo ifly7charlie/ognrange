@@ -106,7 +106,7 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
                     <br />
                     {!isGlobal ? (
                         <>
-                            {t('count.top5bydayother')}: //
+                            {t('count.top5otherbyday')}: //
                             <br />
                             <br />
                             <ResponsiveContainer width="100%" height={150} key="countovertime">

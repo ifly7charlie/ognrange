@@ -19,7 +19,6 @@ export function FileSelector({station, file, setFile}) {
     const [availableFiles, selectedFile] = useMemo((): [any, any] => {
         const files = data?.files || {year: {current: 'year', all: ['year']}};
         const selects = _map(files, (value, key) => {
-            console.log(value, key);
             return {
                 label: t(key),
                 options: _map(value.all, (cfile) => {
@@ -41,7 +40,7 @@ export function FileSelector({station, file, setFile}) {
         const effectiveFile = file && file != '' ? file : 'year';
         const [type] = effectiveFile.split('.') || [effectiveFile];
         const selected = selects
-            ? _find(_find(selects, {label: type})?.options || [], (o) => {
+            ? _find(_find(selects, {label: t(type)})?.options || [], (o) => {
                   return effectiveFile.slice(-o.value.length) == o.value;
               })
             : null;
