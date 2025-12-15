@@ -104,6 +104,7 @@
         },
         "statistics": {
             "title": "Statistics at {{when}}",
+            "count": "Total Packet Count",
             "ignoredTracker": "Ignored (OGN Tracker)",
             "invalidTracker": "Invalid (OGN Tracker",
             "invalidTimestamp": "Invalid Timestamp",
