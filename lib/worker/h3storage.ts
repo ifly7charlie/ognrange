@@ -34,7 +34,8 @@ export async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, bu
                 if (newCr) {
                     return {type: 'put', key: h3k.dbKey(), value: newCr.buffer()};
                 } else {
-                    return null;
+                    return {type: 'put', key: h3k.dbKey(), value: buffer};
+                    //                    return null;
                 }
             })
             .catch((): BatchOperation => {

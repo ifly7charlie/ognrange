@@ -41,7 +41,7 @@ export async function saveAccumulatorMetadata(db: DB, accumulators: Accumulators
         await db
             .get(dbkey)
             .then((value) => {
-                const meta = JSON.parse(String(value));
+                const meta = value ? JSON.parse(String(value)) : {};
                 db.put(dbkey, Uint8FromObject(updateMeta(meta)));
             })
             .catch((e) => {
