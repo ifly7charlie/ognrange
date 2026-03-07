@@ -1,7 +1,7 @@
 // DB
 import {ClassicLevel, BatchOperation as ClassicBatchOperation} from 'classic-level';
 
-// Least Recently Used cache for Station Database connectiosn
+// Least Recently Used cache for Station Database connections
 import LRUCache from 'lru-cache';
 
 // Map id to name

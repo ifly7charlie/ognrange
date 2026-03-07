@@ -158,7 +158,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
             }
         };
 
-        // each of the stations, capped at 20% of db cache (or 30 tasks) to reduce risk of purging the whole cache
+        // each of the stations, capped at MAX_SIMULTANEOUS_ROLLUPS to reduce risk of purging the whole cache
         // mapAllCapped will not return till all have completed, but this doesn't block the processing
         // of the global db or other actions.
         // it is worth running them in parallel as there is a lot of IO which would block
@@ -237,7 +237,7 @@ export async function rollupStartupAll() {
 
     console.log(`performing startup rollup and output of ${allStations.length} stations (including global) resuming ${currentStart},${destinationFiles}`);
 
-    // each of the stations, capped at 20% of db cache (or 30 tasks) to reduce risk of purging the whole cache
+    // each of the stations, capped at MAX_SIMULTANEOUS_ROLLUPS to reduce risk of purging the whole cache
     // mapAllCapped will not return till all have completed, but this doesn't block the processing
     // of the global db or other actions.
     // it is worth running them in parallel as there is a lot of IO which would block

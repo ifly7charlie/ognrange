@@ -23,11 +23,10 @@ export async function saveAccumulatorMetadata(db: DB, accumulators: Accumulators
 
     const updateMeta = (existing: DBMetaRecord | {}): DBMetaRecord => {
         return {
-            //
-            allStarts: [...('allStarts' in existing ? existing.allStarts : []), {start: nowEpoch, startUtc: now.toISOString()}],
+            ...existing,
+            allStarts: [...('allStarts' in existing ? existing.allStarts : []), {start: nowEpoch, startUtc: now.toISOString()}].slice(-250),
             start: nowEpoch,
             startUtc: now.toISOString(),
-            ...existing,
             accumulators,
             currentAccumulator: accumulators.current.bucket
         };

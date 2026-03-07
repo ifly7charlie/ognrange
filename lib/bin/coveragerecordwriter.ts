@@ -104,7 +104,7 @@ class WS {
                     fileName + extension, //
                     (err) => {
                         if (err) {
-                            console.error(`error renaming ${fileName}.working to ${fileName}.gz:${err}`);
+                            console.error(`error renaming ${fileName}.working${extension} to ${fileName}${extension}: ${err}`);
                         }
                         resolve();
                     }

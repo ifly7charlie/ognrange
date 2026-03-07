@@ -85,7 +85,7 @@ export class CoverageHeader {
         }
     }
 
-    // Get the buffer for when we need to write it back to the disk
+    // Get the key string for when we need to write it back to the disk
     dbKey() {
         return prefixWithZeros(4, this._tb.toString(16)) + '/' + this._h3;
     }

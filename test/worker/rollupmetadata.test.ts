@@ -96,9 +96,13 @@ describe('saveAccumulatorMetadata', () => {
         // The first put should have merged with existing
         const firstPut = db.put.mock.calls[0][1] as Uint8Array;
         const parsed = JSON.parse(Buffer.from(firstPut).toString());
-        // ...existing spread overwrites allStarts, start, startUtc (comes after the initial values)
-        // But accumulators and currentAccumulator come after ...existing so are updated
-        expect(parsed.allStarts).toEqual(existingMeta.allStarts);
+        // allStarts grows by appending a new entry with the current timestamp
+        expect(parsed.allStarts.length).toBe(2);
+        expect(parsed.allStarts[0]).toEqual(existingMeta.allStarts[0]);
+        expect(parsed.allStarts[1].start).toBeTypeOf('number');
+        // start and startUtc are updated to current time
+        expect(parsed.start).toBeTypeOf('number');
+        expect(parsed.start).not.toBe(existingMeta.start);
         expect(parsed.currentAccumulator).toBe(accumulators.current.bucket);
     });
 
@@ -121,9 +125,11 @@ describe('saveAccumulatorMetadata', () => {
         await saveAccumulatorMetadata(db as any, accumulators);
         const firstPut = db.put.mock.calls[0][1] as Uint8Array;
         const parsed = JSON.parse(Buffer.from(firstPut).toString());
-        // ...existing spread overwrites the computed allStarts with existing.allStarts
-        expect(parsed.allStarts.length).toBe(2);
-        expect(parsed.allStarts).toEqual(existingMeta.allStarts);
+        // allStarts grows by appending a new entry each time
+        expect(parsed.allStarts.length).toBe(3);
+        expect(parsed.allStarts[0]).toEqual(existingMeta.allStarts[0]);
+        expect(parsed.allStarts[1]).toEqual(existingMeta.allStarts[1]);
+        expect(parsed.allStarts[2].start).toBeTypeOf('number');
     });
 
     it('sets currentAccumulator field', async () => {

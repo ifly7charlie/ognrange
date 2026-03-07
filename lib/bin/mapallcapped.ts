@@ -13,7 +13,6 @@ const status: Record<string, string> = {};
 //
 // This code is derived from  https://github.com/userpixel/cap-parallel
 // it has been simplified = it was a cool solution and implementation but we don't need it to be as cool :)
-// (and it supports Set/Map now)
 //
 
 type CbFunctionType<T> = (currentValue: T, index: number, array: T[]) => Promise<void>;
@@ -23,7 +22,7 @@ function speed(number: number, elapsed: number): string {
 }
 
 // Run a maximum number in parallel but don't return before all finished
-// return values and exceptions are ignored. Accepts normal Arrays or Set/Maps
+// return values and exceptions are ignored
 export async function mapAllCapped<T>(id: string, array: T[], mapFn: CbFunctionType<T>, limit: number) {
     const length = array.length;
     if (length === 0 || !limit) {

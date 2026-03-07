@@ -15,7 +15,7 @@ interface BackupStats {
     totalElapsed: EpochMS;
 }
 
-// This iterates through all open databases and rolls them up.
+// This iterates through all open databases and backs them up.
 export async function backupDatabases(processAccumulators: Accumulators): Promise<BackupStats> {
     //
     // Make sure we have updated validStations
