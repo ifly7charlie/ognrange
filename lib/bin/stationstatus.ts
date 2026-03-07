@@ -67,7 +67,7 @@ const sabbuffer = new SharedArrayBuffer(2);
 const nextStation = new Uint16Array(sabbuffer);
 
 export function getNextStationId() {
-    return Number(nextStation);
+    return nextStation[0];
 }
 
 // Load the status of the current stations
@@ -84,7 +84,6 @@ export async function loadStationStatus() {
             stations.set(name, details);
             stationIds.set(details.id, name);
         }
-        1;
     } catch (e) {
         console.log('Unable to loadStationStatus', e);
         process.exit(1);
@@ -187,6 +186,7 @@ export function checkStationMoved(stationName: StationName, latitude: Latitude, 
             details.notice = 'station appears to be bouncing between two locations, merging data';
             delete details.moved;
             details.bouncing = true;
+            details.primary_location = [latitude, longitude];
         }
     } else {
         if (distance > 0.1) {

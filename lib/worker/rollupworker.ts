@@ -195,7 +195,7 @@ if (!isMainThread) {
             db?.close(); // done allow it to close
             parentPort!.postMessage({action: task.action, station: task.station, ...out});
         } catch (e) {
-            console.error(task, e);
+            console.error('task handling error', task, e);
         }
     });
 }

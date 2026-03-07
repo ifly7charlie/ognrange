@@ -91,10 +91,10 @@ async function main() {
         //          let hr = new CoverageHeader(key);
         //    }
     }
-    //    for (const a in accumulators) {
-    //      console.log(`${accumulators[a].hr.typeName} [${a}]: ${accumulators[a].count} records, ~ ${accumulators[a].size} bytes`);
-    //        console.log('  ' + JSON.stringify(accumulators[a].meta));
-    //  }
+    for (const a in accumulators) {
+        console.log(`${accumulators[a].hr.typeName} [${a}]: ${accumulators[a].count} records, ~ ${accumulators[a].size} bytes`);
+        console.log('  ' + JSON.stringify(accumulators[a].meta));
+    }
 
     if (Object.keys(accumulators).length < 3) {
         //    console.log(args.db)

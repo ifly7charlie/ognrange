@@ -39,7 +39,7 @@ let lock = new AsyncLock();
 
 //
 // This function writes the H3 buffers to the disk if they are dirty, and
-// clears the records if it has expired. It will not return before everything has been written
+// removes expired entries from the cache (not the database). It will not return before everything has been written
 //
 // It will block on the pending flush until the previous flush has completed, this ensures
 // that a normal write doesn't get obliterated by a rollup flush and is simpler than
@@ -96,7 +96,7 @@ export async function flushDirtyH3s(_accumulators?: Accumulators, allUnwritten: 
                     accus[ca] = (accus[ca] ?? 0) + 1;
                 });
 
-                console.log('flushing accumulators:', accus);
+                console.log('flushing h3cache accumulators:', accus);
 
                 // We will keep track of all the async actions to make sure we
                 // don't get out of order during the lock() or return before everything

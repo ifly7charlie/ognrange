@@ -25,7 +25,7 @@ export const bufferTypeNames = ['station', 'global'];
 export type bufferTypeString = 'unknown' | 'station' | 'global' | 'globalNested';
 
 class CRBase {
-    // first 32 bits
+    // first 4 bytes (accessed as individual u8 offsets within the first Uint32)
     u8oVersion: 0 = 0; // current version is 0
     version: bufferTypes = bufferTypes.unknown;
 
@@ -46,9 +46,7 @@ class CRBase {
 }
 
 class CRStation extends CRBase {
-    // first 32 bits
-
-    // How long are we in bytes (multiple of 32!)
+    // How long are we in bytes (multiple of 4 for Uint32Array alignment)
     static len: number = 5 * sU32 + 2 * sU16;
     length: number = CRStation.len;
     version: bufferTypes.station = bufferTypes.station;
@@ -217,7 +215,7 @@ export class CoverageRecord {
 
     // Simple helper to store the unique number of seconds that have had
     // tracking - helps to determine how good the coverage actually is
-    // This is done later as we need to collect to allowed for delayed packets
+    // This is done later as we need to allow for delayed packets
     updateSumGap(gap: number, stationid: StationId) {
         this._u32[this._sh.u32oSumGap] += gap;
 
