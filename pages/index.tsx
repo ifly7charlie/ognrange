@@ -17,8 +17,6 @@ import {useDisplayedH3s, DisplayedH3s} from '../lib/react/displayedh3s';
 import type {PickableDetails} from '../lib/react/pickabledetails';
 import {getObjectFromH3s} from '../lib/react/pickabledetails';
 
-import getConfig from 'next/config';
-const {serverRuntimeConfig} = getConfig();
 import type {GetServerSideProps} from 'next';
 
 const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mod.CoverageMap), {
@@ -244,10 +242,10 @@ export const getServerSideProps = (async ({locale}) => {
     return {
         props: {
             env: {
-                NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN: serverRuntimeConfig.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN,
-                NEXT_PUBLIC_SITEURL: serverRuntimeConfig.NEXT_PUBLIC_SITEURL,
-                NEXT_PUBLIC_DATA_URL: serverRuntimeConfig.NEXT_PUBLIC_DATA_URL,
-                NEXT_PUBLIC_AIRSPACE_API_KEY: serverRuntimeConfig.NEXT_PUBLIC_AIRSPACE_API_KEY
+                NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN: process.env['NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN'] ?? '',
+                NEXT_PUBLIC_SITEURL: process.env['NEXT_PUBLIC_SITEURL'] ?? '',
+                NEXT_PUBLIC_DATA_URL: process.env['NEXT_PUBLIC_DATA_URL'] ?? '',
+                NEXT_PUBLIC_AIRSPACE_API_KEY: process.env['NEXT_PUBLIC_AIRSPACE_API_KEY'] ?? ''
             },
             ...(await serverSideTranslations(locale, ['common']))
         }
