@@ -5,6 +5,7 @@ import {useSearchParams} from 'next/navigation';
 
 import {ArrowLoader} from '@loaders.gl/arrow';
 import {load} from '@loaders.gl/core';
+import type {LoaderOptions} from '@loaders.gl/core';
 import {progressFetch} from './progressFetch';
 
 const DisplayedH3sContext = createContext<DisplayedH3sType>({length: 0});
@@ -52,9 +53,10 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_D
                 fetch: (input, init) => {
                     return fetch(input, init).then(progressFetch(setLoaded));
                 }
-            }
+            } as LoaderOptions
         )
-            .then((data: ArrowFileType) => {
+            .then((result) => {
+                const data = (result as any).data as ArrowFileType;
                 console.log('setting arrow file', station || 'global', file || 'year', data.h3lo.length, 'h3s');
                 let maxCount = 0;
                 for (const v of data.count) {

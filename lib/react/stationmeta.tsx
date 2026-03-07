@@ -59,7 +59,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
 
     useEffect(() => {
         load(`${props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations/stations.${file}.arrow`, ArrowLoader)
-            .then((data: StationMeta) => {
+            .then((result) => {
+                const data = (result as any).data as StationMeta;
                 console.log('setting station meta for', file, 'with', data.id.length, 'stations');
                 setStationMeta(data);
             })
@@ -67,7 +68,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
                 if (e.message.match(/arrow \(404\)/)) {
                     // Fallback to the old style if it's not found
                     return load(`${props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations.arrow`, ArrowLoader)
-                        .then((data: StationMeta) => {
+                        .then((result) => {
+                            const data = (result as any).data as StationMeta;
                             console.log('setting station meta', data.id.length, 'stations');
                             setStationMeta(data);
                         })

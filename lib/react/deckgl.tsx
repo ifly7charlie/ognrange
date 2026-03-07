@@ -1,12 +1,10 @@
 import React, {useCallback, useMemo, useRef, useEffect} from 'react';
 import {MapboxOverlay, MapboxOverlayProps} from '@deck.gl/mapbox';
 
-import Map, {Source, Layer, useControl, NavigationControl, ScaleControl} from 'react-map-gl';
+import Map, {Source, Layer, useControl, NavigationControl, ScaleControl, AttributionControl} from 'react-map-gl/mapbox';
 
 import {IconLayer, ColumnLayer} from '@deck.gl/layers';
 import {H3HexagonLayer} from '@deck.gl/geo-layers';
-
-import {AttributionControl} from 'react-map-gl';
 
 import ReactDOMServer from 'react-dom/server';
 import {useSearchParams} from 'next/navigation';
@@ -79,7 +77,7 @@ function makeLayers(
 
     // Colouring and display options
     let getStationColor = // purple vs blue
-        (_d, {index}) =>
+        (_d, {index}): [number, number, number] =>
             stationMeta.name[index] == station || _sortedIndexOf(highlightStations, index) !== -1
                 ? [255, 16, 240] //
                 : !stationMeta.valid || stationMeta.valid[index]
@@ -167,8 +165,8 @@ function makeLayers(
         stroked: false,
         extruded: false,
         elevationScale: 0,
-        getHexagon: (d, {index, data}) => [data.d.h3lo[index], data.d.h3hi[index]], //.data.h3s[index],
-        getFillColor: (d, {index, data}) => visualisationFunction(data.d, index),
+        getHexagon: ((_d, {index}) => [displayedh3s.d!.h3lo[index], displayedh3s.d!.h3hi[index]]) as any,
+        getFillColor: (_d, {index}) => visualisationFunction(displayedh3s.d!, index),
         getElevation: map2d ? (d) => 0 : (d) => altitudeFunction(d),
         updateTriggers: {
             getFillColor: [visualisation, colours],
@@ -204,7 +202,7 @@ function makeLayers(
             sizeUnits: 'meters',
             getSize: getStationSize,
 
-            getPosition: (_d: any, {index, data}: {index: number; data: StationMeta}) => [data.lng[index], data.lat[index]],
+            getPosition: (_d: any, {index}) => [stationMeta.lng[index], stationMeta.lat[index]],
             getColor: getStationColor,
             updateTriggers: {
                 getColor: [station, highlightStations],
