@@ -217,7 +217,7 @@ export class CoverageRecord {
 
     // Simple helper to store the unique number of seconds that have had
     // tracking - helps to determine how good the coverage actually is
-    // This is done later as we need to collect to allowed for delayed packets
+    // This is done later as we need to allow for delayed packets
     updateSumGap(gap: number, stationid: StationId) {
         this._u32[this._sh.u32oSumGap] += gap;
 

@@ -12,7 +12,9 @@
         "export": "next export",
         "start": "next start",
         "lint": "next lint",
-        "test": "jest",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
         "aprs:dev": "tsc-watch --project tsconfig-bin.json --onFailure \"echo Failed build\" --onSuccess \"node  --enable-source-maps --inspect --experimental-fetch dist/bin/aprs.js\"",
         "aprs:devbrk": "tsc-watch --project tsconfig-bin.json --onFailure \"echo Failed build\" --onSuccess \"node  --enable-source-maps --inspect-brk --experimental-fetch dist/bin/aprs.js\""
     },
@@ -51,15 +53,13 @@
         "yargs": "^17.3.1"
     },
     "devDependencies": {
-        "@jest/globals": "^29.5.0",
         "@types/async-lock": "^1.4.0",
-        "@types/jest": "^29.5.0",
         "@types/node": "^18.11.9",
+        "@vitest/coverage-v8": "^4.0.18",
         "esm": "^3.2.25",
-        "jest": "^30.2.0",
-        "ts-jest": "^29.4.6",
         "ts-node": "^10.9.1",
         "tsc-watch": "^6.2.1",
-        "typescript": "^5.1.0"
+        "typescript": "^5.1.0",
+        "vitest": "^4.0.18"
     }
 }

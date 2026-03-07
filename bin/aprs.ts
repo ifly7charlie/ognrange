@@ -302,7 +302,7 @@ async function startAprsListener() {
     // Failed to connect, will create a new connection at the next periodic interval
     connection.on('error', (err) => {
         if (connection && !connection.exiting) {
-            console.log('Error: ' + err);
+            console.log('APRS connection Error: ', err);
             connection.disconnect();
             connection.valid = false;
         }

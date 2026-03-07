@@ -96,7 +96,7 @@ export async function flushDirtyH3s(_accumulators?: Accumulators, allUnwritten: 
                     accus[ca] = (accus[ca] ?? 0) + 1;
                 });
 
-                console.log('flushing accumulators:', accus);
+                console.log('flushing h3cache accumulators:', accus);
 
                 // We will keep track of all the async actions to make sure we
                 // don't get out of order during the lock() or return before everything

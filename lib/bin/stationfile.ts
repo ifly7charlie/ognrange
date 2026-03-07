@@ -1,5 +1,5 @@
 import {writeFileSync, unlinkSync, symlinkSync} from 'fs';
-import {writeFile} from 'fs/promises';
+import {writeFile, rename} from 'fs/promises';
 import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
 import {Bool, Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
@@ -82,7 +82,8 @@ export async function produceStationFile(accumulators: Accumulators) {
         // And write them out
         if (UNCOMPRESSED_ARROW_FILES) {
             const pt = new PassThrough({objectMode: true});
-            const ws = createWriteStream(OUTPUT_PATH + `stations/stations.day.${accumulators.day.file}.arrow`);
+            const fileName = OUTPUT_PATH + `stations/stations.day.${accumulators.day.file}`;
+            const ws = createWriteStream(fileName + `.working.arrow`);
             const finished = new Promise((resolve) => {
                 ws.on('close', resolve);
             });
@@ -91,12 +92,22 @@ export async function produceStationFile(accumulators: Accumulators) {
             pt.write(tableUpdates);
             pt.end();
 
+            // Wait for completion and then rename from working file to actual name
             await finished;
+            try {
+                await rename(fileName + '.working.arrow', fileName + '.arrow');
+            } catch (err) {
+                if (err) {
+                    console.error(`error renaming ${fileName}.working.arrow to ${fileName}.arrow:${err}`);
+                }
+            }
+            console.log(`output uncompressed station file ${fileName}.arrow`);
             symlinkAll(false);
         }
         {
             const pt = new PassThrough({objectMode: true, emitClose: true});
-            const ws = createWriteStream(OUTPUT_PATH + `stations/stations.day.${accumulators.day.file}.arrow.gz`);
+            const fileName = OUTPUT_PATH + `stations/stations.day.${accumulators.day.file}`;
+            const ws = createWriteStream(fileName + `.working.arrow.gz`);
             const finished = new Promise((resolve) => {
                 ws.on('close', resolve);
             });
@@ -104,7 +115,16 @@ export async function produceStationFile(accumulators: Accumulators) {
             pt.write(tableUpdates);
             pt.end();
 
+            // Wait for completion and then rename from working file to actual name
             await finished;
+            try {
+                await rename(fileName + '.working.arrow.gz', fileName + '.arrow.gz');
+            } catch (err) {
+                if (err) {
+                    console.error(`error renaming ${fileName}.working.arrow.gz to ${fileName}.arrow.gz:${err}`);
+                }
+            }
+            console.log(`output compressed station file ${fileName}.arrow.gz`);
             symlinkAll(true);
         }
     } catch (error) {
