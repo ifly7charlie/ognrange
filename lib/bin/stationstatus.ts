@@ -186,6 +186,7 @@ export function checkStationMoved(stationName: StationName, latitude: Latitude, 
             details.notice = 'station appears to be bouncing between two locations, merging data';
             delete details.moved;
             details.bouncing = true;
+            details.primary_location = [latitude, longitude];
         }
     } else {
         if (distance > 0.1) {
