@@ -139,8 +139,6 @@ export async function rollupDatabaseInternal(
         )
     );
 
-    console.log(rollupIterators);
-
     // Initalise the rollup array with [k,v]
     const rollupData = rollupIterators.map((r: any) => {
         return {n: r.iterator.next(), current: null, h3kr: new CoverageHeader('0000/00_fake'), ...r};
@@ -150,8 +148,6 @@ export async function rollupDatabaseInternal(
     for await (const [key, value] of db.iterator(CoverageHeader.getDbSearchRangeForAccumulator('current', accumulators.current.bucket))) {
         // The 'current' value - ie the data we are merging in.
         const h3p = new CoverageHeader(key);
-
-        console.log('h3p:', h3p, key);
 
         if (h3p.isMeta) {
             continue;
@@ -176,7 +172,6 @@ export async function rollupDatabaseInternal(
                 let [prefixedh3r, rollupValue] = r.current ? r.current : (r.current = r.n ? seth3k(r, await r.n) || [null, null] : [null, null]);
 
                 //                if (r.type === 'yearnz') {
-                console.log(r.type, prefixedh3r, rollupValue);
                 //                }
 
                 // We have hit the end of the data for the accumulator but we still have items
@@ -402,8 +397,6 @@ export async function rollupDatabaseInternal(
             console.log(`${OUTPUT_PATH}${name}/${name}.json stationmeta write error`, err);
         }
     }
-
-    console.log(rollupIterators);
 
     // Make sure we have updated the meta data
     await saveAccumulatorMetadata(db, accumulators);
