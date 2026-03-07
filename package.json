@@ -33,7 +33,7 @@
         "js-aprs-is": "^1.0.6",
         "lodash": "^4.17.23",
         "lru-cache": "^7.17.0",
-        "mapbox-gl": "^2.15.0",
+        "mapbox-gl": "^3",
         "ndarray": "^1.0.19",
         "next": "15.5.12",
         "next-i18next": "15.4.3",

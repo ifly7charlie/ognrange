@@ -13,6 +13,7 @@ import {getObjectFromIndex, PickableDetails} from './pickabledetails';
 
 import {useRouter} from 'next/router';
 import {useTranslation} from 'next-i18next';
+import {I18nextProvider} from 'react-i18next';
 
 import {
     map as _map, //
@@ -235,7 +236,7 @@ export function CoverageMap(props: {
     const displayedh3s = useDisplayedH3s();
     const router = useRouter();
     const params = useSearchParams();
-    const {t} = useTranslation();
+    const {t, i18n} = useTranslation();
     const doHighlightStations = (params.get('highlightStations') || '1') !== '0';
 
     const details = props.selectedDetails.type === 'none' ? props.hoverDetails : props.selectedDetails;
@@ -330,10 +331,12 @@ export function CoverageMap(props: {
 
             if (props.tooltips || object.type === 'station') {
                 const html = ReactDOMServer.renderToStaticMarkup(
-                    <CoverageDetailsToolTip
-                        details={object} //
-                        station={props.station}
-                    />
+                    <I18nextProvider i18n={i18n}>
+                        <CoverageDetailsToolTip
+                            details={object} //
+                            station={props.station}
+                        />
+                    </I18nextProvider>
                 );
                 return {html};
             }
