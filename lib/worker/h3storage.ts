@@ -86,10 +86,7 @@ export async function flushH3DbOps(accumulators: Accumulators): Promise<{databas
                     // Make sure we have updated the meta data before we write the batch
                     .then((db: DB) => saveAccumulatorMetadata(db, accumulators))
                     // Execute all changes as a batch
-                    .then((db: DB) => {
-                        db.batch(v);
-                        return db;
-                    })
+                    .then((db: DB) => db.batch(v))
                     .catch((e) => {
                         console.error(`${station}: error flushing ${v.length} db operations: ${e}`);
                     })
