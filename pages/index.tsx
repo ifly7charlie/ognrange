@@ -19,6 +19,8 @@ import {getObjectFromH3s} from '../lib/react/pickabledetails';
 
 import type {GetServerSideProps} from 'next';
 
+import {Group, Panel, Separator} from 'react-resizable-panels';
+
 const CoverageMap = dynamic(() => import('../lib/react/deckgl').then((mod) => mod.CoverageMap), {
     ssr: false,
     loading: () => (
@@ -183,11 +185,21 @@ export default function CombinePage(props) {
         [false]
     );
 
-    const [dockSplit, setDockSplit] = useState<number>(0.25);
+    const [dockSplit, setDockSplit] = useState<number>(25);
     const [dockPosition, setDockPosition] = useState<'right' | 'bottom'>('right');
+    const [dockExpanded, setDockExpanded] = useState(true);
+    const [viewHeight, setViewHeight] = useState('100vh');
 
-    const dockSplitW = dockPosition === 'right' ? ((1 - Math.max(dockSplit, 0)) * 100).toFixed(0) : '100';
-    const dockSplitH = dockPosition === 'bottom' ? ((1 - Math.max(dockSplit, 0)) * 100).toFixed(0) : '100';
+    useEffect(() => {
+        const mql = window.matchMedia('(orientation: portrait)');
+        const updatePosition = () => {
+            setDockPosition(mql.matches ? 'bottom' : 'right');
+            setViewHeight(`${window.innerHeight}px`);
+        };
+        updatePosition();
+        mql.addEventListener('change', updatePosition);
+        return () => mql.removeEventListener('change', updatePosition);
+    }, []);
 
     return (
         <>
@@ -195,43 +207,58 @@ export default function CombinePage(props) {
                 <title>{t('page_title')}</title>
             </Head>
 
-            <div>
-                <div style={{width: `${dockSplitW}vw`, height: `${dockSplitH}vh`}}>
-                    <CoverageMap //
-                        env={props.env}
-                        file={file}
-                        station={station}
-                        setStation={setStation}
-                        flyToStation={flyToStation}
-                        visualisation={visualisation}
-                        viewport={viewport}
-                        setViewport={setViewportUrl}
-                        mapType={mapType}
-                        tooltips={false}
-                        setHoverDetails={setHoverDetails}
-                        setSelectedDetails={setSelectedDetails}
-                        dockSplit={dockSplit}
-                        hoverDetails={hoverDetails}
-                        selectedDetails={selectedDetails}
-                    ></CoverageMap>
-                </div>
-                <Dock //
-                    env={props.env}
-                    station={station}
-                    setStation={setStation}
-                    visualisation={visualisation}
-                    setVisualisation={setVisualisation}
-                    file={file}
-                    setFile={setFile}
-                    hoverDetails={hoverDetails}
-                    setSelectedDetails={setSelectedDetails}
-                    selectedDetails={selectedDetails}
-                    updateUrl={updateUrl}
-                    dockSplit={dockSplit}
-                    setDockSplit={setDockSplit}
-                    dockPosition={dockPosition}
-                    setDockPosition={setDockPosition}
-                />
+            <div style={{width: '100vw', height: viewHeight}}>
+                <Group orientation={dockPosition === 'right' ? 'horizontal' : 'vertical'} style={{height: '100%'}}>
+                    <Panel minSize="30%">
+                        <div style={{width: '100%', height: '100%'}}>
+                            <CoverageMap //
+                                env={props.env}
+                                file={file}
+                                station={station}
+                                setStation={setStation}
+                                flyToStation={flyToStation}
+                                visualisation={visualisation}
+                                viewport={viewport}
+                                setViewport={setViewportUrl}
+                                mapType={mapType}
+                                tooltips={false}
+                                setHoverDetails={setHoverDetails}
+                                setSelectedDetails={setSelectedDetails}
+                                dockSplit={dockSplit}
+                                hoverDetails={hoverDetails}
+                                selectedDetails={selectedDetails}
+                            />
+                        </div>
+                    </Panel>
+                    <Separator style={dockPosition === 'right' ? {width: '6px', background: '#ccc', cursor: 'col-resize'} : {height: '6px', background: '#ccc', cursor: 'row-resize'}} />
+                    <Panel
+                        defaultSize="25%"
+                        minSize="10%"
+                        collapsible
+                        collapsedSize="0%"
+                        onResize={(size) => {
+                            setDockSplit(size.asPercentage);
+                            setDockExpanded(size.asPercentage > 2);
+                        }}
+                    >
+                        <div style={{height: '100%', overflowY: 'auto'}}>
+                            <Dock //
+                                env={props.env}
+                                station={station}
+                                setStation={setStation}
+                                visualisation={visualisation}
+                                setVisualisation={setVisualisation}
+                                file={file}
+                                setFile={setFile}
+                                hoverDetails={hoverDetails}
+                                setSelectedDetails={setSelectedDetails}
+                                selectedDetails={selectedDetails}
+                                updateUrl={updateUrl}
+                                expanded={dockExpanded}
+                            />
+                        </div>
+                    </Panel>
+                </Group>
             </div>
         </>
     );

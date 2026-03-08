@@ -41,7 +41,8 @@ export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_P
         [router.query]
     );
 
-    const baseMaps = [
+    type MapStyle = {label: string; value: string};
+    const baseMaps: MapStyle[] = [
         {label: 'OGN Light', value: defaultBaseMap},
         {label: 'North Star', value: 'mapbox/cj44mfrt20f082snokim4ungi'},
         {label: 'Cali Terrain', value: 'mapbox/cjerxnqt3cgvp2rmyuxbeqme7'},
@@ -52,7 +53,7 @@ export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_P
         {label: 'Dark', value: 'mapbox/dark-v10'}
     ];
 
-    const selectedValue = _find(baseMaps, {value: router.query.mapStyle || defaultBaseMap})[0] ?? baseMaps[0];
+    const selectedValue: MapStyle = _find(baseMaps, (m) => m.value === (router.query.mapStyle || defaultBaseMap)) ?? baseMaps[0];
 
     return !settingsVisible ? (
         <div style={{padding: '10px', position: 'absolute', bottom: '10px', right: '20px'}}>
@@ -89,7 +90,7 @@ export function Settings(props: {updateUrl: (updates: any) => void; env: {NEXT_P
                 </tbody>
             </table>
             <b>{t('select_style')}:</b>
-            <Select options={baseMaps} value={selectedValue} onChange={(v) => setSetting('mapStyle', v.value)} />
+            <Select<MapStyle> options={baseMaps} value={selectedValue} onChange={(v) => v && setSetting('mapStyle', v.value)} />
             <br />
             <Checkbox checked={parseInt(router.query.highlightStations?.toString() ?? '1') ? true : false} onChange={(v) => setSetting('highlightStations', v.target.checked ? '1' : '0')}>
                 {t('distance_circles')}
