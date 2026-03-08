@@ -23,9 +23,10 @@ type RollupWorkerCommands =
           accumulators: Accumulators;
       }
     | {
-          action: 'flushPending';
+          action: 'flushBatch';
           now: EpochMS;
           accumulators: Accumulators;
+          records: Array<{station: StationName; h3lockkey: H3LockKey; buffer: Uint8Array}>;
       }
     | {
           action: 'abortstartup';
@@ -59,46 +60,21 @@ interface RollupFlushResult extends RollupWorkerResult {
 // Record of all the outstanding transactions
 const promises: Record<string, {resolve: Function}> = {};
 
-// So we can wait for all of them
-const h3promises: Promise<void>[] = [];
 //
 // Start the worker thread
 const worker = isMainThread ? new Worker(__filename, {env: SHARE_ENV}) : null;
 
-// Update the disk version of the H3 by transferring the buffer record to
-// the worker thread, the buffer is NO LONGER VALID
-export async function flushH3(station: StationName, h3lockkey: H3LockKey, buffer: Uint8Array) {
-    if (!worker) {
-        return;
-    }
-    // special post as it needs to transfer the buffer rather than copy it
-    const donePromise = new Promise<void>((resolve) => {
-        promises[h3lockkey + '_flushH3'] = {resolve};
-        worker.postMessage({action: 'flushH3', now: Date.now(), station, h3lockkey, buffer}, [buffer.buffer as ArrayBuffer]);
-    });
-
-    // Keep copy so we can wait for it and also return it so the caller can wait
-    h3promises.push(donePromise);
-    return donePromise;
-}
-
-// Send all the recently flushed operations to the disk, called after h3cache flush is done and
-// before a rollup can start
-export async function flushPendingH3s(accumulators: Accumulators): Promise<RollupFlushResult> {
-    if (!worker) {
-        return {databases: 0};
-    }
-    // Make sure all the h3promises are settled, then reset that - we don't
-    // care what happens just want to make sure we don't flush too early
-    await Promise.allSettled(h3promises);
-    h3promises.length = 0;
-
-    return postMessage({action: 'flushPending', now: Date.now() as EpochMS, accumulators}) as Promise<RollupFlushResult>;
+// Send all dirty H3 records to the worker in one message; worker does one getMany+batch per station
+export async function flushBatch(
+    records: Array<{station: StationName; h3lockkey: H3LockKey; buffer: Uint8Array}>,
+    accumulators: Accumulators
+): Promise<RollupFlushResult> {
+    if (!worker) return {databases: 0};
+    const transferables = records.map((r) => r.buffer.buffer as ArrayBuffer);
+    return postMessage({action: 'flushBatch', now: Date.now() as EpochMS, records, accumulators}, transferables) as Promise<RollupFlushResult>;
 }
 
 export async function shutdownRollupWorker() {
-    //make sure the flush is finished
-    await Promise.allSettled(h3promises);
     // and anything else that is running
     await Promise.allSettled(Object.values(promises));
     // Do the sync in the worker thread
@@ -150,11 +126,10 @@ if (!isMainThread) {
         let out: any = {success: false};
         try {
             switch (task.action) {
-                case 'flushH3':
-                    await writeH3ToDB(task.station, task.h3lockkey, task.buffer);
-                    parentPort!.postMessage({action: task.action, h3lockkey: task.h3lockkey, success: true});
-                    return;
-                case 'flushPending':
+                case 'flushBatch':
+                    for (const {station, h3lockkey, buffer} of task.records) {
+                        writeH3ToDB(station, h3lockkey, buffer);
+                    }
                     out = await flushH3DbOps(task.accumulators);
                     parentPort!.postMessage({action: task.action, ...out, success: true});
                     return;
@@ -216,7 +191,7 @@ else {
     });
 }
 
-async function postMessage(command: RollupWorkerCommands): Promise<any> {
+async function postMessage(command: RollupWorkerCommands, transferables: ArrayBuffer[] = []): Promise<any> {
     if (!worker) {
         return;
     }
@@ -229,7 +204,7 @@ async function postMessage(command: RollupWorkerCommands): Promise<any> {
 
     return new Promise<RollupWorkerResult>((resolve) => {
         promises[key] = {resolve};
-        worker.postMessage(command);
+        worker.postMessage(command, transferables);
     });
 }
 

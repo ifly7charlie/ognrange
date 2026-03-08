@@ -5,9 +5,9 @@ import {H3_CACHE_FLUSH_PERIOD_MS, H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS} from '../com
 
 import {getStationName} from './stationstatus';
 
-import {H3, H3LockKey, StationId, EpochMS, superThrow} from './types';
+import {H3, H3LockKey, StationId, StationName, EpochMS, superThrow} from './types';
 
-import {flushH3, flushPendingH3s} from '../worker/rollupworker';
+import {flushBatch} from '../worker/rollupworker';
 
 import {getAccumulator, getCurrentAccumulators, describeAccumulators} from './accumulators';
 import type {Accumulators} from './accumulators';
@@ -98,30 +98,24 @@ export async function flushDirtyH3s(_accumulators?: Accumulators, allUnwritten: 
 
                 console.log('flushing h3cache accumulators:', accus);
 
-                // We will keep track of all the async actions to make sure we
-                // don't get out of order during the lock() or return before everything
-                // has been serialised
-                let promises = [];
+                // Go through all H3s in memory and collect them for a single postMessage to the
+                // worker thread. The worker fetches existing records and writes everything as a
+                // batch, so we don't return before everything has been serialised
+                const records: {station: StationName; h3lockkey: H3LockKey; buffer: Uint8Array}[] = [];
 
-                // Go through all H3s in memory and write them out if they were updated
-                // since last time we flushed - we do this by sending them to the webworker
-                // the worker accumulates all the transactions and then we call flush
-                // to actually write them to the database
                 for (const [h3klockkey, v] of sortedh3sToFlush) {
                     const station = getStationName(new CoverageHeader(h3klockkey).dbid);
                     if (!station) {
                         console.error(`unknown station ${h3klockkey}`);
                     } else {
-                        // Flush but don't wait
-                        promises.push(flushH3(station, h3klockkey, v.br.buffer()));
+                        records.push({station, h3lockkey: h3klockkey, buffer: v.br.buffer()});
                         stats.written++;
                     }
                 }
-                await Promise.allSettled(promises);
 
                 // Finally flush them all to disk and tag with metadata - use the metadata from when we started
                 // as it may have rotated while we were writing
-                stats.databases = (await flushPendingH3s(accumulators)).databases;
+                stats.databases = (await flushBatch(records, accumulators)).databases;
                 return stats;
             }
         )

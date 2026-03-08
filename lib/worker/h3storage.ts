@@ -9,86 +9,68 @@ import {Accumulators} from '../bin/accumulators';
 
 import {saveAccumulatorMetadata} from './rollupmetadata';
 
-let h3dbOps = new Map<StationName, BatchOperation[]>();
+type PendingRecord = {header: CoverageHeader; record: CoverageRecord};
+let h3Pending = new Map<StationName, Map<string, PendingRecord>>();
 
-// This reads the DB for the record and then adds data to it - it's how we get data from the APRS
-// (main) thread to the DB thread
-export async function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, buffer: Uint8Array): Promise<void> {
+// Accumulate an incoming H3 buffer — no DB I/O here, that happens in flushH3DbOps.
+// Records for the same key are pre-merged in memory so the DB only sees one write per key.
+// This is how we get data from the APRS (main) thread to the DB thread
+export function writeH3ToDB(station: StationName, h3lockkey: H3LockKey, buffer: Uint8Array): void {
     const h3k = new CoverageHeader(h3lockkey);
     const cr = new CoverageRecord(buffer);
+    const key = h3k.dbKey();
 
-    const existingOperation = h3dbOps.get(station) ?? [];
-
-    // Save it back for flushing - we can still update it as by reference
-    // and this ensures that everybody in the async code following updates the
-    // same array
-    if (!existingOperation.length) {
-        h3dbOps.set(station, existingOperation);
+    let stationMap = h3Pending.get(station);
+    if (!stationMap) {
+        stationMap = new Map();
+        h3Pending.set(station, stationMap);
     }
 
-    const getOperation = (db: DB): Promise<BatchOperation | null> =>
-        db
-            .get(h3k.dbKey())
-            .then((dbData: Uint8Array | undefined): BatchOperation | null => {
-                const newCr = dbData ? cr.rollup(new CoverageRecord(dbData)) : undefined;
-                if (newCr) {
-                    return {type: 'put', key: h3k.dbKey(), value: newCr.buffer()};
-                } else {
-                    return {type: 'put', key: h3k.dbKey(), value: buffer};
-                    //                    return null;
-                }
-            })
-            .catch((): BatchOperation => {
-                // If we don't have a record then we can just use the raw value we received
-                return {type: 'put', key: h3k.dbKey(), value: buffer};
-            });
-
-    let cleanupDB: DB | undefined;
-
-    await getDbThrow(station)
-        .then((db: DB) => {
-            return (cleanupDB = db);
-        })
-        .then((db: DB) => getOperation(db))
-        .then((operation) => {
-            if (operation) {
-                existingOperation.push(operation);
-            }
-        })
-        .catch((e) => {
-            console.error(`unable to find db for id ${h3k.dbid}/${station}, ${e}`);
-        })
-        .finally(() => {
-            cleanupDB?.close();
-        });
+    const existing = stationMap.get(key);
+    if (existing) {
+        const merged = existing.record.rollup(cr);
+        if (merged) stationMap.set(key, {header: h3k, record: merged});
+    } else {
+        stationMap.set(key, {header: h3k, record: cr});
+    }
 }
 
-// Flush all writes pending in the dbOps table
+// Flush all pending writes to the database. One getMany fetches all existing records for a
+// station, merges with the incoming data, then writes everything back as a single batch.
 export async function flushH3DbOps(accumulators: Accumulators): Promise<{databases: number}> {
+    const pending = h3Pending;
+    h3Pending = new Map();
     const promises: Promise<void>[] = [];
 
-    const outputOps = h3dbOps;
-    h3dbOps = new Map<StationName, BatchOperation[]>();
-
     // Now push these to the database
-    for (const [station, v] of outputOps) {
+    for (const [station, keyMap] of pending) {
         promises.push(
             new Promise<void>((resolve) => {
-                //
                 let cleanupDB: DB | undefined;
                 getDbThrow(station)
-                    .then((db: DB | undefined) => {
-                        if (!db) {
-                            throw new Error(`unable to find db for ${station}`);
-                        }
-                        return (cleanupDB = db);
+                    .then((db) => {
+                        cleanupDB = db;
+                        const keys = [...keyMap.keys()];
+                        // Fetch all existing records for this station in one round-trip
+                        return db.getMany(keys).then((existingValues) => ({db, keys, existingValues}));
                     })
-                    // Make sure we have updated the meta data before we write the batch
-                    .then((db: DB) => saveAccumulatorMetadata(db, accumulators))
-                    // Execute all changes as a batch
-                    .then((db: DB) => db.batch(v))
+                    .then(({db, keys, existingValues}) => {
+                        const batchOps: BatchOperation[] = [];
+                        for (let i = 0; i < keys.length; i++) {
+                            const key = keys[i];
+                            const {record: incoming} = keyMap.get(key)!;
+                            const existingData = existingValues[i];
+                            // If we don't have a record then we can just use the raw value we received
+                            const finalRecord = existingData
+                                ? (incoming.rollup(new CoverageRecord(existingData)) ?? incoming)
+                                : incoming;
+                            batchOps.push({type: 'put', key, value: finalRecord.buffer()});
+                        }
+                        // Make sure we have updated the metadata before we write the batch
+                        return saveAccumulatorMetadata(db, accumulators).then((db) => db.batch(batchOps));
+                    })
                     .catch((e) => {
-                        console.error(`${station}: error flushing ${v.length} db operations: ${e}`);
+                        console.error(`${station}: error flushing ${keyMap.size} pending records: ${e}`);
                     })
                     .finally(() => {
                         cleanupDB?.close();
@@ -99,5 +81,5 @@ export async function flushH3DbOps(accumulators: Accumulators): Promise<{databas
     }
 
     await Promise.allSettled(promises);
-    return {databases: outputOps.size};
+    return {databases: pending.size};
 }

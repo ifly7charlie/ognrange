@@ -4,8 +4,7 @@ import type {H3} from '../../lib/bin/types';
 
 // Mock external dependencies before importing the module
 vi.mock('../../lib/worker/rollupworker', () => ({
-    flushH3: vi.fn(async () => {}),
-    flushPendingH3s: vi.fn(async () => ({databases: 1}))
+    flushBatch: vi.fn(async () => ({databases: 1}))
 }));
 
 vi.mock('../../lib/bin/stationstatus', () => ({
@@ -26,7 +25,7 @@ vi.mock('../../lib/bin/accumulators', () => ({
 
 // Import after mocks
 import {updateCachedH3, flushDirtyH3s, getH3CacheSize} from '../../lib/bin/h3cache';
-import {flushH3, flushPendingH3s} from '../../lib/worker/rollupworker';
+import {flushBatch} from '../../lib/worker/rollupworker';
 
 describe('getH3CacheSize', () => {
     it('0 initially when freshly imported', () => {
@@ -70,10 +69,10 @@ describe('flushDirtyH3s', () => {
         expect(stats.written).toBeGreaterThanOrEqual(0);
     });
 
-    it('calls flushH3 per entry, then flushPendingH3s', async () => {
+    it('calls flushBatch', async () => {
         updateCachedH3('87bbb619affffff' as H3, 100, 100, 5, 20, 1, 1 as StationId, 0 as StationId);
         await flushDirtyH3s(undefined, true);
-        expect(flushPendingH3s).toHaveBeenCalled();
+        expect(flushBatch).toHaveBeenCalled();
     });
 
     it('returns {total, expired, written, databases}', async () => {
