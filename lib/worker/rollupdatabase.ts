@@ -2,11 +2,12 @@ import {CoverageRecord, bufferTypes} from '../bin/coveragerecord';
 import {CoverageHeader} from '../bin/coverageheader';
 import {CoverageRecordWriter} from '../bin/coveragerecordwriter';
 
+import {Layer} from '../common/layers';
+
 //import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
 
-import {sortBy as _sortBy, uniq as _uniq} from 'lodash';
 
-import {writeFileSync, readFileSync, mkdirSync, unlinkSync, symlinkSync, renameSync} from 'fs';
+import {writeFileSync, mkdirSync, unlinkSync, symlinkSync, renameSync} from 'fs';
 
 import {DB, BatchOperation} from './stationcache';
 
@@ -63,7 +64,8 @@ export type AccumulatorsExtended = {
 //
 export async function rollupDatabaseInternal(
     db: DB, //
-    {validStations, now, accumulators, needValidPurge, stationMeta, historical, wasMissing, retiredAccumulators}: RollupDatabaseArgs
+    {validStations, now, accumulators, needValidPurge, stationMeta, historical, wasMissing, retiredAccumulators}: RollupDatabaseArgs,
+    layer: Layer = Layer.COMBINED
 ): Promise<RollupResult> {
     //
     //
@@ -110,7 +112,7 @@ export async function rollupDatabaseInternal(
                     h3extra: 0, // on disk but after the end of the accumulator (included in emptied/updated if station invalid, and noChange otherwise)
                     arrowRecords: 0 // how many records writte to arrow file
                 },
-                iterator: db.iterator(CoverageHeader.getDbSearchRangeForAccumulator(r, par!.bucket)),
+                iterator: db.iterator(CoverageHeader.getDbSearchRangeForAccumulator(r, par!.bucket, false, layer)),
                 arrow: new CoverageRecordWriter(db.global ? bufferTypes.global : bufferTypes.station, accumulatorOutputName),
                 arrowName: accumulatorOutputName
             };
@@ -121,7 +123,7 @@ export async function rollupDatabaseInternal(
         [...rollupIterators, {type: 'current', bucket: accumulators.current.bucket}].map(
             (r) =>
                 new Promise<void>((resolve) => {
-                    const ch = CoverageHeader.getAccumulatorMeta(r.type, r.bucket);
+                    const ch = CoverageHeader.getAccumulatorMeta(r.type, r.bucket, layer);
                     db.get(ch.dbKey())
                         .then((value) => {
                             r.meta = JSON.parse(value?.toString() || '{}');
@@ -140,7 +142,7 @@ export async function rollupDatabaseInternal(
     });
 
     // Create the 'outer' iterator - this walks through the primary accumulator
-    for await (const [key, value] of db.iterator(CoverageHeader.getDbSearchRangeForAccumulator('current', accumulators.current.bucket))) {
+    for await (const [key, value] of db.iterator(CoverageHeader.getDbSearchRangeForAccumulator('current', accumulators.current.bucket, false, layer))) {
         // The 'current' value - ie the data we are merging in.
         const h3p = new CoverageHeader(key);
 
@@ -398,17 +400,12 @@ export async function rollupDatabaseInternal(
 
     // If we have a new accumulator then we need to purge the old meta data records - we
     // have already purged the data above
-    dbOps.push({type: 'del', key: CoverageHeader.getAccumulatorMeta('current', accumulators.current.bucket).dbKey()});
+    dbOps.push({type: 'del', key: CoverageHeader.getAccumulatorMeta('current', accumulators.current.bucket, layer).dbKey()});
     const recordsRemoved = dbOps.filter((o) => o.type === 'del').length - 1;
     //if (db.global) {
     //    if (countToDelete > 0) {
     //        console.log(`rollup: ${db.ognStationName}: current bucket ${[accumulators.current.bucket]} completed, removing ${countToDelete} records`);
     //    }
-
-    // Is this actually beneficial? - feed operations to the database in key type sorted order
-    // so it can just process them. Keys should be stored clustered so theoretically this will
-    // help with writing but perhaps benchmarking is a good idea
-    dbOps = _sortBy(dbOps, ['key', 'type']);
 
     //
     // Finally execute all the operations on the database
@@ -419,14 +416,14 @@ export async function rollupDatabaseInternal(
         // And we then need to purge anything that is no longer current
         await Promise.allSettled(
             retiredAccumulators //
-                .map((type) => purge(db, new CoverageHeader(0 as StationId, type as AccumulatorTypeString, accumulators[type as AccumulatorTypeString].bucket, '')))
+                .map((type) => purge(db, new CoverageHeader(0 as StationId, type as AccumulatorTypeString, accumulators[type as AccumulatorTypeString].bucket, '', layer)))
         );
         retired.retiredBuckets += retiredAccumulators.length;
     }
 
     // Purge everything from the current accumulator, this should just do a compact as we
     // have already deleted in the batch above
-    await purge(db, CoverageHeader.getAccumulatorMeta('current', accumulators.current.bucket));
+    await purge(db, CoverageHeader.getAccumulatorMeta('current', accumulators.current.bucket, layer));
 
     return {elapsed: Date.now() - startTime, operations: dbOps.length, recordsRemoved, arrowRecords, ...retired};
 }
@@ -469,7 +466,7 @@ export async function rollupDatabaseStartup(
         if (!hr.isMeta) {
             accumulatorsToPurge[hr.dbKey()] = hr.accumulator;
             console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
-            iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+            iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket, hr.layer));
             iteratorPromise = iterator.next();
             continue;
         }
@@ -510,7 +507,7 @@ export async function rollupDatabaseStartup(
         }
 
         // Done with this one lets skip forward
-        iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+        iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket, hr.layer));
         iteratorPromise = iterator.next();
     }
 
@@ -601,5 +598,5 @@ function symlink(src: string, dest: string) {
 // Clear data from the db
 async function purge(db: DB, hr: CoverageHeader) {
     // Now clear and compact
-    await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true));
+    await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true, hr.layer));
 }

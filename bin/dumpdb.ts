@@ -62,7 +62,7 @@ async function main() {
                 accumulators[hr.accumulator] = {hr: hr, meta: JSON.parse(String(value)), count: 0, size: 0};
                 console.log(hr.dbKey(), String(value));
                 if (args.size) {
-                    const r = await db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+                    const r = await db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, false, hr.layer), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket, hr.layer));
                     accumulators[hr.accumulator].size = r;
                 }
             } else {
@@ -73,14 +73,14 @@ async function main() {
                 }
 
                 if (accumulators[hr.accumulator].count == 1 && args.size) {
-                    const r = await db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+                    const r = await db.approximateSize(CoverageHeader.getAccumulatorBegin(hr.type, hr.bucket, false, hr.layer), CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket, hr.layer));
                     accumulators[hr.accumulator].size = r;
                 }
                 if (args.all) {
                     console.log(hr.dbKey(), JSON.stringify(new CoverageRecord(value).toObject()));
                 } else if (args.count) {
                 } else {
-                    n.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket));
+                    n.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket, hr.layer));
                 }
             }
         }
@@ -92,7 +92,7 @@ async function main() {
         //    }
     }
     for (const a in accumulators) {
-        console.log(`${accumulators[a].hr.typeName} [${a}]: ${accumulators[a].count} records, ~ ${accumulators[a].size} bytes`);
+        console.log(`${accumulators[a].hr.layer}/${accumulators[a].hr.typeName} [${a}]: ${accumulators[a].count} records, ~ ${accumulators[a].size} bytes`);
         console.log('  ' + JSON.stringify(accumulators[a].meta));
     }
 

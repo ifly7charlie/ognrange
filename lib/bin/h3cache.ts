@@ -131,10 +131,12 @@ export async function flushDirtyH3s(_accumulators?: Accumulators, allUnwritten: 
         });
 }
 
-export function updateCachedH3(h3: H3, altitude: number, agl: number, crc: number, signal: number, gap: number, packetStationId: StationId, dbStationId: StationId): void {
+import {Layer} from '../common/layers';
+
+export function updateCachedH3(h3: H3, altitude: number, agl: number, crc: number, signal: number, gap: number, packetStationId: StationId, dbStationId: StationId, layer: Layer = Layer.COMBINED): void {
     // Header details for our update - we look up the bucket and accumulator
     // here because it may have changed during the flush operation
-    const h3k = new CoverageHeader(dbStationId, 'current', getAccumulator(), h3);
+    const h3k = new CoverageHeader(dbStationId, 'current', getAccumulator(), h3, layer);
 
     // If we have some cached changes for this h3 then we will simply
     // use the entry in the 'dirty' table. This table gets flushed

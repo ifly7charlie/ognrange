@@ -105,6 +105,11 @@ export const MAX_ARROW_FILES = parseInt(process.env.MAX_ARROW_FILES ?? '') || 50
  * # number of tiles! */
 export const ELEVATION_TILE_RESOLUTION = parseInt(process.env.ELEVATION_TILE_RESOLUTION ?? '') || 11;
 
+/* # Which coverage layers to capture. Comma-separated list of layer names.
+ * # Defaults to all layers. Set to "combined" for backwards-compatible single-layer mode. */
+import {parseEnabledLayers} from './layers';
+export const ENABLED_LAYERS = parseEnabledLayers(process.env.ENABLED_LAYERS);
+
 /* # version number if exported during build - normally calls git to get it for development
  * # environment */
 export const GIT_REF = process.env.GIT_REF || process.env.NEXT_PUBLIC_GIT_REF || null;

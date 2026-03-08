@@ -42,7 +42,7 @@ const explicitlyIgnoredStations: Record<Uppercase<string>, boolean> = {
     TTN3OGN: true,
     OBS2OGN: true,
     HELIU2OGN: true,
-    ADSB: true,
+    // ADSB: true, — now handled as a layer, no longer ignored
     MICROTRACK: true,
     'DL4MEA-8': true,
     'JETV-OGN': true,

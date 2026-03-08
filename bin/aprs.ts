@@ -72,8 +72,11 @@ import {
     OUTPUT_PATH,
     DO_BACKUPS,
     BACKUP_PATH,
-    MAX_STATION_DBS
+    MAX_STATION_DBS,
+    ENABLED_LAYERS
 } from '../lib/common/config';
+
+import {Layer, layerFromDestCallsign, getWriteLayers, PRESENCE_ONLY, PRESENCE_SIGNAL} from '../lib/common/layers';
 
 // h3 cache functions
 import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from '../lib/bin/h3cache';
@@ -96,6 +99,7 @@ let packetStats = {
     ignoredStation: 0, //
     ignoredPAW: 0,
     ignoredTracker: 0,
+    ignoredLayer: 0,
     invalidTracker: 0,
     invalidTimestamp: 0,
     ignoredStationary: 0,
@@ -449,18 +453,24 @@ async function processPacket(packet: AprsLocationPacket) {
         return;
     }
 
+    // Determine protocol layer from APRS destination callsign
+    const layer = layerFromDestCallsign(packet.destCallsign ?? '');
+    if (!layer) {
+        packetStats.ignoredLayer++;
+        return;
+    }
+
+    // Check if this layer is enabled
+    if (ENABLED_LAYERS && !ENABLED_LAYERS.has(layer)) {
+        packetStats.ignoredLayer++;
+        return;
+    }
+
     // Find the id for the station or allocate
     const stationDetails = getStationDetails(station);
 
-    // Flarm ID we use is last 6 characters, check if OGN tracker or regular flarm
+    // Flarm ID we use is last 6 characters
     const flarmId = packet.sourceCallsign?.slice(packet.sourceCallsign?.length - 6);
-    const pawTracker = packet.sourceCallsign?.slice(0, 3) == 'PAW';
-
-    if (pawTracker) {
-        packetStats.ignoredPAW++;
-        stationDetails.stats.ignoredPAW++;
-        return;
-    }
 
     // Make sure it's valid
     if (flarmId?.length != 6) {
@@ -475,7 +485,9 @@ async function processPacket(packet: AprsLocationPacket) {
         stationDetails.stats.invalidTimestamp++;
         return;
     }
-    if (packet.destCallsign == 'OGNTRK' && packet.digipeaters?.[0]?.callsign?.slice(0, 2) != 'qA') {
+
+    // OGNTRK relay filter: reject relayed tracker packets (no qA in path)
+    if (layer === Layer.OGNTRK && packet.digipeaters?.[0]?.callsign?.slice(0, 2) != 'qA') {
         packetStats.ignoredTracker++;
         stationDetails.stats.ignoredTracker++;
         return;
@@ -568,24 +580,36 @@ async function processPacket(packet: AprsLocationPacket) {
         }
     }
 
-    // Look for signal strength and checksum - we will ignore any packet without a signal strength
-    // sometimes this happens to be missing and other times it happens because it is reported as 0.0
-    const rawSignalStrength = (packet.comment.match(reExtractDb) || [0, '0'])[1];
-    const signal = Math.min(Math.round(parseFloat(rawSignalStrength) * 4), 255);
+    // Signal handling: presence-only layers use synthetic signal, others extract from comment
+    const isPresenceOnly = PRESENCE_ONLY.has(layer);
+    let signal: number;
+    let crc: number;
 
-    // crc may be absent, if it is then it's a 0
-    const crc = parseInt((packet.comment.match(reExtractCrc) || [0, '0'])[1]);
+    if (isPresenceOnly) {
+        signal = PRESENCE_SIGNAL;
+        crc = 0;
+    } else {
+        // Look for signal strength and checksum - we will ignore any packet without a signal strength
+        // sometimes this happens to be missing and other times it happens because it is reported as 0.0
+        const rawSignalStrength = (packet.comment.match(reExtractDb) || [0, '0'])[1];
+        signal = Math.min(Math.round(parseFloat(rawSignalStrength) * 4), 255);
 
-    // If we have no signal strength then we'll ignore the packet... don't know where these
-    // come from or why they exist...
-    if (signal <= 0) {
-        packetStats.ignoredSignal0++;
-        stationDetails.stats.ignoredSignal0++;
-        return;
+        // crc may be absent, if it is then it's a 0
+        crc = parseInt((packet.comment.match(reExtractCrc) || [0, '0'])[1]);
+
+        // If we have no signal strength then we'll ignore the packet
+        if (signal <= 0) {
+            packetStats.ignoredSignal0++;
+            stationDetails.stats.ignoredSignal0++;
+            return;
+        }
     }
 
     packetStats.count++;
     stationDetails.stats.count++;
+
+    // Determine which layers to write to (dual-write for FLARM and OGNTRK)
+    const writeLayers = getWriteLayers(layer);
 
     // Enrich with elevation and send to everybody, this is async
     // and we don't need it's results to say we logged the packet
@@ -602,18 +626,17 @@ async function processPacket(packet: AprsLocationPacket) {
         // We store the database records as binary bytes - in the format described in the mapping() above
         // this reduces the amount of storage we need and means we aren't constantly parsing text
         // and printing text.
-        async function mergeDataIntoDatabase(dbStationId: StationId, packetStationId: StationId, h3: H3) {
+        function mergeDataIntoDatabase(dbStationId: StationId, packetStationId: StationId, h3: H3, writeLayer: Layer) {
             // And tell the cache to fetch/update - this may block if it needs to read
             // and there is nothing yet available
-            return updateCachedH3(h3, altitude, agl, crc, signal, gap, packetStationId, dbStationId);
+            updateCachedH3(h3, altitude, agl, crc, signal, gap, packetStationId, dbStationId, writeLayer);
         }
 
-        // Merge into both the station db (name,0) and the global db (global,id) with the stationid we allocated
-        // we don't pass stationid into the station specific db because there only ever is one
-        // it gets used to build the list of stations that can see the cell in the global one so should be correct
-        // there
-        mergeDataIntoDatabase(stationDetails.id, 0 as StationId, h3id as H3);
-        mergeDataIntoDatabase(0 as StationId, stationDetails.id, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL) as H3);
+        // Merge into both the station db (name,0) and the global db (global,id) for each target layer
+        for (const writeLayer of writeLayers) {
+            mergeDataIntoDatabase(stationDetails.id, 0 as StationId, h3id as H3, writeLayer);
+            mergeDataIntoDatabase(0 as StationId, stationDetails.id, h3.cellToParent(h3id, H3_GLOBAL_CELL_LEVEL) as H3, writeLayer);
+        }
     }).catch((e) => {
         console.error(`exception calling getElevationOffset for ${station}, ${packet.latitude}, ${packet.longitude}, ${altitude}`, e);
         stationDetails.stats.ignoredElevation++;
