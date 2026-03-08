@@ -99,7 +99,7 @@ let packetStats = {
     ignoredStation: 0, //
     ignoredPAW: 0,
     ignoredTracker: 0,
-    ignoredLayer: 0,
+    ignoredProtocol: 0,
     invalidTracker: 0,
     invalidTimestamp: 0,
     ignoredStationary: 0,
@@ -456,13 +456,13 @@ async function processPacket(packet: AprsLocationPacket) {
     // Determine protocol layer from APRS destination callsign
     const layer = layerFromDestCallsign(packet.destCallsign ?? '');
     if (!layer) {
-        packetStats.ignoredLayer++;
+        packetStats.ignoredProtocol++;
         return;
     }
 
     // Check if this layer is enabled
     if (ENABLED_LAYERS && !ENABLED_LAYERS.has(layer)) {
-        packetStats.ignoredLayer++;
+        packetStats.ignoredProtocol++;
         return;
     }
 
