@@ -551,6 +551,8 @@ export async function rollupDatabaseStartup(
             datamerged = true;
         } else {
             console.log(`${db.ognStationName}: DROPPING hanging current accumulator ${key}(${currentStart}) for ${destinationFiles}: ${missingBuckets.join(',')} were missing`);
+            const ch = CoverageHeader.getAccumulatorMeta('current', hangingAccumulators.current.bucket);
+            accumulatorsToPurge[ch.dbKey()] = ch.accumulator;
         }
     }
 
