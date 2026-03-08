@@ -103,6 +103,8 @@ function getAccumulatorsFromDisk(file: string) {
 function getFilesForStation(station: string) {
     const files = readdirSync(OUTPUT_PATH + station)
         .map((fn) => {
+            // Match both layer-prefixed (station.combined.day.2026-03-08.arrow.gz) and
+            // legacy (station.day.2026-03-08.arrow.gz) naming conventions
             const [_all, type, date] = fn.match(/(day|month|year)\.([0-9-]+)\.arrow\.gz/) ?? ['', null, null];
             return {type: type ?? '', date: date ?? '', fileName: fn};
         })
