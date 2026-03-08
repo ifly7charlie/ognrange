@@ -70,11 +70,6 @@ export async function rollupDatabaseInternal(
     const startTime = Date.now();
     const name = db.ognStationName;
     let currentMeta = {};
-
-    if (name != 'global') {
-        return {elapsed: 0, operations: -1, recordsRemoved: 0, arrowRecords: 0, retiredBuckets: 0};
-    }
-
     if (needValidPurge && !validStations) {
         throw new Error(`${db.ognStationName}: invalid arguments to rollupDatabaseInternal( needValidPurge && ! validStations)`);
     }
