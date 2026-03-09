@@ -230,7 +230,7 @@ export function CoverageMap(props: {
     tooltips: boolean;
     viewport: any;
     setViewport: Function;
-    dockSplit: number;
+    dockSplit: number | string;
 }) {
     const stationMeta = useStationMeta();
     const displayedh3s = useDisplayedH3s();

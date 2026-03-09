@@ -33,8 +33,8 @@ export function Dock(props: {
 
     return (
         <>
-            <div>
-                <span style={{padding: '0px', border: '5px solid white'}}>
+            <div style={{padding: '1px'}}>
+                <span style={{border: '5px solid white'}}>
                     <img width="100" height="100" src="https://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />
                 </span>
             </div>

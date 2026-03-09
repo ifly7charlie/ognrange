@@ -22,26 +22,21 @@ export function toMonthStr(d: Date): string {
 // ---- Intl helpers (evaluated once in the browser with the user's locale) ----
 
 // Narrow weekday names Sunday→Saturday (Jan 1 2023 was a Sunday)
-const WEEKDAY_NARROW = Array.from({length: 7}, (_, i) =>
-    new Intl.DateTimeFormat(undefined, {weekday: 'narrow'}).format(new Date(2023, 0, 1 + i))
-);
+const WEEKDAY_NARROW = Array.from({length: 7}, (_, i) => new Intl.DateTimeFormat(undefined, {weekday: 'narrow'}).format(new Date(2023, 0, 1 + i)));
 
 // Short month names for the month-grid display
-const SHORT_MONTHS = Array.from({length: 12}, (_, i) =>
-    new Intl.DateTimeFormat(undefined, {month: 'short'}).format(new Date(2000, i, 1))
-);
-
-// Full month names used for text-input navigation
-const LOCALE_MONTHS = Array.from({length: 12}, (_, i) =>
-    new Intl.DateTimeFormat(undefined, {month: 'long'}).format(new Date(2000, i, 1)).toLowerCase()
-);
+const SHORT_MONTHS = Array.from({length: 12}, (_, i) => new Intl.DateTimeFormat(undefined, {month: 'short'}).format(new Date(2000, i, 1)));
 
 // Prefix-autocomplete map built from locale month names
 const suggestions: Record<string, string> = {};
-for (const name of LOCALE_MONTHS) {
+for (const name of SHORT_MONTHS) {
     for (let i = 1; i < name.length; i++) suggestions[name.slice(0, i)] ??= name;
 }
-const suggest = (str: string) => str.split(/\b/).map((w) => suggestions[w] || w).join('');
+const suggest = (str: string) =>
+    str
+        .split(/\b/)
+        .map((w) => suggestions[w] || w)
+        .join('');
 
 function parseInputAsDate(input: string): Date | null {
     const lower = suggest(input.trim().toLowerCase());
@@ -50,7 +45,7 @@ function parseInputAsDate(input: string): Date | null {
     if (iso) return new Date(+iso[1], +iso[2] - 1, 1);
     // Locale month name prefix match
     const stripped = lower.replace(/\s+/g, '');
-    const mIdx = LOCALE_MONTHS.findIndex((m) => m.replace(/\s+/g, '').startsWith(stripped));
+    const mIdx = SHORT_MONTHS.findIndex((m) => m.replace(/\s+/g, '').startsWith(stripped));
     if (mIdx !== -1) {
         const today = new Date();
         return new Date(today.getMonth() > mIdx ? today.getFullYear() + 1 : today.getFullYear(), mIdx, 1);
@@ -83,7 +78,7 @@ function createOptionForDate(d: Date, availableDates?: Set<string>): DateOption 
     return {
         date: d,
         value: d,
-        label: d.toLocaleDateString(undefined, {day: 'numeric', month: 'long', year: 'numeric'}),
+        label: d.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}),
         isDisabled: availableDates ? !availableDates.has(toDateStr(d)) : false
     };
 }
@@ -93,7 +88,7 @@ function monthToDateOption(value: string, availableMonths?: Set<string>): DateOp
     return {
         date: d,
         value: d,
-        label: d.toLocaleDateString(undefined, {month: 'long', year: 'numeric'}),
+        label: d.toLocaleDateString(undefined, {month: 'short', year: 'numeric'}),
         isDisabled: availableMonths ? !availableMonths.has(value) : false
     };
 }
@@ -108,12 +103,12 @@ function createCalendarOptions(date: Date, availableDates?: Set<string>): Calend
         options.push({
             date: d,
             value: d,
-            label: d.toLocaleDateString(undefined, {day: 'numeric', month: 'long', year: 'numeric'}),
+            label: d.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}),
             display: 'calendar-day',
             isDisabled: availableDates ? !availableDates.has(toDateStr(d)) : false
         });
     }
-    return {label: date.toLocaleDateString(undefined, {month: 'long', year: 'numeric'}), options};
+    return {label: date.toLocaleDateString(undefined, {month: 'short', year: 'numeric'}), options};
 }
 
 function createMonthOptions(year: number, availableMonths?: Set<string>): CalendarGroup {
@@ -122,7 +117,7 @@ function createMonthOptions(year: number, availableMonths?: Set<string>): Calend
         return {
             date: d,
             value: d,
-            label: d.toLocaleDateString(undefined, {month: 'long', year: 'numeric'}),
+            label: d.toLocaleDateString(undefined, {month: 'short', year: 'numeric'}),
             display: 'calendar-month',
             isDisabled: availableMonths ? !availableMonths.has(toMonthStr(d)) : false
         };
@@ -151,9 +146,27 @@ const DayGroup = (props: GroupProps<DateOption, false>) => {
     return (
         <div aria-label={label as string}>
             <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px'}}>
-                <button type="button" onMouseDown={(e) => { e.preventDefault(); nav?.prev(); }} style={navBtnStyle}>‹</button>
+                <button
+                    type="button"
+                    onMouseDown={(e) => {
+                        e.preventDefault();
+                        nav?.prev();
+                    }}
+                    style={navBtnStyle}
+                >
+                    ‹
+                </button>
                 <span style={{fontWeight: 600, fontSize: '0.9em'}}>{label}</span>
-                <button type="button" onMouseDown={(e) => { e.preventDefault(); nav?.next(); }} style={navBtnStyle}>›</button>
+                <button
+                    type="button"
+                    onMouseDown={(e) => {
+                        e.preventDefault();
+                        nav?.next();
+                    }}
+                    style={navBtnStyle}
+                >
+                    ›
+                </button>
             </div>
             <div style={{paddingTop: 4, paddingLeft: '2%', borderTop: '1px solid #eee'}}>
                 {WEEKDAY_NARROW.map((day, i) => (
@@ -175,9 +188,27 @@ const MonthGroup = (props: GroupProps<DateOption, false>) => {
     return (
         <div aria-label={label as string}>
             <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px', borderBottom: '1px solid #eee'}}>
-                <button type="button" onMouseDown={(e) => { e.preventDefault(); nav?.prev(); }} style={navBtnStyle}>‹</button>
+                <button
+                    type="button"
+                    onMouseDown={(e) => {
+                        e.preventDefault();
+                        nav?.prev();
+                    }}
+                    style={navBtnStyle}
+                >
+                    ‹
+                </button>
                 <span style={{fontWeight: 600, fontSize: '0.9em'}}>{label}</span>
-                <button type="button" onMouseDown={(e) => { e.preventDefault(); nav?.next(); }} style={navBtnStyle}>›</button>
+                <button
+                    type="button"
+                    onMouseDown={(e) => {
+                        e.preventDefault();
+                        nav?.next();
+                    }}
+                    style={navBtnStyle}
+                >
+                    ›
+                </button>
             </div>
             <div style={{paddingTop: 4}}>{children}</div>
         </div>
@@ -282,19 +313,7 @@ function DatePicker({value, onChange, availableDates, placeholder}: DatePickerPr
 
     return (
         <NavContext.Provider value={nav}>
-            <Select<DateOption, false>
-                components={{Group: DayGroup, Option}}
-                filterOption={null}
-                isMulti={false}
-                isOptionDisabled={(o) => !!o.isDisabled}
-                isOptionSelected={(o, v) => v.some((i) => isSameDay(i.date, o.date))}
-                maxMenuHeight={380}
-                onChange={onChange}
-                onInputChange={handleInputChange}
-                options={[calendarOptions]}
-                placeholder={placeholder}
-                value={value}
-            />
+            <Select<DateOption, false> components={{Group: DayGroup, Option}} filterOption={null} isMulti={false} isOptionDisabled={(o) => !!o.isDisabled} isOptionSelected={(o, v) => v.some((i) => isSameDay(i.date, o.date))} maxMenuHeight={380} onChange={onChange} onInputChange={handleInputChange} options={[calendarOptions]} placeholder={placeholder} value={value} />
         </NavContext.Provider>
     );
 }
@@ -339,31 +358,14 @@ function MonthPickerInternal({value, onChange, availableMonths, placeholder}: Mo
 
     return (
         <NavContext.Provider value={nav}>
-            <Select<DateOption, false>
-                components={{Group: MonthGroup, Option}}
-                filterOption={null}
-                isMulti={false}
-                isOptionDisabled={(o) => !!o.isDisabled}
-                isOptionSelected={(o, v) => v.some((i) => isSameMonth(i.date, o.date))}
-                maxMenuHeight={220}
-                onChange={onChange}
-                onInputChange={handleInputChange}
-                options={[monthOptions]}
-                placeholder={placeholder}
-                value={value}
-            />
+            <Select<DateOption, false> components={{Group: MonthGroup, Option}} filterOption={null} isMulti={false} isOptionDisabled={(o) => !!o.isDisabled} isOptionSelected={(o, v) => v.some((i) => isSameMonth(i.date, o.date))} maxMenuHeight={220} onChange={onChange} onInputChange={handleInputChange} options={[monthOptions]} placeholder={placeholder} value={value} />
         </NavContext.Provider>
     );
 }
 
 // ---- DayPicker: YYYY-MM-DD string API ----
 
-export function DayPicker({value, onChange, availableDates, placeholder}: {
-    value: string | null;
-    onChange: (v: string | null) => void;
-    availableDates?: Set<string>;
-    placeholder?: string;
-}) {
+export function DayPicker({value, onChange, availableDates, placeholder}: {value: string | null; onChange: (v: string | null) => void; availableDates?: Set<string>; placeholder?: string}) {
     // Auto-select the latest available date on first load when no value is set
     const didAutoSelect = useRef(false);
     useEffect(() => {
@@ -373,24 +375,12 @@ export function DayPicker({value, onChange, availableDates, placeholder}: {
     }, [availableDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const dateOption = value ? createOptionForDate(new Date(value + 'T12:00:00'), availableDates) : null;
-    return (
-        <DatePicker
-            value={dateOption}
-            onChange={(opt) => onChange(opt ? toDateStr(opt.date) : null)}
-            availableDates={availableDates}
-            placeholder={placeholder}
-        />
-    );
+    return <DatePicker value={dateOption} onChange={(opt) => onChange(opt ? toDateStr(opt.date) : null)} availableDates={availableDates} placeholder={placeholder} />;
 }
 
 // ---- MonthPicker: YYYY-MM string API ----
 
-export function MonthPicker({value, onChange, availableMonths, placeholder}: {
-    value: string | null;
-    onChange: (v: string | null) => void;
-    availableMonths?: Set<string>;
-    placeholder?: string;
-}) {
+export function MonthPicker({value, onChange, availableMonths, placeholder}: {value: string | null; onChange: (v: string | null) => void; availableMonths?: Set<string>; placeholder?: string}) {
     // Auto-select the latest available month on first load when no value is set
     const didAutoSelect = useRef(false);
     useEffect(() => {
@@ -400,14 +390,7 @@ export function MonthPicker({value, onChange, availableMonths, placeholder}: {
     }, [availableMonths]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const dateOption = value ? monthToDateOption(value, availableMonths) : null;
-    return (
-        <MonthPickerInternal
-            value={dateOption}
-            onChange={(opt) => onChange(opt ? toMonthStr(opt.date) : null)}
-            availableMonths={availableMonths}
-            placeholder={placeholder}
-        />
-    );
+    return <MonthPickerInternal value={dateOption} onChange={(opt) => onChange(opt ? toMonthStr(opt.date) : null)} availableMonths={availableMonths} placeholder={placeholder} />;
 }
 
 export default function DatePickerDemo() {

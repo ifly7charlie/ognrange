@@ -70,7 +70,10 @@ export default function CombinePage(props) {
     const dateEnd = params.get('dateEnd') || file || 'year';
     const dateRange = {start: dateStart, end: dateEnd};
     const layersParam = params.get('layers') || 'combined';
-    const layers = layersParam.split(',').map((s) => s.trim()).filter(Boolean);
+    const layers = layersParam
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
     const urlH3 = params.get('h3')?.toString();
 
     // What the map is looking at
@@ -197,7 +200,7 @@ export default function CombinePage(props) {
         [false]
     );
 
-    const [dockSplit, setDockSplit] = useState<number>(25);
+    const [dockSplit, setDockSplit] = useState<string | number>('25vw');
     const [dockPosition, setDockPosition] = useState<'right' | 'bottom'>('right');
     const [dockExpanded, setDockExpanded] = useState(true);
     const [viewHeight, setViewHeight] = useState('100vh');
@@ -221,7 +224,7 @@ export default function CombinePage(props) {
 
             <div style={{width: '100vw', height: viewHeight}}>
                 <Group orientation={dockPosition === 'right' ? 'horizontal' : 'vertical'} style={{height: '100%'}}>
-                    <Panel minSize={30}>
+                    <Panel defaultSize={'70vw'}>
                         <div style={{width: '100%', height: '100%'}}>
                             <CoverageMap //
                                 env={props.env}
@@ -244,13 +247,13 @@ export default function CombinePage(props) {
                     </Panel>
                     <Separator style={dockPosition === 'right' ? {width: '6px', background: '#ccc', cursor: 'col-resize'} : {height: '6px', background: '#ccc', cursor: 'row-resize'}} />
                     <Panel
-                        defaultSize={25}
-                        minSize={10}
+                        defaultSize={dockSplit}
+                        minSize={100}
                         collapsible
                         collapsedSize={0}
                         onResize={(size) => {
                             setDockSplit(size.asPercentage);
-                            setDockExpanded(size.asPercentage > 2);
+                            setDockExpanded(size.asPercentage > 10);
                         }}
                     >
                         <div style={{height: '100%', overflowY: 'auto'}}>

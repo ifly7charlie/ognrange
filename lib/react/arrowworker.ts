@@ -3,7 +3,7 @@
 import {ArrowLoader} from '@loaders.gl/arrow';
 import {load} from '@loaders.gl/core';
 import type {LoaderOptions} from '@loaders.gl/core';
-import {progressFetch} from './progressFetch';
+import {progressFetch, cancelCurrent} from './progressFetch';
 import {PRESENCE_SIGNAL} from '../common/layers';
 
 interface WorkerRequest {
@@ -26,6 +26,7 @@ let avgGap: Uint8Array;
 let length = 0;
 
 let currentRequestId = -1;
+let hasPartialData = false;
 
 function weightedAvg(oldCount: number, oldVal: number, newCount: number, newVal: number): number {
     const total = oldCount + newCount;
@@ -33,17 +34,37 @@ function weightedAvg(oldCount: number, oldVal: number, newCount: number, newVal:
     return Math.round((oldVal * oldCount + newVal * newCount) / total);
 }
 
-async function loadFile(url: string, fileIndex: number, totalFiles: number): Promise<any | null> {
+async function loadFile(url: string, fileIndex: number, totalFiles: number, requestId: number): Promise<any | null> {
     try {
-        const setProgress = (p: number) => self.postMessage({type: 'progress', fileIndex, progress: p ?? 1, url, totalFiles});
+        let lastProgressMs = 0;
+        const setProgress = (p: number) => {
+            const now = Date.now();
+            if (p >= 1 || now - lastProgressMs >= 100) {
+                lastProgressMs = now;
+                self.postMessage({type: 'progress', requestId, fileIndex, progress: p ?? 1, url, totalFiles});
+            }
+        };
         const result = await load(url, ArrowLoader, {
-            fetch: (input: any, init?: any) => fetch(input, init).then(progressFetch(setProgress))
+            fetch: async (input: any, init?: any) => {
+                const response = await fetch(input, init);
+                if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+                return progressFetch(setProgress)(response);
+            }
         } as LoaderOptions);
         return (result as any).data;
     } catch (e) {
         console.log(`arrowworker: skipping ${url}: ${e}`);
         return null;
     }
+}
+
+function postResult(requestId: number, extra?: object) {
+    self.postMessage(
+        {type: 'result', requestId, h3lo, h3hi, minAgl, minAlt, minAltSig, maxSig, avgSig, avgCrc, count, avgGap, length, ...extra},
+        [h3lo.buffer, h3hi.buffer, minAgl.buffer, minAlt.buffer,
+         minAltSig.buffer, maxSig.buffer, avgSig.buffer, avgCrc.buffer,
+         count.buffer, avgGap.buffer] as ArrayBuffer[]
+    );
 }
 
 function buildIndex(): Map<bigint, number> {
@@ -157,8 +178,23 @@ function mergeData(newData: any, presenceOnly: boolean): void {
 }
 
 self.addEventListener('message', async (event: MessageEvent<WorkerRequest>) => {
+    if ((event.data as any).type === 'abort') {
+        const abortReqId = (event.data as any).requestId;
+        if (currentRequestId === abortReqId) {
+            cancelCurrent();
+            currentRequestId = -1;
+            if (hasPartialData) {
+                postResult(abortReqId);
+            } else {
+                self.postMessage({type: 'result', requestId: abortReqId, length: 0});
+            }
+        }
+        return;
+    }
+
     const {urls, presenceOnly, requestId} = event.data;
     currentRequestId = requestId;
+    hasPartialData = false;
 
     if (!urls.length) {
         self.postMessage({type: 'result', requestId, length: 0});
@@ -174,7 +210,7 @@ self.addEventListener('message', async (event: MessageEvent<WorkerRequest>) => {
         for (let i = 0; i < urls.length; i++) {
             if (currentRequestId !== requestId) return;
 
-            const data = await loadFile(urls[i], i, urls.length);
+            const data = await loadFile(urls[i], i, urls.length, requestId);
             if (currentRequestId !== requestId) return;
             if (!data) continue;
 
@@ -194,6 +230,7 @@ self.addEventListener('message', async (event: MessageEvent<WorkerRequest>) => {
                 firstExpectedGap = data.expectedGap;
                 firstNumStations = data.numStations;
                 firstLoaded = true;
+                hasPartialData = true;
             } else {
                 mergeData(data, presenceOnly[i]);
             }
@@ -204,24 +241,8 @@ self.addEventListener('message', async (event: MessageEvent<WorkerRequest>) => {
             return;
         }
 
-        const transferables = [
-            h3lo.buffer, h3hi.buffer, minAgl.buffer, minAlt.buffer,
-            minAltSig.buffer, maxSig.buffer, avgSig.buffer, avgCrc.buffer,
-            count.buffer, avgGap.buffer
-        ] as ArrayBuffer[];
-
-        self.postMessage(
-            {
-                type: 'result',
-                requestId,
-                h3lo, h3hi, minAgl, minAlt, minAltSig, maxSig, avgSig, avgCrc, count, avgGap,
-                length,
-                stations: firstStations,
-                expectedGap: firstExpectedGap,
-                numStations: firstNumStations
-            },
-            transferables
-        );
+        postResult(requestId, {stations: firstStations, expectedGap: firstExpectedGap, numStations: firstNumStations});
+        hasPartialData = false; // buffers are now detached; a stale abort must not re-transfer them
     } catch (e) {
         console.error('arrowworker error:', e);
         self.postMessage({type: 'result', requestId, length: 0});

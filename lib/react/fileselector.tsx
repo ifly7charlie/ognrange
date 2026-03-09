@@ -90,15 +90,9 @@ export function FileSelector({station, dateRange, setDateRange}: {station: strin
     const typeOptions: Option[] = availableTypes.map((pt) => ({value: pt, label: t(pt)}));
     const selectedType = typeOptions.find((o) => o.value === currentType) ?? null;
 
-    const fromOptions: Option[] = useMemo(
-        () => [{value: '', label: latestLabel}, ...[...dates].reverse().map((d) => ({value: d, label: labelFor(currentType, d)}))],
-        [dates, currentType, latestLabel]
-    );
+    const fromOptions: Option[] = useMemo(() => [{value: '', label: latestLabel}, ...[...dates].reverse().map((d) => ({value: d, label: labelFor(currentType, d)}))], [dates, currentType, latestLabel]);
 
-    const toOptions: Option[] = useMemo(
-        () => [...(fromVal ? dates.filter((d) => d >= fromVal) : dates)].reverse().map((d) => ({value: d, label: labelFor(currentType, d)})),
-        [dates, currentType, fromVal]
-    );
+    const toOptions: Option[] = useMemo(() => [...(fromVal ? dates.filter((d) => d >= fromVal) : dates)].reverse().map((d) => ({value: d, label: labelFor(currentType, d)})), [dates, currentType, fromVal]);
 
     const selectedFrom = fromOptions.find((o) => o.value === fromVal) ?? null;
     const selectedTo = toOptions.find((o) => o.value === toVal) ?? null;
@@ -162,15 +156,9 @@ export function FileSelector({station, dateRange, setDateRange}: {station: strin
 
     // Available date/month sets for picker disabled-day highlighting
     const availableDates = useMemo(() => (currentType === 'day' ? new Set(dates) : undefined), [currentType, dates]);
-    const toAvailableDates = useMemo(
-        () => (currentType === 'day' ? new Set(fromVal ? dates.filter((d) => d >= fromVal) : dates) : undefined),
-        [currentType, dates, fromVal]
-    );
+    const toAvailableDates = useMemo(() => (currentType === 'day' ? new Set(fromVal ? dates.filter((d) => d >= fromVal) : dates) : undefined), [currentType, dates, fromVal]);
     const availableMonths = useMemo(() => (currentType === 'month' ? new Set(dates) : undefined), [currentType, dates]);
-    const toAvailableMonths = useMemo(
-        () => (currentType === 'month' ? new Set(fromVal ? dates.filter((d) => d >= fromVal) : dates) : undefined),
-        [currentType, dates, fromVal]
-    );
+    const toAvailableMonths = useMemo(() => (currentType === 'month' ? new Set(fromVal ? dates.filter((d) => d >= fromVal) : dates) : undefined), [currentType, dates, fromVal]);
 
     const btnStyle = (active: boolean): React.CSSProperties => ({
         flexShrink: 0,
@@ -204,26 +192,27 @@ export function FileSelector({station, dateRange, setDateRange}: {station: strin
                 <div style={{flex: '0 0 auto', minWidth: '100px'}}>
                     <Select options={typeOptions} value={selectedType} onChange={onTypeChange} isSearchable={false} />
                 </div>
-                {!showRange && (
+                {!showRange ? <div style={{flex: 1, minWidth: 0}}>{fromPicker()}</div> : null}
+            </div>
+            {/* Row 2 (range mode): from → to + collapse button */}
+            <div style={{display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px'}}>
+                {showRange ? (
                     <>
-                        <div style={{flex: 1, minWidth: 0}}>{fromPicker()}</div>
-                        <button onClick={toggleRange} title={t('range_expand')} style={btnStyle(false)}>
+                        <div style={{flex: 1, minWidth: 0}}>{fromPicker(t('from'))}</div>
+                        <span style={{flexShrink: 0}}>→</span>
+                        <div style={{flex: 1, minWidth: 0}}>{toPicker(t('to'))}</div>
+                        <button onClick={toggleRange} title={t('range_collapse')} style={btnStyle(true)}>
+                            ✕
+                        </button>
+                    </>
+                ) : (
+                    <>
+                        <button onClick={toggleRange} title={t('range_expand')} style={{...btnStyle(false), marginLeft: 'auto'}}>
                             📅→📅
                         </button>
                     </>
                 )}
             </div>
-            {/* Row 2 (range mode): from → to + collapse button */}
-            {showRange && (
-                <div style={{display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px'}}>
-                    <div style={{flex: 1, minWidth: 0}}>{fromPicker(t('from'))}</div>
-                    <span style={{flexShrink: 0}}>→</span>
-                    <div style={{flex: 1, minWidth: 0}}>{toPicker(t('to'))}</div>
-                    <button onClick={toggleRange} title={t('range_collapse')} style={btnStyle(true)}>
-                        ✕
-                    </button>
-                </div>
-            )}
         </>
     );
 }
