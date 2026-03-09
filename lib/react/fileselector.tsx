@@ -54,7 +54,7 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
     setDateRange: (r: {start: string; end: string}) => void;
     layers?: string[];
 }) {
-    const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
+    const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher, {revalidateOnFocus: false});
     const {t} = useTranslation('common', {keyPrefix: 'period'});
     const {t: tLayer} = useTranslation('common', {keyPrefix: 'layers'});
     const formatPartialOption = (opt: Option) => <FormatPartialOption opt={opt} title={t('partial_option_title')} />;
@@ -87,7 +87,7 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
                 const all = (lData?.all || []) as string[];
                 const inputVals = all
                     .map((path: string) => {
-                        const m = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)\./);
+                        const m = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)(?:\.|$)/);
                         return m ? dateToInput(type, m[2]) : null;
                     })
                     .filter(Boolean) as string[];

@@ -32,6 +32,7 @@ export interface ArrowFileType {
     stations?: string[];
     expectedGap?: number[];
     numStations?: number[];
+    layerMask?: Uint8Array;
 }
 
 interface LayerProgress {

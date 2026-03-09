@@ -133,7 +133,7 @@ export async function searchMatchingArrowFiles(
 
     let layerPart: string;
     if (includeCombined && nonCombined.length > 0) layerPart = `(?:\\.(${nonCombined.join('|')}))?`;
-    else if (!includeCombined) layerPart = `\\.(?:${nonCombined.join('|')})`;
+    else if (!includeCombined) layerPart = `\\.(${nonCombined.join('|')})`;
     else layerPart = '';
 
     const fileMatcher = new RegExp(`day\\.([0-9-]+)${layerPart}\\.arrow\\.gz$`);

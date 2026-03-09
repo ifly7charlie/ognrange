@@ -71,7 +71,7 @@ export function AvailableFiles({
     setFile: (file: string) => void;
     layer?: string;
 }) {
-    const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
+    const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher, {revalidateOnFocus: false});
     const {t} = useTranslation();
 
     // Collect file paths for the requested layer (or union all layers if none / 'all')

@@ -38,23 +38,33 @@ export function getObjectFromH3s(displayedH3s: DisplayedH3sType, h3: string): Pi
         return {type: 'none'};
     }
 
-    const [h3lo, h3hi] = h3IndexToSplitLong(h3);
+    // h3IndexToSplitLong returns signed int32 values; Uint32Array reads unsigned.
+    // >>> 0 converts to unsigned so both sides of the comparison are consistent.
+    const [h3lo_raw, h3hi_raw] = h3IndexToSplitLong(h3);
+    const h3lo = h3lo_raw >>> 0;
+    const h3hi = h3hi_raw >>> 0;
 
-    // Find the first h3hi in the file
+    // H3 cell indices always have h3hi < 2^31 (mode bits = 0x08), so signed/unsigned
+    // are identical — binary search on Uint32Array is safe for h3hi.
     const index = _sortedIndexOf(displayedH3s.d.h3hi, h3hi);
-    // none found then it's not in the file
     if (index == -1) {
         return {type: 'none'};
     }
 
-    // We now know the range it could be in
     const lastIndex = _sortedLastIndex(displayedH3s.d.h3hi, h3hi);
 
-    // All the rows with h3hi
+    // h3lo values within a bucket are sorted by signed int32 order (as written by the
+    // backend), but Uint32Array presents them as unsigned. For values with bit 31 set
+    // the signed sort position differs from unsigned sort position, so binary search
+    // would fail. Linear scan within the (typically small) bucket is always correct.
     const subset = displayedH3s.d.h3lo.subarray(index, lastIndex);
-
-    // If one matches
-    const subIndex = _sortedIndexOf(subset, h3lo);
+    let subIndex = -1;
+    for (let k = 0; k < subset.length; k++) {
+        if (subset[k] === h3lo) {
+            subIndex = k;
+            break;
+        }
+    }
     if (subIndex == -1) {
         return {type: 'none'};
     }

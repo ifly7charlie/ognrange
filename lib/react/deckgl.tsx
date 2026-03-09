@@ -42,6 +42,20 @@ const altitudeFunctions = {
 
 import {useStationMeta, StationMeta} from './stationmeta';
 import {useDisplayedH3s} from './displayedh3s';
+import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
+
+// Precomputed colour for every possible layerMask bitmask value (0–255)
+const layerMaskColors: [number, number, number, number][] = Array.from({length: 256}, (_, mask) => {
+    if (!mask) return [128, 128, 128, 200];
+    let r = 0, g = 0, b = 0, n = 0;
+    for (const layer of ALL_LAYERS) {
+        if (mask & (1 << LAYER_BIT[layer])) {
+            const [lr, lg, lb] = LAYER_COLOR[layer];
+            r += lr; g += lg; b += lb; n++;
+        }
+    }
+    return n > 0 ? [Math.round(r / n), Math.round(g / n), Math.round(b / n), 200] : [128, 128, 128, 200];
+});
 
 function DeckGLOverlay(
     props: MapboxOverlayProps & {
@@ -106,7 +120,8 @@ function makeLayers(
         primaryStation: (f, i) => {
             const s = f.stations?.[i];
             return s ? [parseInt(s.slice(0, 1), 36) * 7, parseInt(s.slice(1, 2), 36) * 7, parseInt(s.slice(2, 3), 36) * 7, 128] : [255, 0, 255, 128];
-        }
+        },
+        layerCoverage: (f, i) => layerMaskColors[f.layerMask?.[i] ?? 0]
     };
 
     // How do we choose what to show in the hexagon layer

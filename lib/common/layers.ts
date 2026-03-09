@@ -69,6 +69,36 @@ export function getWriteLayers(layer: Layer): Layer[] {
     return [layer];
 }
 
+// Bit position for each layer in the layerMask coverage bitmask (Uint8, max 7 bits)
+export const LAYER_BIT: Record<Layer, number> = {
+    [Layer.COMBINED]: 0,
+    [Layer.FLARM]:    1,
+    [Layer.ADSB]:     2,
+    [Layer.ADSL]:     3,
+    [Layer.FANET]:    4,
+    [Layer.PAW]:      5,
+    [Layer.OGNTRK]:   6
+};
+
+// Display color per layer for the layerCoverage visualisation [R, G, B]
+export const LAYER_COLOR: Record<Layer, [number, number, number]> = {
+    [Layer.COMBINED]: [155,  89, 182], // purple
+    [Layer.FLARM]:    [230, 126,  34], // orange
+    [Layer.ADSB]:     [ 26, 188, 156], // emerald
+    [Layer.ADSL]:     [ 52, 152, 219], // blue
+    [Layer.FANET]:    [ 46, 204, 113], // green
+    [Layer.PAW]:      [241, 196,  15], // yellow
+    [Layer.OGNTRK]:   [231,  76,  60]  // red
+};
+
+/** Returns the layerMask bit value for a given Arrow file URL */
+export function layerBitFromUrl(url: string): number {
+    for (const [layer, bit] of Object.entries(LAYER_BIT)) {
+        if (url.endsWith(`.${layer}.arrow`)) return 1 << bit;
+    }
+    return 1 << LAYER_BIT[Layer.COMBINED];
+}
+
 /** Parse ENABLED_LAYERS env var. Returns null to mean "all layers enabled" */
 export function parseEnabledLayers(envValue: string | undefined): Set<Layer> | null {
     if (!envValue) return null;

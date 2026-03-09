@@ -49,7 +49,9 @@
         "avgGap": "Average between packet gap",
         "expectedGap": "Expected between packet gap",
         "stations": "Number of stations",
-        "primaryStation": "Primary station"
+        "primaryStation": "Primary station",
+        "layerCoverage": "Protocol coverage type",
+        "layerCoverageBlend": "Overlapping protocols show blended colours"
     },
     "stations": {
         "global": "All stations (global)",
