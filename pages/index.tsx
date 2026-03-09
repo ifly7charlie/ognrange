@@ -203,13 +203,12 @@ export default function CombinePage(props) {
     const [dockSplit, setDockSplit] = useState<string | number>('25vw');
     const [dockPosition, setDockPosition] = useState<'right' | 'bottom'>('right');
     const [dockExpanded, setDockExpanded] = useState(true);
-    const [viewHeight, setViewHeight] = useState('100vh');
+    const [panelLayoutReady, setPanelLayoutReady] = useState(false);
 
     useIsomorphicLayoutEffect(() => {
         const mql = window.matchMedia('(orientation: portrait)');
         const updatePosition = () => {
             setDockPosition(mql.matches ? 'bottom' : 'right');
-            setViewHeight(`${window.innerHeight}px`);
         };
         updatePosition();
         mql.addEventListener('change', updatePosition);
@@ -222,9 +221,9 @@ export default function CombinePage(props) {
                 <title>{t('page_title')}</title>
             </Head>
 
-            <div style={{width: '100vw', height: viewHeight}}>
-                <Group orientation={dockPosition === 'right' ? 'horizontal' : 'vertical'} style={{height: '100%'}}>
-                    <Panel defaultSize={'70vw'}>
+            <div style={{width: '100vw', height: '100dvh'}}>
+                <Group orientation={dockPosition === 'right' ? 'horizontal' : 'vertical'} style={{height: '100%', visibility: panelLayoutReady ? undefined : 'hidden'}}>
+                    <Panel defaultSize="75%">
                         <div style={{width: '100%', height: '100%'}}>
                             <CoverageMap //
                                 env={props.env}
@@ -247,11 +246,12 @@ export default function CombinePage(props) {
                     </Panel>
                     <Separator style={dockPosition === 'right' ? {width: '6px', background: '#ccc', cursor: 'col-resize'} : {height: '6px', background: '#ccc', cursor: 'row-resize'}} />
                     <Panel
-                        defaultSize={dockSplit}
+                        defaultSize="25%"
                         minSize={100}
                         collapsible
                         collapsedSize={0}
                         onResize={(size) => {
+                            setPanelLayoutReady(true);
                             setDockSplit(size.asPercentage);
                             setDockExpanded(size.asPercentage > 10);
                         }}
