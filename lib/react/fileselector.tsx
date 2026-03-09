@@ -87,7 +87,7 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
                 const all = (lData?.all || []) as string[];
                 const inputVals = all
                     .map((path: string) => {
-                        const m = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)$/);
+                        const m = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)\./);
                         return m ? dateToInput(type, m[2]) : null;
                     })
                     .filter(Boolean) as string[];
