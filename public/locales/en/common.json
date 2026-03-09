@@ -2,10 +2,24 @@
     "selectors": {
         "station": "Select station to display",
         "period": "Select time period to display",
-        "visualisation": "Select visualisation"
+        "visualisation": "Select visualisation",
+        "layers": "Select protocol layers"
+    },
+    "layers": {
+        "combined": "Combined",
+        "flarm": "FLARM",
+        "adsb": "ADS-B",
+        "adsl": "ADS-L",
+        "fanet": "FANET",
+        "paw": "PAW",
+        "ogntrk": "OGN Tracker"
     },
     "period": {
         "title": "Select time period to display",
+        "from": "From",
+        "to": "To",
+        "range_expand": "Select date range",
+        "range_collapse": "Collapse date range",
         "year": "Year (Northern Hemisphere)",
         "yearnz": "Year (Southern Hemisphere)",
         "month": "Month",

@@ -1,59 +1,229 @@
-import {useState, useRef, useMemo, useEffect, useCallback} from 'react';
+import {useMemo, useCallback, useState} from 'react';
 
 import useSWR from 'swr';
 import {useTranslation} from 'next-i18next';
+import Select, {SingleValue} from 'react-select';
+import {DayPicker, MonthPicker} from './datepicker';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-import {map as _map, find as _find} from 'lodash';
+type PeriodType = 'year' | 'yearnz' | 'month' | 'day';
+const ALL_PERIOD_TYPES: PeriodType[] = ['year', 'yearnz', 'month', 'day'];
 
-import Select from 'react-select';
+type Option = {value: string; label: string};
 
-export function FileSelector({station, file, setFile}) {
-    // Load the associated index
-    //    const DATA_URL = env.NEXT_PUBLIC_DATA_URL || process.env.NEXT_PUBLIC_DATA_URL || '/data/';
+function parseDateParam(s: string): {type: PeriodType; date: string | null} {
+    const dot = s.indexOf('.');
+    if (dot === -1) return {type: s as PeriodType, date: null};
+    return {type: s.slice(0, dot) as PeriodType, date: s.slice(dot + 1)};
+}
+
+function dateToInput(type: PeriodType, date: string): string {
+    return type === 'yearnz' ? date.replace('nz', '') : date;
+}
+
+function inputToDate(type: PeriodType, value: string): string {
+    return type === 'yearnz' ? value + 'nz' : value;
+}
+
+function labelFor(type: PeriodType, inputVal: string): string {
+    if (type === 'month') {
+        const [y, m] = inputVal.split('-');
+        return new Date(+y, +m - 1).toLocaleDateString(undefined, {month: 'short', year: 'numeric'});
+    }
+    if (type === 'day') {
+        // Append midday to avoid timezone-driven date-shift
+        return new Date(inputVal + 'T12:00:00').toLocaleDateString(undefined, {weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'});
+    }
+    return inputVal; // year / yearnz: just show the year number
+}
+
+export function FileSelector({station, dateRange, setDateRange}: {station: string | null; dateRange: {start: string; end: string}; setDateRange: (r: {start: string; end: string}) => void}) {
     const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
     const {t} = useTranslation('common', {keyPrefix: 'period'});
 
-    // Display the right ones to the user
-    const [availableFiles, selectedFile] = useMemo((): [any, any] => {
-        const files = data?.files || {year: {current: 'year', all: ['year']}};
-        const selects = _map(files, (value, key) => {
-            return {
-                label: t(key),
-                options: _map(value.all, (cfile) => {
-                    // latest is also symbolic linked, we use that instead
-                    if (cfile == value.current) {
-                        return {
-                            label: t('current_' + key, {value: (cfile.match(/([0-9-]+)$/) || [cfile])[0]}),
-                            value: key
-                        };
-                    } else {
-                        return {
-                            label: (cfile.match(/([0-9-]+)$/) || [cfile])[0],
-                            value: (cfile.match(/((day|month|year|yearnz)\.[0-9-]+[nz]*)$/) || [cfile])[0]
-                        };
-                    }
-                }).reverse()
-            };
-        }).reverse();
-        const effectiveFile = file && file != '' ? file : 'year';
-        const [type] = effectiveFile.split('.') || [effectiveFile];
-        const selected = selects
-            ? _find(_find(selects, {label: t(type)})?.options || [], (o) => {
-                  return effectiveFile.slice(-o.value.length) == o.value;
-              })
-            : null;
+    const [showRange, setShowRange] = useState(() => dateRange.start !== dateRange.end);
 
-        return [selects, selected];
-    }, [file, data?.files?.day?.current, station]);
+    const from = parseDateParam(dateRange.start);
+    const to = parseDateParam(dateRange.end);
+    const currentType = from.type;
 
-    const selectFileOnChange = useCallback((v) => setFile(v.value), [false]);
+    const {availableTypes, datesByType} = useMemo(() => {
+        const files = data?.files || {};
+        const datesByType: Record<string, string[]> = {};
+        const availableTypes: PeriodType[] = [];
+
+        for (const type of ALL_PERIOD_TYPES) {
+            const layerData = files[type];
+            if (!layerData) continue;
+            const combined = (layerData?.combined ?? layerData) as {all?: string[]};
+            const all = combined?.all || [];
+            if (!all.length) continue;
+
+            const inputVals = all
+                .map((path: string) => {
+                    const m = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)$/);
+                    return m ? dateToInput(type, m[2]) : null;
+                })
+                .filter(Boolean)
+                .sort() as string[];
+
+            if (inputVals.length) {
+                availableTypes.push(type);
+                datesByType[type] = inputVals;
+            }
+        }
+
+        if (!availableTypes.length) availableTypes.push('year');
+        return {availableTypes, datesByType};
+    }, [data?.files]);
+
+    const dates = datesByType[currentType] || [];
+    const latestMax = dates[dates.length - 1];
+
+    // '' means latest/current (symlink)
+    const fromVal = from.date !== null ? dateToInput(currentType, from.date) : '';
+    const toVal = to.date !== null ? dateToInput(to.type, to.date) : '';
+
+    const latestLabel = latestMax ? t('current_' + currentType, {value: latestMax}) : t(currentType);
+
+    const typeOptions: Option[] = availableTypes.map((pt) => ({value: pt, label: t(pt)}));
+    const selectedType = typeOptions.find((o) => o.value === currentType) ?? null;
+
+    const fromOptions: Option[] = useMemo(
+        () => [{value: '', label: latestLabel}, ...[...dates].reverse().map((d) => ({value: d, label: labelFor(currentType, d)}))],
+        [dates, currentType, latestLabel]
+    );
+
+    const toOptions: Option[] = useMemo(
+        () => [...(fromVal ? dates.filter((d) => d >= fromVal) : dates)].reverse().map((d) => ({value: d, label: labelFor(currentType, d)})),
+        [dates, currentType, fromVal]
+    );
+
+    const selectedFrom = fromOptions.find((o) => o.value === fromVal) ?? null;
+    const selectedTo = toOptions.find((o) => o.value === toVal) ?? null;
+
+    const onTypeChange = useCallback(
+        (opt: SingleValue<Option>) => {
+            if (opt) {
+                setDateRange({start: opt.value, end: opt.value});
+                setShowRange(false);
+            }
+        },
+        [setDateRange]
+    );
+
+    const onFromChange = useCallback(
+        (opt: SingleValue<Option>) => {
+            const value = opt?.value ?? '';
+            if (!value) {
+                setDateRange({start: currentType, end: currentType});
+            } else {
+                const param = `${currentType}.${inputToDate(currentType, value)}`;
+                setDateRange({start: param, end: showRange ? dateRange.end : param});
+            }
+        },
+        [currentType, showRange, dateRange.end, setDateRange]
+    );
+
+    const onToChange = useCallback(
+        (opt: SingleValue<Option>) => {
+            const value = opt?.value ?? '';
+            if (!value) {
+                setDateRange({start: dateRange.start, end: currentType});
+            } else {
+                setDateRange({start: dateRange.start, end: `${currentType}.${inputToDate(currentType, value)}`});
+            }
+        },
+        [currentType, dateRange.start, setDateRange]
+    );
+
+    const toggleRange = useCallback(() => {
+        if (showRange) {
+            setDateRange({start: dateRange.start, end: dateRange.start});
+        }
+        setShowRange((r) => !r);
+    }, [showRange, dateRange.start, setDateRange]);
+
+    // Shared picker callback (day and month both use YYYY-MM-DD / YYYY-MM string API)
+    const onFromChangePicker = useCallback(
+        (v: string | null) => {
+            const param = v ? `${currentType}.${v}` : currentType;
+            setDateRange({start: param, end: showRange ? dateRange.end : param});
+        },
+        [currentType, showRange, dateRange.end, setDateRange]
+    );
+    const onToChangePicker = useCallback(
+        (v: string | null) => {
+            setDateRange({start: dateRange.start, end: v ? `${currentType}.${v}` : currentType});
+        },
+        [currentType, dateRange.start, setDateRange]
+    );
+
+    // Available date/month sets for picker disabled-day highlighting
+    const availableDates = useMemo(() => (currentType === 'day' ? new Set(dates) : undefined), [currentType, dates]);
+    const toAvailableDates = useMemo(
+        () => (currentType === 'day' ? new Set(fromVal ? dates.filter((d) => d >= fromVal) : dates) : undefined),
+        [currentType, dates, fromVal]
+    );
+    const availableMonths = useMemo(() => (currentType === 'month' ? new Set(dates) : undefined), [currentType, dates]);
+    const toAvailableMonths = useMemo(
+        () => (currentType === 'month' ? new Set(fromVal ? dates.filter((d) => d >= fromVal) : dates) : undefined),
+        [currentType, dates, fromVal]
+    );
+
+    const btnStyle = (active: boolean): React.CSSProperties => ({
+        flexShrink: 0,
+        cursor: 'pointer',
+        background: active ? '#d0e8ff' : 'transparent',
+        border: '1px solid #ccc',
+        borderRadius: '4px',
+        padding: '4px 6px',
+        fontSize: '13px',
+        lineHeight: 1,
+        whiteSpace: 'nowrap'
+    });
+
+    const fromPicker = (placeholder?: string) => {
+        if (currentType === 'day') return <DayPicker value={fromVal || null} onChange={onFromChangePicker} availableDates={availableDates} placeholder={placeholder ?? latestLabel} />;
+        if (currentType === 'month') return <MonthPicker value={fromVal || null} onChange={onFromChangePicker} availableMonths={availableMonths} placeholder={placeholder ?? latestLabel} />;
+        return <Select options={fromOptions} value={selectedFrom} onChange={onFromChange} placeholder={placeholder} />;
+    };
+
+    const toPicker = (placeholder?: string) => {
+        if (currentType === 'day') return <DayPicker value={toVal || null} onChange={onToChangePicker} availableDates={toAvailableDates} placeholder={placeholder} />;
+        if (currentType === 'month') return <MonthPicker value={toVal || null} onChange={onToChangePicker} availableMonths={toAvailableMonths} placeholder={placeholder} />;
+        return <Select options={toOptions} value={selectedTo} onChange={onToChange} placeholder={placeholder} />;
+    };
 
     return (
         <>
             <b>{t('title')}:</b>
-            <Select options={availableFiles} value={selectedFile} onChange={selectFileOnChange} />
+            {/* Row 1: type selector + date picker (single mode only) + range expand button */}
+            <div style={{display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px'}}>
+                <div style={{flex: '0 0 auto', minWidth: '100px'}}>
+                    <Select options={typeOptions} value={selectedType} onChange={onTypeChange} isSearchable={false} />
+                </div>
+                {!showRange && (
+                    <>
+                        <div style={{flex: 1, minWidth: 0}}>{fromPicker()}</div>
+                        <button onClick={toggleRange} title={t('range_expand')} style={btnStyle(false)}>
+                            📅→📅
+                        </button>
+                    </>
+                )}
+            </div>
+            {/* Row 2 (range mode): from → to + collapse button */}
+            {showRange && (
+                <div style={{display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px'}}>
+                    <div style={{flex: 1, minWidth: 0}}>{fromPicker(t('from'))}</div>
+                    <span style={{flexShrink: 0}}>→</span>
+                    <div style={{flex: 1, minWidth: 0}}>{toPicker(t('to'))}</div>
+                    <button onClick={toggleRange} title={t('range_collapse')} style={btnStyle(true)}>
+                        ✕
+                    </button>
+                </div>
+            )}
         </>
     );
 }

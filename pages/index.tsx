@@ -4,7 +4,10 @@ import {useSearchParams} from 'next/navigation';
 import dynamic from 'next/dynamic';
 import Head from 'next/head';
 
-import {useState, useMemo, useRef, useCallback, useEffect} from 'react';
+import {useState, useMemo, useRef, useCallback, useEffect, useLayoutEffect} from 'react';
+
+// Runs before paint on the client; falls back to useEffect during SSR to avoid warnings
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
 import {useTranslation} from 'next-i18next';
 import {serverSideTranslations} from 'next-i18next/serverSideTranslations';
@@ -62,7 +65,12 @@ export default function CombinePage(props) {
     const lat = params.get('lat');
     const lng = params.get('lng');
     const zoom = params.get('zoom');
-    const file = params.get('file')?.toString() || 'year';
+    const file = params.get('file')?.toString();
+    const dateStart = params.get('dateStart') || file || 'year';
+    const dateEnd = params.get('dateEnd') || file || 'year';
+    const dateRange = {start: dateStart, end: dateEnd};
+    const layersParam = params.get('layers') || 'combined';
+    const layers = layersParam.split(',').map((s) => s.trim()).filter(Boolean);
     const urlH3 = params.get('h3')?.toString();
 
     // What the map is looking at
@@ -113,16 +121,6 @@ export default function CombinePage(props) {
         [stationMeta, station]
     );
 
-    const setFile = useCallback(
-        (newFile: string) => {
-            if (file === newFile) {
-                newFile = '';
-            }
-            updateUrl({file: newFile});
-        },
-        [file]
-    );
-
     const setVisualisation = useCallback(
         (newVisualisation: string) => {
             if (visualisation == newVisualisation) {
@@ -161,6 +159,20 @@ export default function CombinePage(props) {
         [params]
     );
 
+    const setDateRange = useCallback(
+        (r: {start: string; end: string}) => {
+            updateUrl({dateStart: r.start, dateEnd: r.end, file: ''});
+        },
+        [updateUrl]
+    );
+
+    const setLayers = useCallback(
+        (l: string[]) => {
+            updateUrl({layers: l.join(',')});
+        },
+        [updateUrl]
+    );
+
     const delayedUpdate = useRef(
         _debounce((vs) => {
             const updates = {
@@ -190,7 +202,7 @@ export default function CombinePage(props) {
     const [dockExpanded, setDockExpanded] = useState(true);
     const [viewHeight, setViewHeight] = useState('100vh');
 
-    useEffect(() => {
+    useIsomorphicLayoutEffect(() => {
         const mql = window.matchMedia('(orientation: portrait)');
         const updatePosition = () => {
             setDockPosition(mql.matches ? 'bottom' : 'right');
@@ -209,11 +221,11 @@ export default function CombinePage(props) {
 
             <div style={{width: '100vw', height: viewHeight}}>
                 <Group orientation={dockPosition === 'right' ? 'horizontal' : 'vertical'} style={{height: '100%'}}>
-                    <Panel minSize="30%">
+                    <Panel minSize={30}>
                         <div style={{width: '100%', height: '100%'}}>
                             <CoverageMap //
                                 env={props.env}
-                                file={file}
+                                file={dateStart}
                                 station={station}
                                 setStation={setStation}
                                 flyToStation={flyToStation}
@@ -232,10 +244,10 @@ export default function CombinePage(props) {
                     </Panel>
                     <Separator style={dockPosition === 'right' ? {width: '6px', background: '#ccc', cursor: 'col-resize'} : {height: '6px', background: '#ccc', cursor: 'row-resize'}} />
                     <Panel
-                        defaultSize="25%"
-                        minSize="10%"
+                        defaultSize={25}
+                        minSize={10}
                         collapsible
-                        collapsedSize="0%"
+                        collapsedSize={0}
                         onResize={(size) => {
                             setDockSplit(size.asPercentage);
                             setDockExpanded(size.asPercentage > 2);
@@ -248,8 +260,11 @@ export default function CombinePage(props) {
                                 setStation={setStation}
                                 visualisation={visualisation}
                                 setVisualisation={setVisualisation}
-                                file={file}
-                                setFile={setFile}
+                                dateRange={dateRange}
+                                setDateRange={setDateRange}
+                                layers={layers}
+                                setLayers={setLayers}
+                                isPresenceOnly={displayedH3s.isPresenceOnly}
                                 hoverDetails={hoverDetails}
                                 setSelectedDetails={setSelectedDetails}
                                 selectedDetails={selectedDetails}

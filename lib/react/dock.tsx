@@ -6,23 +6,31 @@ import {CoverageDetails} from './coveragedetails';
 import {VisualisationSelector} from './visualisationselector';
 import {FileSelector} from './fileselector';
 import {StationSelector} from './stationselector';
+import {LayerSelector} from './layerselector';
 
 import type {PickableDetails} from './pickabledetails';
 
 export function Dock(props: {
     setStation: (station: string) => void; //
     station: string;
-    setFile: (file: string) => void;
-    file: string;
+    dateRange: {start: string; end: string};
+    setDateRange: (r: {start: string; end: string}) => void;
+    layers: string[];
+    setLayers: (l: string[]) => void;
     hoverDetails: PickableDetails;
     selectedDetails: PickableDetails;
     setSelectedDetails: (sd?: PickableDetails) => void;
     setVisualisation: (visualisation: string) => void;
     visualisation: string;
+    isPresenceOnly?: boolean;
     updateUrl: (a: Record<string, string>) => void;
     expanded: boolean;
     env: any;
 }) {
+    // Derive file/setFile for CoverageDetails backward compat
+    const file = props.dateRange?.start ?? 'year';
+    const setFile = (f: string) => props.setDateRange({start: f, end: f});
+
     return (
         <>
             <div>
@@ -34,9 +42,11 @@ export function Dock(props: {
             <div style={{padding: '7px'}}>
                 <StationSelector station={props.station} setStation={props.setStation} updateUrl={props.updateUrl} />
                 <br />
-                <FileSelector station={props.station} setFile={props.setFile} file={props.file} />
+                <LayerSelector layers={props.layers} setLayers={props.setLayers} />
                 <br />
-                <VisualisationSelector station={props.station} setVisualisation={props.setVisualisation} visualisation={props.visualisation} />
+                <FileSelector station={props.station} dateRange={props.dateRange} setDateRange={props.setDateRange} />
+                <br />
+                <VisualisationSelector station={props.station} setVisualisation={props.setVisualisation} visualisation={props.visualisation} isPresenceOnly={props.isPresenceOnly} />
                 <br />
                 <hr />
                 {props.expanded ? (
@@ -46,8 +56,8 @@ export function Dock(props: {
                         setSelectedDetails={props.setSelectedDetails}
                         station={props.station}
                         setStation={props.setStation}
-                        file={props.file}
-                        setFile={props.setFile}
+                        file={file}
+                        setFile={setFile}
                         env={props.env}
                     />
                 ) : null}

@@ -6,6 +6,8 @@ import {EpochMS, StationName, H3LockKey} from '../bin/types';
 
 import {Accumulators} from '../bin/accumulators';
 import {StationDetails} from '../bin/stationstatus';
+import {Layer, ALL_LAYERS} from '../common/layers';
+import {ENABLED_LAYERS} from '../common/config';
 
 import {backupDatabase as backupDatabaseInternal} from './backupdatabase';
 import {writeH3ToDB, flushH3DbOps} from './h3storage';
@@ -89,8 +91,8 @@ export async function rollupStartup(station: StationName, accumulators: Accumula
 export async function rollupAbortStartup() {
     return postMessage({station: 'all', action: 'abortstartup', now: Date.now() as EpochMS});
 }
-export async function rollupDatabase(station: StationName, commonArgs: RollupDatabaseArgs): Promise<RollupResult | void> {
-    return postMessage({station, action: 'rollup', commonArgs, now: Date.now() as EpochMS});
+export async function rollupDatabase(station: StationName, commonArgs: RollupDatabaseArgs, layer?: Layer): Promise<RollupResult | void> {
+    return postMessage({station, action: 'rollup', commonArgs, now: Date.now() as EpochMS, ...(layer !== undefined ? {layer} : {})});
 }
 
 export async function purgeDatabase(station: StationName): Promise<any> {
@@ -143,9 +145,17 @@ if (!isMainThread) {
             try {
                 db = await getDbThrow(task.station);
                 switch (task.action) {
-                    case 'rollup':
-                        out = await rollupDatabaseInternal(db, task.commonArgs);
+                    case 'rollup': {
+                        out = await rollupDatabaseInternal(db, task.commonArgs, Layer.COMBINED);
+                        const layersToExport = (ENABLED_LAYERS ? [...ENABLED_LAYERS] : [...ALL_LAYERS]).filter((l) => l !== Layer.COMBINED);
+                        for (const layer of layersToExport) {
+                            const r = await rollupDatabaseInternal(db, task.commonArgs, layer);
+                            out.arrowRecords += r.arrowRecords;
+                            out.elapsed += r.elapsed;
+                            out.operations += r.operations;
+                        }
                         break;
+                    }
                     case 'abortstartup':
                         out = {success: true};
                         abortStartup = true;

@@ -181,7 +181,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
                     await purgeDatabase(station);
                     rollupStats.last!.databases++;
                 } else {
-                    // Or if it is valid we roll it up
+                    // Or if it is valid we roll it up (worker handles all layers internally)
                     const r = await rollupDatabase(station, {...commonArgs, stationMeta});
                     if (r) {
                         rollupStats.last!.sumElapsed += r.elapsed;

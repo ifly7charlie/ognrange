@@ -4,10 +4,12 @@
 
 import {ARROW_PATH, ROLLUP_PERIOD_MINUTES} from '../../../lib/common/config';
 import {ignoreStation} from '../../../lib/common/ignorestation';
+import {Layer} from '../../../lib/common/layers';
 
 import {readdirSync} from 'fs';
 
-const fileMatcher = /\.(day|month|year|yearnz)\.([0-9-]+)([nz]*)\.arrow\.gz$/;
+const layerPattern = Object.values(Layer).join('|');
+const fileMatcher = new RegExp(`\\.(day|month|year|yearnz)\\.([0-9-]+[nz]*)(?:\\.(${layerPattern}))?\\.arrow\\.gz$`);
 
 export default async function getH3Details(req, res) {
     const stationName: string = req.query.station;
@@ -39,15 +41,17 @@ export default async function getH3Details(req, res) {
             if (!parts || parts.length < 2) {
                 return null;
             }
-            return {fileName, type: parts[1], date: parts[2]};
+            return {fileName, type: parts[1], date: parts[2], layerName: parts[3] || 'combined'};
         })
         .filter((parts) => parts && parts.type && parts.date)
         .sort((a, b) => a.date.localeCompare(b.date))
         .reduce((output, parts) => {
-            const pathToUse = `${stationName}/${stationName}.${parts.type}.${parts.date}`;
-            output[parts.type] ??= {all: []};
-            output[parts.type].all.push(pathToUse);
-            output[parts.type].current = pathToUse;
+            const {type, date, layerName} = parts;
+            const pathToUse = `${stationName}/${stationName}.${type}.${date}${layerName === 'combined' ? '' : '.' + layerName}`;
+            output[type] ??= {};
+            output[type][layerName] ??= {all: []};
+            output[type][layerName].all.push(pathToUse);
+            output[type][layerName].current = pathToUse;
             return output;
         }, {} as any);
 

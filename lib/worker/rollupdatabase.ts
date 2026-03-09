@@ -27,6 +27,7 @@ export type RollupDatabaseCommand = {
     station: StationName;
     now: EpochMS;
     commonArgs: RollupDatabaseArgs;
+    layer?: Layer;
 };
 
 export interface RollupResult extends RollupWorkerResult {
@@ -71,6 +72,7 @@ export async function rollupDatabaseInternal(
     //
     const startTime = Date.now();
     const name = db.ognStationName;
+    const layerSuffix = layer === Layer.COMBINED ? '' : `.${layer}`;
     let currentMeta = {};
     if (needValidPurge && !validStations) {
         throw new Error(`${db.ognStationName}: invalid arguments to rollupDatabaseInternal( needValidPurge && ! validStations)`);
@@ -96,7 +98,7 @@ export async function rollupDatabaseInternal(
         .map((key: string): any => {
             const r = key as AccumulatorTypeString;
             const par = accumulators[r];
-            const accumulatorOutputName = `${OUTPUT_PATH}${name}/${name}.${r}.${accumulators[r]!.file}.arrow`;
+            const accumulatorOutputName = `${OUTPUT_PATH}${name}/${name}.${r}.${accumulators[r]!.file}${layerSuffix}.arrow`;
             return {
                 type: r,
                 bucket: par!.bucket,
@@ -333,7 +335,7 @@ export async function rollupDatabaseInternal(
 
         // We are going to write out our accumulators this saves us writing it
         // in a different process and ensures that we always write the correct thing
-        const accumulatorName = `${name}/${name}.${rType}.${accumulators[rType]!.file}`;
+        const accumulatorName = `${name}/${name}.${rType}.${accumulators[rType]!.file}${layerSuffix}`;
 
         // Keep a record of all the rollups in the meta
         // each record
@@ -369,18 +371,18 @@ export async function rollupDatabaseInternal(
             const output = (stationMeta ?? {}) as any;
             output.lastOutputFile = now;
             output.rollups = r.meta;
-            writeFileSync(OUTPUT_PATH + `${name}/${name}.${rType}.${accumulators[rType]!.file}.json`, JSON.stringify(output, null, 2));
-            symlink(`${name}.${rType}.${accumulators[rType]!.file}.json`, OUTPUT_PATH + `${name}/${name}.${rType}.json`);
+            writeFileSync(OUTPUT_PATH + `${name}/${name}.${rType}.${accumulators[rType]!.file}${layerSuffix}.json`, JSON.stringify(output, null, 2));
+            symlink(`${name}.${rType}.${accumulators[rType]!.file}${layerSuffix}.json`, OUTPUT_PATH + `${name}/${name}.${rType}${layerSuffix}.json`);
         } catch (err) {
             console.log('rollup json metadata write failed', err);
         }
 
         // link it all up for latest
-        symlink(`${name}.${r.type}.${accumulators[rType]!.file}.arrow.gz`, OUTPUT_PATH + `${name}/${name}.${r.type}.arrow.gz`);
+        symlink(`${name}.${r.type}.${accumulators[rType]!.file}${layerSuffix}.arrow.gz`, OUTPUT_PATH + `${name}/${name}.${r.type}${layerSuffix}.arrow.gz`);
         if (UNCOMPRESSED_ARROW_FILES) {
-            symlink(`${name}.${r.type}.${accumulators[rType]!.file}.arrow`, OUTPUT_PATH + `${name}/${name}.${r.type}.arrow`);
+            symlink(`${name}.${r.type}.${accumulators[rType]!.file}${layerSuffix}.arrow`, OUTPUT_PATH + `${name}/${name}.${r.type}${layerSuffix}.arrow`);
         }
-        symlink(`${name}.${r.type}.${accumulators[rType]!.file}.json`, OUTPUT_PATH + `${name}/${name}.${r.type}.json`);
+        symlink(`${name}.${r.type}.${accumulators[rType]!.file}${layerSuffix}.json`, OUTPUT_PATH + `${name}/${name}.${r.type}${layerSuffix}.json`);
     }
 
     // Only output if we have some meta

@@ -43,3 +43,4 @@ public/data
 # emacs
 *~
 package-lock.json
+tsconfig.tsbuildinfo
