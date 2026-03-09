@@ -131,6 +131,7 @@ export function CoverageDetails({
     const key = station + (details.type === 'hexagon' ? details.h3 + (locked ? 'L' : '') : details.type);
     const isLocked = details.type === 'hexagon' && locked;
     const layersParam = layers?.join(',') || 'combined';
+    const displayType = (file?.match(/^(day|month|year|yearnz)/)?.[1] ?? 'year') as 'day' | 'month' | 'year' | 'yearnz';
 
     //
     const [doFetch, setDoFetch] = useState(key);
@@ -245,6 +246,7 @@ export function CoverageDetails({
                         })}
                     </div>
                 ) : null}
+                <AvailableFiles station={station || 'global'} setFile={setFile} displayType={displayType} layer={selectedLayer} />
                 {showTabs && byDay && !activeByDay?.length ? (
                     <p style={{color: 'gray', fontStyle: 'italic'}}>{t('no_layer_data', {layer: tLayer(selectedLayer, selectedLayer)})}</p>
                 ) : (

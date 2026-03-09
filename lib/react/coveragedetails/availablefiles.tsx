@@ -55,28 +55,44 @@ const CustomTooltip = ({active, payload, label, tickFormatter}: {active?: any; p
     return null;
 };
 
+function extractDateStr(filePath: string): string {
+    return filePath.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)/)?.[2] ?? '';
+}
+
 export function AvailableFiles({
     station,
     displayType = 'day',
-    setFile
+    setFile,
+    layer
 }: //
 {
     station: string;
     displayType: 'day' | 'month' | 'year' | 'yearnz';
     setFile: (file: string) => void;
+    layer?: string;
 }) {
     const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
     const {t} = useTranslation();
 
+    // Collect file paths for the requested layer (or union all layers if none / 'all')
+    const layerData = data?.files?.[displayType] as Record<string, {all: string[]}> | undefined;
+    const all: string[] | undefined = useMemo(() => {
+        if (!layerData) return undefined;
+        const paths = layer && layer !== 'all'
+            ? (layerData[layer]?.all ?? [])
+            : Object.values(layerData).flatMap((l) => l?.all ?? []);
+        const dates = [...new Set(paths.map(extractDateStr).filter(Boolean))].sort();
+        return dates.length ? dates : undefined;
+    }, [layerData, layer]);
+
     // Find the available range and then produce a set with flags indicating if it
     // is actually available
-    const all = data?.files?.[displayType]?.all;
     const processed = useMemo(
         () =>
-            all?.reduce((out: Map<number, 0 | 1>, fileName: string) => {
-                out.set(new Date((fileName + suffix[displayType]).slice(-20)).valueOf(), 1);
+            all?.reduce((out: Map<number, 0 | 1>, dateStr: string) => {
+                out.set(new Date(dateStr + suffix[displayType]).valueOf(), 1);
                 return out;
-            }, getDaysBetween(all[0].slice(-10), all[all.length - 1].slice(-10))),
+            }, getDaysBetween(all[0], all[all.length - 1])),
         [station, data]
     );
 
