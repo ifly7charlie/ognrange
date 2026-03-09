@@ -10,7 +10,7 @@ const fetcher = (url: string) => fetch(url).then((res) => res.json());
 type PeriodType = 'year' | 'yearnz' | 'month' | 'day';
 const ALL_PERIOD_TYPES: PeriodType[] = ['year', 'yearnz', 'month', 'day'];
 
-type Option = {value: string; label: string};
+type Option = {value: string; label: string; isPartial?: boolean};
 
 function parseDateParam(s: string): {type: PeriodType; date: string | null} {
     const dot = s.indexOf('.');
@@ -38,9 +38,26 @@ function labelFor(type: PeriodType, inputVal: string): string {
     return inputVal; // year / yearnz: just show the year number
 }
 
-export function FileSelector({station, dateRange, setDateRange}: {station: string | null; dateRange: {start: string; end: string}; setDateRange: (r: {start: string; end: string}) => void}) {
+function FormatPartialOption({opt, title}: {opt: Option; title: string}) {
+    return opt.isPartial ? (
+        <span title={title}>
+            {opt.label} <span style={{color: '#f90'}}>⚠</span>
+        </span>
+    ) : (
+        <>{opt.label}</>
+    );
+}
+
+export function FileSelector({station, dateRange, setDateRange, layers}: {
+    station: string | null;
+    dateRange: {start: string; end: string};
+    setDateRange: (r: {start: string; end: string}) => void;
+    layers?: string[];
+}) {
     const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher);
     const {t} = useTranslation('common', {keyPrefix: 'period'});
+    const {t: tLayer} = useTranslation('common', {keyPrefix: 'layers'});
+    const formatPartialOption = (opt: Option) => <FormatPartialOption opt={opt} title={t('partial_option_title')} />;
 
     const [showRange, setShowRange] = useState(() => dateRange.start !== dateRange.end);
 
@@ -48,35 +65,68 @@ export function FileSelector({station, dateRange, setDateRange}: {station: strin
     const to = parseDateParam(dateRange.end);
     const currentType = from.type;
 
-    const {availableTypes, datesByType} = useMemo(() => {
+    const {availableTypes, datesByType, partialDatesByType, missingLayersByType} = useMemo(() => {
         const files = data?.files || {};
         const datesByType: Record<string, string[]> = {};
+        const partialDatesByType: Record<string, Set<string>> = {};
+        const missingLayersByType: Record<string, Set<string>> = {};
         const availableTypes: PeriodType[] = [];
+
+        const layersToCheck = layers?.length ? layers : ['combined'];
 
         for (const type of ALL_PERIOD_TYPES) {
             const layerData = files[type];
             if (!layerData) continue;
-            const combined = (layerData?.combined ?? layerData) as {all?: string[]};
-            const all = combined?.all || [];
-            if (!all.length) continue;
 
-            const inputVals = all
-                .map((path: string) => {
-                    const m = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)$/);
-                    return m ? dateToInput(type, m[2]) : null;
-                })
-                .filter(Boolean)
-                .sort() as string[];
-
-            if (inputVals.length) {
-                availableTypes.push(type);
-                datesByType[type] = inputVals;
+            // For each layer, collect its available dates
+            const layerDateSets: Record<string, Set<string>> = {};
+            for (const layer of layersToCheck) {
+                const lData = (layer === 'combined'
+                    ? (layerData?.combined ?? layerData)
+                    : layerData?.[layer]) as {all?: string[]} | undefined;
+                const all = (lData?.all || []) as string[];
+                const inputVals = all
+                    .map((path: string) => {
+                        const m = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)$/);
+                        return m ? dateToInput(type, m[2]) : null;
+                    })
+                    .filter(Boolean) as string[];
+                layerDateSets[layer] = new Set(inputVals);
             }
+
+            const allSets = Object.values(layerDateSets);
+            if (!allSets.length || !allSets.some((s) => s.size > 0)) continue;
+
+            // Union of all layers' dates (selectable)
+            const unionSet = new Set<string>();
+            for (const s of allSets) for (const d of s) unionSet.add(d);
+
+            // Intersection of all layers' dates (fully covered)
+            const fullSet = new Set<string>([...allSets[0]].filter((d) => allSets.every((s) => s.has(d))));
+
+            // Partial = union − full (some layers missing)
+            const partialSet = new Set<string>([...unionSet].filter((d) => !fullSet.has(d)));
+
+            // Which layers are missing for partial dates
+            const missingLayers = new Set<string>();
+            for (const d of partialSet) {
+                for (const layer of layersToCheck) {
+                    if (!layerDateSets[layer].has(d)) missingLayers.add(layer);
+                }
+            }
+
+            const sortedUnion = [...unionSet].sort();
+            if (!sortedUnion.length) continue;
+
+            availableTypes.push(type);
+            datesByType[type] = sortedUnion;
+            partialDatesByType[type] = partialSet;
+            missingLayersByType[type] = missingLayers;
         }
 
         if (!availableTypes.length) availableTypes.push('year');
-        return {availableTypes, datesByType};
-    }, [data?.files]);
+        return {availableTypes, datesByType, partialDatesByType, missingLayersByType};
+    }, [data?.files, layers]);
 
     const dates = datesByType[currentType] || [];
     const latestMax = dates[dates.length - 1];
@@ -90,9 +140,17 @@ export function FileSelector({station, dateRange, setDateRange}: {station: strin
     const typeOptions: Option[] = availableTypes.map((pt) => ({value: pt, label: t(pt)}));
     const selectedType = typeOptions.find((o) => o.value === currentType) ?? null;
 
-    const fromOptions: Option[] = useMemo(() => [{value: '', label: latestLabel}, ...[...dates].reverse().map((d) => ({value: d, label: labelFor(currentType, d)}))], [dates, currentType, latestLabel]);
+    const partialSet = partialDatesByType[currentType];
 
-    const toOptions: Option[] = useMemo(() => [...(fromVal ? dates.filter((d) => d >= fromVal) : dates)].reverse().map((d) => ({value: d, label: labelFor(currentType, d)})), [dates, currentType, fromVal]);
+    const fromOptions: Option[] = useMemo(
+        () => [{value: '', label: latestLabel}, ...[...dates].reverse().map((d) => ({value: d, label: labelFor(currentType, d), isPartial: partialSet?.has(d) ?? false}))],
+        [dates, currentType, latestLabel, partialSet]
+    );
+
+    const toOptions: Option[] = useMemo(
+        () => [...(fromVal ? dates.filter((d) => d >= fromVal) : dates)].reverse().map((d) => ({value: d, label: labelFor(currentType, d), isPartial: partialSet?.has(d) ?? false})),
+        [dates, currentType, fromVal, partialSet]
+    );
 
     const selectedFrom = fromOptions.find((o) => o.value === fromVal) ?? null;
     const selectedTo = toOptions.find((o) => o.value === toVal) ?? null;
@@ -160,6 +218,25 @@ export function FileSelector({station, dateRange, setDateRange}: {station: strin
     const availableMonths = useMemo(() => (currentType === 'month' ? new Set(dates) : undefined), [currentType, dates]);
     const toAvailableMonths = useMemo(() => (currentType === 'month' ? new Set(fromVal ? dates.filter((d) => d >= fromVal) : dates) : undefined), [currentType, dates, fromVal]);
 
+    // Partial date/month sets for picker orange-indicator
+    const partialDates = useMemo(() => (currentType === 'day' ? (partialDatesByType['day'] ?? undefined) : undefined), [currentType, partialDatesByType]);
+    const partialMonths = useMemo(() => (currentType === 'month' ? (partialDatesByType['month'] ?? undefined) : undefined), [currentType, partialDatesByType]);
+
+    // Warning banner: does the selected range contain any partial-coverage dates?
+    const hasPartialInRange = useMemo(() => {
+        if (!from.date || !to.date) return false;
+        const partials = partialDatesByType[currentType];
+        if (!partials?.size) return false;
+        const f = dateToInput(currentType, from.date);
+        const t2 = dateToInput(currentType, to.date);
+        for (const d of partials) {
+            if (d >= f && d <= t2) return true;
+        }
+        return false;
+    }, [from.date, to.date, currentType, partialDatesByType]);
+
+    const missingLayersInRange = missingLayersByType[currentType];
+
     const btnStyle = (active: boolean): React.CSSProperties => ({
         flexShrink: 0,
         cursor: 'pointer',
@@ -173,15 +250,15 @@ export function FileSelector({station, dateRange, setDateRange}: {station: strin
     });
 
     const fromPicker = (placeholder?: string) => {
-        if (currentType === 'day') return <DayPicker value={fromVal || null} onChange={onFromChangePicker} availableDates={availableDates} placeholder={placeholder ?? latestLabel} />;
-        if (currentType === 'month') return <MonthPicker value={fromVal || null} onChange={onFromChangePicker} availableMonths={availableMonths} placeholder={placeholder ?? latestLabel} />;
-        return <Select options={fromOptions} value={selectedFrom} onChange={onFromChange} placeholder={placeholder} />;
+        if (currentType === 'day') return <DayPicker value={fromVal || null} onChange={onFromChangePicker} availableDates={availableDates} partialDates={partialDates} placeholder={placeholder ?? latestLabel} />;
+        if (currentType === 'month') return <MonthPicker value={fromVal || null} onChange={onFromChangePicker} availableMonths={availableMonths} partialMonths={partialMonths} placeholder={placeholder ?? latestLabel} />;
+        return <Select options={fromOptions} value={selectedFrom} onChange={onFromChange} placeholder={placeholder} formatOptionLabel={formatPartialOption} />;
     };
 
     const toPicker = (placeholder?: string) => {
-        if (currentType === 'day') return <DayPicker value={toVal || null} onChange={onToChangePicker} availableDates={toAvailableDates} placeholder={placeholder} />;
-        if (currentType === 'month') return <MonthPicker value={toVal || null} onChange={onToChangePicker} availableMonths={toAvailableMonths} placeholder={placeholder} />;
-        return <Select options={toOptions} value={selectedTo} onChange={onToChange} placeholder={placeholder} />;
+        if (currentType === 'day') return <DayPicker value={toVal || null} onChange={onToChangePicker} availableDates={toAvailableDates} partialDates={partialDates} placeholder={placeholder} />;
+        if (currentType === 'month') return <MonthPicker value={toVal || null} onChange={onToChangePicker} availableMonths={toAvailableMonths} partialMonths={partialMonths} placeholder={placeholder} />;
+        return <Select options={toOptions} value={selectedTo} onChange={onToChange} placeholder={placeholder} formatOptionLabel={formatPartialOption} />;
     };
 
     return (
@@ -213,6 +290,12 @@ export function FileSelector({station, dateRange, setDateRange}: {station: strin
                     </>
                 )}
             </div>
+            {/* Warning banner: partial coverage in selected range */}
+            {hasPartialInRange && missingLayersInRange?.size ? (
+                <div style={{marginTop: '4px', padding: '4px 8px', background: '#fff3cd', border: '1px solid #f0c040', borderRadius: '4px', fontSize: '0.85em'}}>
+                    ⚠ {t('partial_warning', {layers: [...missingLayersInRange].map((l) => tLayer(l, l)).join(', ')})}
+                </div>
+            ) : null}
         </>
     );
 }

@@ -6,7 +6,8 @@
         "layers": "Select protocol layers"
     },
     "layers": {
-        "combined": "Combined",
+        "all": "All",
+        "combined": "FLARM/OGN",
         "flarm": "FLARM",
         "adsb": "ADS-B",
         "adsl": "ADS-L",
@@ -27,7 +28,9 @@
         "current_year": "Current Year ({{value}})",
         "current_yearnz": "Current Year  ({{value}})",
         "current_month": "Current Month  ({{value}})",
-        "current_day": "Current Day  ({{value}})"
+        "current_day": "Current Day  ({{value}})",
+        "partial_option_title": "Some selected layers are missing data for this date",
+        "partial_warning": "Some dates in this range are missing data for: {{layers}}"
     },
     "available": {
         "year": "Years available (Northern Hemisphere)",
@@ -142,6 +145,7 @@
         "status": {
             "title": "Last status message"
         },
+        "no_layer_data": "No data for {{layer}} in the selected date range",
         "help": "Hover over somewhere on the map to see details.<br/>Click to lock the sidebar display to that location.<br/>Click on a station marker to show coverage records only for that station.<br/>You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information"
     }
 }

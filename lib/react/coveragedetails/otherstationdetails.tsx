@@ -27,9 +27,12 @@ import graphcolours from '../graphcolours';
 //
 // Other detailed coverage for this cell
 // COSTLY
-export function OtherStationsDetails(props: {h3: string; file: string; station: string; locked: boolean}) {
+export function OtherStationsDetails(props: {h3: string; file: string; station: string; locked: boolean; layers?: string[]; selectedLayer?: string}) {
     const [doFetch, setDoFetch] = useState(null);
+    const selectedLayer = props.selectedLayer ?? 'all';
     const {t} = useTranslation('common', {keyPrefix: 'details.stations'});
+    const {t: tDetails} = useTranslation('common', {keyPrefix: 'details'});
+    const {t: tLayer} = useTranslation('common', {keyPrefix: 'layers'});
     const n = (name) => (name === 'Other' || name === 'unknown' ? t(name) : name);
 
     //
@@ -42,22 +45,27 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
     );
 
     const isGlobal = (props.station || 'global') == 'global'; //
+    const layersParam = props.layers?.join(',') || 'combined';
 
     // What URL to use - both return same but act differently
     const url = () =>
         isGlobal //
-            ? `/api/station/global/h3summary/${props.h3}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}`
-            : `/api/station/${props.station}/h3others/${props.h3}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}`;
+            ? `/api/station/global/h3summary/${props.h3}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}&layers=${layersParam}`
+            : `/api/station/${props.station}/h3others/${props.h3}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}&layers=${layersParam}`;
 
     // Actually load the data when it's time
     const {data: byDay} = useSWR(props.station + props?.h3 == doFetch && props?.h3 ? url() : null, fetcher);
+
+    // Multi-layer mode driven by requested layers, not what the API returned
+    const showTabsForThis = (props.layers?.length ?? 0) > 1;
+    const activeData = showTabsForThis ? byDay?.layers?.[selectedLayer] : (byDay?.layers?.[Object.keys(byDay?.layers ?? {})[0]] ?? byDay);
 
     function safeZero(x) {
         return isNaN(x) ? 0 : x || 0;
     }
 
     const percentages = useMemo(() => {
-        return _map(byDay?.data || [], (v) => {
+        return _map(activeData?.data || [], (v) => {
             const dayTotal = _reduce(
                 v,
                 (r, count) => {
@@ -77,7 +85,7 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
             }
             return newObject;
         });
-    }, [props.h3, props.station, !!byDay]);
+    }, [props.h3, props.station, !!byDay, selectedLayer]);
 
     delayedUpdateFrom(props.station + props.h3);
 
@@ -85,12 +93,14 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
         <>
             {t(isGlobal ? 'percentage.top5' : 'count.top5otherbyday')}
             <br />
-            {byDay?.data?.length > 0 ? (
+            {showTabsForThis && byDay && !activeData?.data?.length ? (
+                <p style={{color: 'gray', fontStyle: 'italic'}}>{tDetails('no_layer_data', {layer: tLayer(selectedLayer, selectedLayer)})}</p>
+            ) : activeData?.data?.length > 0 ? (
                 <>
                     <ResponsiveContainer width="100%" height={150} key="counttotal">
                         <PieChart width={480} height={180} margin={{top: 5, right: 30, left: 20, bottom: 5}}>
                             <Pie
-                                data={_map(byDay.series, (v, i) => {
+                                data={_map(activeData.series, (v, i) => {
                                     return {...v, fill: graphcolours[i], s: n(v.s)};
                                 })}
                                 dataKey="c"
@@ -110,13 +120,13 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
                             <br />
                             <br />
                             <ResponsiveContainer width="100%" height={150} key="countovertime">
-                                <LineChart width={480} height={180} data={byDay.data} margin={{top: 5, right: 30, left: 20, bottom: 5}} syncId="date">
+                                <LineChart width={480} height={180} data={activeData.data} margin={{top: 5, right: 30, left: 20, bottom: 5}} syncId="date">
                                     <CartesianGrid strokeDasharray="3 3" />
                                     <XAxis dataKey="date" style={{fontSize: '0.8rem'}} />
                                     <YAxis style={{fontSize: '0.8rem'}} />
                                     <Tooltip key="ttcot" />
                                     <Legend />
-                                    {_map(byDay.series, (v, i) => (
+                                    {_map(activeData.series, (v, i) => (
                                         <Line name={n(v.s)} key={v.s} isAnimationActive={false} type="monotone" dataKey={v.s} stroke={graphcolours[i]} dot={{r: 1}} />
                                     ))}
                                 </LineChart>
@@ -134,7 +144,7 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
                             <YAxis unit="%" style={{fontSize: '0.8rem'}} allowDecimals={false} />
                             <Tooltip />
                             <Legend />
-                            {_map(byDay.series, (v, i) => (
+                            {_map(activeData.series, (v, i) => (
                                 <Bar name={n(v.s)} key={'ot' + v.s} isAnimationActive={false} type="monotone" stackId="a" dataKey={v.s} stroke={graphcolours[i]} fill={graphcolours[i]} />
                             ))}
                         </BarChart>

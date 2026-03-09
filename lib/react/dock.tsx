@@ -44,7 +44,7 @@ export function Dock(props: {
                 <br />
                 <LayerSelector layers={props.layers} setLayers={props.setLayers} />
                 <br />
-                <FileSelector station={props.station} dateRange={props.dateRange} setDateRange={props.setDateRange} />
+                <FileSelector station={props.station} dateRange={props.dateRange} setDateRange={props.setDateRange} layers={props.layers} />
                 <br />
                 <VisualisationSelector station={props.station} setVisualisation={props.setVisualisation} visualisation={props.visualisation} isPresenceOnly={props.isPresenceOnly} />
                 <br />
@@ -58,6 +58,7 @@ export function Dock(props: {
                         setStation={props.setStation}
                         file={file}
                         setFile={setFile}
+                        layers={props.layers}
                         env={props.env}
                     />
                 ) : null}

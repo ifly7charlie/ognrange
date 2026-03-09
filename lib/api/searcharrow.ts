@@ -15,7 +15,7 @@ const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, t
 
 const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: '2-digit', day: '2-digit', timeZone: 'UTC'});
 
-interface RowResult {
+export interface RowResult {
     h3lo: number;
     h3hi: number;
     minAgl: number;
@@ -32,6 +32,51 @@ interface RowResult {
 }
 
 type RowResultFunction = (data: RowResult | void) => void;
+
+export function mergeRows(rows: RowResult[]): RowResult | void {
+    if (!rows.length) return;
+    if (rows.length === 1) return rows[0];
+
+    let count = 0;
+    let maxSig = -Infinity;
+    let minAgl = Infinity;
+    let minAlt = Infinity;
+    let minAltSig = 0;
+    let weightedSig = 0;
+    let weightedGap = 0;
+    let weightedCrc = 0;
+    let expectedGap: number | undefined;
+
+    for (const row of rows) {
+        count += row.count;
+        if (row.maxSig > maxSig) maxSig = row.maxSig;
+        if (row.minAgl < minAgl) minAgl = row.minAgl;
+        if (row.minAlt < minAlt) {
+            minAlt = row.minAlt;
+            minAltSig = row.minAltSig;
+        }
+        weightedSig += row.avgSig * row.count;
+        weightedGap += row.avgGap * row.count;
+        weightedCrc += row.avgCrc * row.count;
+        if (row.expectedGap !== undefined) {
+            expectedGap = expectedGap === undefined ? row.expectedGap : Math.min(expectedGap, row.expectedGap);
+        }
+    }
+
+    return {
+        h3lo: rows[0].h3lo,
+        h3hi: rows[0].h3hi,
+        count,
+        maxSig,
+        minAgl,
+        minAlt,
+        minAltSig,
+        avgSig: count > 0 ? weightedSig / count : 0,
+        avgGap: count > 0 ? weightedGap / count : 0,
+        avgCrc: count > 0 ? weightedCrc / count : 0,
+        expectedGap
+    };
+}
 
 //
 // Search a single file
@@ -74,15 +119,33 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
 }
 
 // Scan directory for files
-export async function searchMatchingArrowFiles(station: string, fileDateMatch: string, h3SplitLong: [number, number], oldest: Date | undefined, combine: Function) {
+export async function searchMatchingArrowFiles(
+    station: string,
+    fileDateMatch: string,
+    h3SplitLong: [number, number],
+    oldest: Date | undefined,
+    combine: (row: RowResult, date: string, layer: string) => void,
+    layers?: string[]
+) {
+    const effectiveLayers = layers?.length ? layers : ['combined'];
+    const includeCombined = effectiveLayers.includes('combined');
+    const nonCombined = effectiveLayers.filter((l) => l !== 'combined');
+
+    let layerPart: string;
+    if (includeCombined && nonCombined.length > 0) layerPart = `(?:\\.(${nonCombined.join('|')}))?`;
+    else if (!includeCombined) layerPart = `\\.(?:${nonCombined.join('|')})`;
+    else layerPart = '';
+
+    const fileMatcher = new RegExp(`day\\.([0-9-]+)${layerPart}\\.arrow\\.gz$`);
+
     const pending = new Map<string, Promise<string>>();
     try {
         const files = readdirSync(ARROW_PATH + station)
             .map((fn) => {
-                return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz$/)?.[1] || '', fileName: fn};
+                const m = fn.match(fileMatcher);
+                return {date: m?.[1] || '', layer: m?.[2] || 'combined', fileName: fn};
             })
             .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch);
-        //            .sort((a, b) => a.fileName.localeCompare(b.fileName));
 
         for (const file of files) {
             const fileDate = new Date(file.date);
@@ -90,12 +153,13 @@ export async function searchMatchingArrowFiles(station: string, fileDateMatch: s
                 continue;
             }
 
+            const layer = file.layer;
             pending.set(
                 file.fileName,
                 new Promise<string>((resolve) => {
                     searchArrowFile(`${station}/${file.fileName}`, h3SplitLong, (row) => {
                         if (row) {
-                            combine(row, dateFormat.format(fileDate).replace(' ', '-'));
+                            combine(row, dateFormat.format(fileDate).replace(' ', '-'), layer);
                         }
                         resolve(file.fileName);
                     });

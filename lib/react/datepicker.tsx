@@ -65,6 +65,7 @@ interface DateOption {
     label: string;
     display?: string;
     isDisabled?: boolean;
+    isPartial?: boolean;
 }
 
 interface CalendarGroup {
@@ -74,26 +75,28 @@ interface CalendarGroup {
 
 // ---- Option factories ----
 
-function createOptionForDate(d: Date, availableDates?: Set<string>): DateOption {
+function createOptionForDate(d: Date, availableDates?: Set<string>, partialDates?: Set<string>): DateOption {
     return {
         date: d,
         value: d,
         label: d.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}),
-        isDisabled: availableDates ? !availableDates.has(toDateStr(d)) : false
+        isDisabled: availableDates ? !availableDates.has(toDateStr(d)) : false,
+        isPartial: partialDates?.has(toDateStr(d)) ?? false
     };
 }
 
-function monthToDateOption(value: string, availableMonths?: Set<string>): DateOption {
+function monthToDateOption(value: string, availableMonths?: Set<string>, partialMonths?: Set<string>): DateOption {
     const d = new Date(value + '-01T12:00:00');
     return {
         date: d,
         value: d,
         label: d.toLocaleDateString(undefined, {month: 'short', year: 'numeric'}),
-        isDisabled: availableMonths ? !availableMonths.has(value) : false
+        isDisabled: availableMonths ? !availableMonths.has(value) : false,
+        isPartial: partialMonths?.has(value) ?? false
     };
 }
 
-function createCalendarOptions(date: Date, availableDates?: Set<string>): CalendarGroup {
+function createCalendarOptions(date: Date, availableDates?: Set<string>, partialDates?: Set<string>): CalendarGroup {
     const year = date.getFullYear();
     const month = date.getMonth();
     const count = new Date(year, month + 1, 0).getDate();
@@ -105,13 +108,14 @@ function createCalendarOptions(date: Date, availableDates?: Set<string>): Calend
             value: d,
             label: d.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}),
             display: 'calendar-day',
-            isDisabled: availableDates ? !availableDates.has(toDateStr(d)) : false
+            isDisabled: availableDates ? !availableDates.has(toDateStr(d)) : false,
+            isPartial: partialDates?.has(toDateStr(d)) ?? false
         });
     }
     return {label: date.toLocaleDateString(undefined, {month: 'short', year: 'numeric'}), options};
 }
 
-function createMonthOptions(year: number, availableMonths?: Set<string>): CalendarGroup {
+function createMonthOptions(year: number, availableMonths?: Set<string>, partialMonths?: Set<string>): CalendarGroup {
     const options: DateOption[] = Array.from({length: 12}, (_, i) => {
         const d = new Date(year, i, 1);
         return {
@@ -119,7 +123,8 @@ function createMonthOptions(year: number, availableMonths?: Set<string>): Calend
             value: d,
             label: d.toLocaleDateString(undefined, {month: 'short', year: 'numeric'}),
             display: 'calendar-month',
-            isDisabled: availableMonths ? !availableMonths.has(toMonthStr(d)) : false
+            isDisabled: availableMonths ? !availableMonths.has(toMonthStr(d)) : false,
+            isPartial: partialMonths?.has(toMonthStr(d)) ?? false
         };
     });
     return {label: String(year), options};
@@ -232,7 +237,8 @@ const Option = (props: OptionProps<DateOption, false>) => {
             textAlign: 'center',
             borderRadius: 4,
             boxSizing: 'border-box',
-            ...(data.isDisabled ? {opacity: 0.3, cursor: 'not-allowed', pointerEvents: 'none'} : {})
+            ...(data.isDisabled ? {opacity: 0.3, cursor: 'not-allowed', pointerEvents: 'none'} : {}),
+            ...(data.isPartial ? {borderBottom: '2px solid #f90'} : {})
         };
         if (data.date.getDate() === 1) {
             const indentBy = data.date.getDay();
@@ -240,7 +246,7 @@ const Option = (props: OptionProps<DateOption, false>) => {
             if (indentBy) style.marginLeft = `${indentBy * 14 + 1}%`;
         }
         return (
-            <span ref={innerRef} {...(data.isDisabled ? {} : innerProps)} style={style}>
+            <span ref={innerRef} {...(data.isDisabled ? {} : innerProps)} style={style} title={data.isPartial ? 'Some layers missing for this date' : undefined}>
                 {data.date.getDate()}
             </span>
         );
@@ -261,10 +267,11 @@ const Option = (props: OptionProps<DateOption, false>) => {
             borderRadius: 4,
             fontSize: '0.85em',
             boxSizing: 'border-box',
-            ...(data.isDisabled ? {opacity: 0.3, cursor: 'not-allowed', pointerEvents: 'none'} : {})
+            ...(data.isDisabled ? {opacity: 0.3, cursor: 'not-allowed', pointerEvents: 'none'} : {}),
+            ...(data.isPartial ? {borderBottom: '2px solid #f90'} : {})
         };
         return (
-            <span ref={innerRef} {...(data.isDisabled ? {} : innerProps)} style={style}>
+            <span ref={innerRef} {...(data.isDisabled ? {} : innerProps)} style={style} title={data.isPartial ? 'Some layers missing for this date' : undefined}>
                 {SHORT_MONTHS[data.date.getMonth()]}
             </span>
         );
@@ -279,10 +286,11 @@ interface DatePickerProps {
     value: DateOption | null;
     onChange: (v: DateOption | null) => void;
     availableDates?: Set<string>;
+    partialDates?: Set<string>;
     placeholder?: string;
 }
 
-function DatePicker({value, onChange, availableDates, placeholder}: DatePickerProps) {
+function DatePicker({value, onChange, availableDates, partialDates, placeholder}: DatePickerProps) {
     const [calendarDate, setCalendarDate] = useState<Date>(() => {
         if (value) return new Date(value.date.getFullYear(), value.date.getMonth(), 1);
         if (availableDates?.size) return new Date([...availableDates].sort().pop()! + 'T12:00:00');
@@ -303,7 +311,7 @@ function DatePicker({value, onChange, availableDates, placeholder}: DatePickerPr
     const next = useCallback(() => setCalendarDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1)), []);
     const nav = useMemo(() => ({prev, next}), [prev, next]);
 
-    const calendarOptions = useMemo(() => createCalendarOptions(calendarDate, availableDates), [calendarDate, availableDates]);
+    const calendarOptions = useMemo(() => createCalendarOptions(calendarDate, availableDates, partialDates), [calendarDate, availableDates, partialDates]);
 
     const handleInputChange = (input: string) => {
         if (!input) return;
@@ -324,10 +332,11 @@ interface MonthPickerInternalProps {
     value: DateOption | null;
     onChange: (v: DateOption | null) => void;
     availableMonths?: Set<string>;
+    partialMonths?: Set<string>;
     placeholder?: string;
 }
 
-function MonthPickerInternal({value, onChange, availableMonths, placeholder}: MonthPickerInternalProps) {
+function MonthPickerInternal({value, onChange, availableMonths, partialMonths, placeholder}: MonthPickerInternalProps) {
     const [calendarYear, setCalendarYear] = useState<number>(() => {
         if (value) return value.date.getFullYear();
         if (availableMonths?.size) return parseInt([...availableMonths].sort().pop()!.slice(0, 4));
@@ -347,7 +356,7 @@ function MonthPickerInternal({value, onChange, availableMonths, placeholder}: Mo
     const next = useCallback(() => setCalendarYear((y) => y + 1), []);
     const nav = useMemo(() => ({prev, next}), [prev, next]);
 
-    const monthOptions = useMemo(() => createMonthOptions(calendarYear, availableMonths), [calendarYear, availableMonths]);
+    const monthOptions = useMemo(() => createMonthOptions(calendarYear, availableMonths, partialMonths), [calendarYear, availableMonths, partialMonths]);
 
     // Allow typing a year number to navigate
     const handleInputChange = (input: string) => {
@@ -365,7 +374,7 @@ function MonthPickerInternal({value, onChange, availableMonths, placeholder}: Mo
 
 // ---- DayPicker: YYYY-MM-DD string API ----
 
-export function DayPicker({value, onChange, availableDates, placeholder}: {value: string | null; onChange: (v: string | null) => void; availableDates?: Set<string>; placeholder?: string}) {
+export function DayPicker({value, onChange, availableDates, partialDates, placeholder}: {value: string | null; onChange: (v: string | null) => void; availableDates?: Set<string>; partialDates?: Set<string>; placeholder?: string}) {
     // Auto-select the latest available date on first load when no value is set
     const didAutoSelect = useRef(false);
     useEffect(() => {
@@ -374,13 +383,13 @@ export function DayPicker({value, onChange, availableDates, placeholder}: {value
         onChange([...availableDates].sort().pop()!);
     }, [availableDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const dateOption = value ? createOptionForDate(new Date(value + 'T12:00:00'), availableDates) : null;
-    return <DatePicker value={dateOption} onChange={(opt) => onChange(opt ? toDateStr(opt.date) : null)} availableDates={availableDates} placeholder={placeholder} />;
+    const dateOption = value ? createOptionForDate(new Date(value + 'T12:00:00'), availableDates, partialDates) : null;
+    return <DatePicker value={dateOption} onChange={(opt) => onChange(opt ? toDateStr(opt.date) : null)} availableDates={availableDates} partialDates={partialDates} placeholder={placeholder} />;
 }
 
 // ---- MonthPicker: YYYY-MM string API ----
 
-export function MonthPicker({value, onChange, availableMonths, placeholder}: {value: string | null; onChange: (v: string | null) => void; availableMonths?: Set<string>; placeholder?: string}) {
+export function MonthPicker({value, onChange, availableMonths, partialMonths, placeholder}: {value: string | null; onChange: (v: string | null) => void; availableMonths?: Set<string>; partialMonths?: Set<string>; placeholder?: string}) {
     // Auto-select the latest available month on first load when no value is set
     const didAutoSelect = useRef(false);
     useEffect(() => {
@@ -389,8 +398,8 @@ export function MonthPicker({value, onChange, availableMonths, placeholder}: {va
         onChange([...availableMonths].sort().pop()!);
     }, [availableMonths]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const dateOption = value ? monthToDateOption(value, availableMonths) : null;
-    return <MonthPickerInternal value={dateOption} onChange={(opt) => onChange(opt ? toMonthStr(opt.date) : null)} availableMonths={availableMonths} placeholder={placeholder} />;
+    const dateOption = value ? monthToDateOption(value, availableMonths, partialMonths) : null;
+    return <MonthPickerInternal value={dateOption} onChange={(opt) => onChange(opt ? toMonthStr(opt.date) : null)} availableMonths={availableMonths} partialMonths={partialMonths} placeholder={placeholder} />;
 }
 
 export default function DatePickerDemo() {

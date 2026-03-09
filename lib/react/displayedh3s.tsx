@@ -95,28 +95,25 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
     // Date-range URLs — only computed when stationData is available and not type-only
     const rangeBuildUrls = useMemo(() => {
         if (isTypeOnly || !stationData) return null;
-        // Extract period type from dateStart (e.g. 'year' from 'year.2023')
         const rangeType = dateStart.split('.')[0];
-        const typeFiles = (stationData?.files || {})[rangeType];
-        const combined = (typeFiles as any)?.combined ?? typeFiles;
-        const filesInRange: {type: string; date: string}[] = [];
-        for (const path of (combined?.all || []) as string[]) {
-            const match = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)$/);
-            if (!match) continue;
-            const key = `${match[1]}.${match[2]}`;
-            if (key >= dateStart && key <= dateEnd) {
-                filesInRange.push({type: match[1], date: match[2]});
-            }
-        }
+        const typeFiles = (stationData?.files || {})[rangeType] as Record<string, {all?: string[]}> | undefined;
+
         const urls: string[] = [];
         const presenceOnly: boolean[] = [];
         const urlLayers: string[] = [];
-        for (const {type, date} of filesInRange) {
-            for (const layer of layerList) {
-                const suffix = layer === 'combined' ? '' : `.${layer}`;
-                urls.push(`${DATA_URL}${stationName}/${stationName}.${type}.${date}${suffix}.arrow`);
-                presenceOnly.push(PRESENCE_ONLY.has(layer as Layer));
-                urlLayers.push(layer);
+
+        for (const layer of layerList) {
+            const layerFiles = typeFiles?.[layer];
+            for (const path of (layerFiles?.all || []) as string[]) {
+                const match = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)$/);
+                if (!match) continue;
+                const key = `${match[1]}.${match[2]}`;
+                if (key >= dateStart && key <= dateEnd) {
+                    const suffix = layer === 'combined' ? '' : `.${layer}`;
+                    urls.push(`${DATA_URL}${stationName}/${stationName}.${match[1]}.${match[2]}${suffix}.arrow`);
+                    presenceOnly.push(PRESENCE_ONLY.has(layer as Layer));
+                    urlLayers.push(layer);
+                }
             }
         }
         return {urls, presenceOnly, layerList, urlLayers};

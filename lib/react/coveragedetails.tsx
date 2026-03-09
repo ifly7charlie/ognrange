@@ -1,4 +1,4 @@
-import {useMemo, useState, useCallback} from 'react';
+import {useMemo, useState, useCallback, useEffect} from 'react';
 import useSWR from 'swr';
 
 import {useTranslation, Trans} from 'next-i18next';
@@ -112,6 +112,7 @@ export function CoverageDetails({
     setStation,
     file,
     setFile,
+    layers,
     env
 }: //
 {
@@ -122,17 +123,26 @@ export function CoverageDetails({
     setStation: (s: string) => void;
     file: string;
     setFile: (s: string) => void;
+    layers?: string[];
     env: any;
 }) {
     // Tidy up code later by simplifying typescript types
     const h3 = details.type === 'hexagon' ? details.h3 : '';
     const key = station + (details.type === 'hexagon' ? details.h3 + (locked ? 'L' : '') : details.type);
     const isLocked = details.type === 'hexagon' && locked;
+    const layersParam = layers?.join(',') || 'combined';
 
     //
     const [doFetch, setDoFetch] = useState(key);
     const [extraVisible, setExtraVisible] = useState(false);
+    const [selectedLayer, setSelectedLayer] = useState('all');
+
+    // Reset layer selection when the hexagon changes
+    useEffect(() => {
+        setSelectedLayer('all');
+    }, [key]);
     const {t} = useTranslation('common', {keyPrefix: 'details'});
+    const {t: tLayer} = useTranslation('common', {keyPrefix: 'layers'});
 
     const updateExtraVisibility = useCallback((visible: boolean) => {
         if (!extraVisible && visible) {
@@ -152,10 +162,15 @@ export function CoverageDetails({
 
     const {data: byDay} = useSWR(
         key == doFetch && h3 //
-            ? `/api/station/${station || 'global'}/h3details/${h3}?file=${file}&lockedH3=${isLocked ? 1 : 0}`
+            ? `/api/station/${station || 'global'}/h3details/${h3}?file=${file}&lockedH3=${isLocked ? 1 : 0}&layers=${layersParam}`
             : null,
         fetcher
     );
+
+    // Tabs are driven by the requested layers, not what the API happened to return
+    const showTabs = (layers?.length ?? 0) > 1;
+    const tabKeys = showTabs ? ['all', ...(layers ?? [])] : [];
+    const activeByDay = showTabs ? byDay?.layers?.[selectedLayer] : byDay?.layers?.[Object.keys(byDay?.layers ?? {})[0]] ?? byDay;
 
     // Find the station not ideal as linear search so memoize it
     const stationMeta = useStationMeta();
@@ -214,13 +229,35 @@ export function CoverageDetails({
                 ) : null}
                 <br style={{clear: 'both'}} />
                 <hr />
-                <LowestPointDetails d={details.d} b={details.b} g={details.g} byDay={byDay} />
-                <SignalDetails a={details.a} e={details.e} byDay={byDay} />
-                <GapDetails p={details.p} q={details.q} stationCount={details.t} byDay={byDay} />
-                {t('crc.summary', {crc: details.f / 10})}
-                <br />
-                <hr />
-                <CountDetails c={details.c} byDay={byDay} />
+                {showTabs ? (
+                    <div>
+                        {tabKeys.map((l) => {
+                            const hasData = !!byDay?.layers?.[l];
+                            return (
+                                <button
+                                    key={l}
+                                    onClick={() => setSelectedLayer(l)}
+                                    style={{fontWeight: selectedLayer === l ? 'bold' : 'normal', color: hasData ? undefined : 'gray'}}
+                                >
+                                    {tLayer(l, l)}
+                                </button>
+                            );
+                        })}
+                    </div>
+                ) : null}
+                {showTabs && byDay && !activeByDay?.length ? (
+                    <p style={{color: 'gray', fontStyle: 'italic'}}>{t('no_layer_data', {layer: tLayer(selectedLayer, selectedLayer)})}</p>
+                ) : (
+                    <>
+                        <LowestPointDetails d={details.d} b={details.b} g={details.g} byDay={activeByDay} />
+                        <SignalDetails a={details.a} e={details.e} byDay={activeByDay} />
+                        <GapDetails p={details.p} q={details.q} stationCount={details.t} byDay={activeByDay} />
+                        {t('crc.summary', {crc: details.f / 10})}
+                        <br />
+                        <hr />
+                        <CountDetails c={details.c} byDay={activeByDay} />
+                    </>
+                )}
                 <StationList encodedList={details.s} selectedH3={details.h} setStation={setStation} />
                 <br />
                 {locked && byDay ? ( //
@@ -228,7 +265,7 @@ export function CoverageDetails({
                         <>
                             <div style={{height: '10px'}}></div>
                             {extraVisible ? ( //
-                                <OtherStationsDetails h3={details.h3} file={file} station={station} locked={locked} />
+                                <OtherStationsDetails h3={details.h3} file={file} station={station} locked={locked} layers={layers} selectedLayer={selectedLayer} />
                             ) : (
                                 <span>Loading...</span>
                             )}

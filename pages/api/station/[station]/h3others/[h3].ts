@@ -12,15 +12,57 @@ import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
 
 import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
+function buildSeriesData(result: Record<string, Record<string, number>>) {
+    let total = 0;
+    const summed = _reduce(
+        result,
+        (r, v) => {
+            return _reduce(
+                v,
+                (r, v, k) => {
+                    r[k] = (r[k] || 0) + (v || 0);
+                    total = total + (v || 0);
+                    return r;
+                },
+                r
+            );
+        },
+        {} as Record<string, number>
+    );
+
+    const top5 = _sortBy(
+        _reduce(summed, (r, v, k) => { r.push({s: k, c: v}); return r; }, [] as {s: string; c: number}[]),
+        (v) => -v.c
+    ).slice(0, 5);
+
+    const data = _map(result, (v, k) => {
+        return _reduce(
+            top5,
+            (r, top5key) => {
+                r.Other -= v[top5key.s];
+                r[top5key.s] = v[top5key.s];
+                return r;
+            },
+            {date: k, Other: _reduce(v, (r, count) => r + (count || 0), 0)} as Record<string, any>
+        );
+    }).sort((a, b) => a.date.localeCompare(b.date));
+
+    return {
+        series: [...top5, {s: 'Other', c: _reduce(top5, (r, v) => r - v.c, total)}],
+        data
+    };
+}
+
 export default async function getH3Details(req, res) {
     // Top level
     const selectedFile: string = req.query.file;
     const lockedH3 = parseInt(req.query.lockedH3 || '0');
     const h3SplitLong = h3IndexToSplitLong(req.query.h3);
+    const layers = (req.query.layers as string || 'combined').split(',').map((s) => s.trim());
     const now = new Date();
 
     if (!h3SplitLong) {
-        res.status(200).json([]);
+        res.status(200).json({layers: {}});
         return;
     }
 
@@ -49,11 +91,11 @@ export default async function getH3Details(req, res) {
 
     if (!globalRecord || !globalRecord.stations) {
         console.log('no record in global file');
-        res.status(200).json([]);
+        res.status(200).json({layers: {}});
         return;
     }
 
-    const result: Record<string, Record<string, number>> = {};
+    const countsByLayer: Record<string, Record<string, Record<string, number>>> = {};
 
     // Now we will go through the list of stations and get the stations that could match
     for (const station of globalRecord?.stations?.split(',') || []) {
@@ -64,63 +106,41 @@ export default async function getH3Details(req, res) {
         if (!stationName) {
             console.log('station', sid, ' not found!');
         } else {
-            await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
-                result[date] ??= {}; //Object.assign(result[date] || {});
-                result[date][stationName] = row.count;
-            });
+            await searchMatchingArrowFiles(
+                stationName,
+                fileDateMatch,
+                h3SplitLong,
+                oldest,
+                (row, date, layer) => {
+                    countsByLayer[layer] ??= {};
+                    countsByLayer[layer][date] ??= {};
+                    countsByLayer[layer][date][stationName] = (countsByLayer[layer][date][stationName] || 0) + row.count;
+                },
+                layers
+            );
         }
     }
 
-    // Sum up how many points
-    let total = 0;
-    const summed = _reduce(
-        result,
-        (r, v) => {
-            return _reduce(
-                v,
-                (r, v, k) => {
-                    r[k] = (r[k] || 0) + (v || 0);
-                    total = total + (v || 0);
-                    return r;
-                },
-                r
-            );
-        },
-        {} as Record<string, number>
-    );
+    const resultByLayer: Record<string, any> = {};
+    for (const [layer, result] of Object.entries(countsByLayer)) {
+        resultByLayer[layer] = buildSeriesData(result);
+    }
 
-    // Sort and find top 5
-    const top5 = _sortBy(
-        _reduce(
-            summed,
-            (r, v, k) => {
-                r.push({s: k, c: v});
-                return r;
-            },
-            []
-        ),
-        (v) => -v.c
-    ).slice(0, 5);
+    // Build 'all' whenever multiple layers were requested (even if only one has data)
+    const layerKeys = Object.keys(resultByLayer);
+    if (layers.length > 1) {
+        const allResult: Record<string, Record<string, number>> = {};
+        for (const result of Object.values(countsByLayer)) {
+            for (const [date, stations] of Object.entries(result)) {
+                allResult[date] ??= {};
+                for (const [sname, count] of Object.entries(stations)) {
+                    allResult[date][sname] = (allResult[date][sname] || 0) + count;
+                }
+            }
+        }
+        resultByLayer['all'] = buildSeriesData(allResult);
+    }
 
-    const data = _map(result, (v, k) => {
-        return _reduce(
-            top5,
-            (r, top5key) => {
-                r.Other -= v[top5key.s];
-                r[top5key.s] = v[top5key.s];
-                return r;
-            },
-            {date: k, Other: _reduce(v, (r, count) => r + (count || 0), 0)}
-        );
-    }).sort((a, b) => a.date.localeCompare(b.date));
-
-    //    console.log(total);
-
-    // Return the selected top 5 along with the number left over so we can
-    // do a proper graph
-    res.status(200).json({
-        series: [...top5, {s: 'Other', c: _reduce(top5, (r, v) => (r = r - v.c), total)}],
-        data
-    });
-    console.log('<-', Date.now() - now.getTime(), 'msec', data.length, 'rows');
+    res.status(200).json({layers: resultByLayer});
+    console.log('<-', Date.now() - now.getTime(), 'msec', layerKeys.join(','), 'rows');
 }
