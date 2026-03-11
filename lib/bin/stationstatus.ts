@@ -28,6 +28,7 @@ export interface StationDetails {
     valid?: boolean;
     outputEpoch?: Epoch;
     outputDate?: string;
+    layerMask?: number;
 
     stats: {
         ignoredPAW: number; // we ignore from PAW devices

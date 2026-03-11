@@ -76,7 +76,7 @@ import {
     ENABLED_LAYERS
 } from '../lib/common/config';
 
-import {Layer, layerFromDestCallsign, getWriteLayers, PRESENCE_ONLY, PRESENCE_SIGNAL} from '../lib/common/layers';
+import {Layer, layerFromDestCallsign, getWriteLayers, layerMaskFromSet, PRESENCE_ONLY, PRESENCE_SIGNAL} from '../lib/common/layers';
 
 // h3 cache functions
 import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from '../lib/bin/h3cache';
@@ -611,6 +611,9 @@ async function processPacket(packet: AprsLocationPacket) {
 
     // Determine which layers to write to (dual-write for FLARM and OGNTRK)
     const writeLayers = getWriteLayers(layer);
+
+    // Accumulate layer bitmask on the station
+    stationDetails.layerMask = (stationDetails.layerMask ?? 0) | layerMaskFromSet(writeLayers);
 
     // Enrich with elevation and send to everybody, this is async
     // and we don't need it's results to say we logged the packet

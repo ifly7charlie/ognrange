@@ -2,7 +2,7 @@ import {writeFileSync, unlinkSync, symlinkSync} from 'fs';
 import {writeFile, rename} from 'fs/promises';
 import {createWriteStream} from 'fs';
 import {PassThrough} from 'stream';
-import {Bool, Utf8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
+import {Bool, Utf8, Uint8, Uint32, Float32, makeBuilder, Table, RecordBatchWriter} from 'apache-arrow/Arrow.node';
 import {gzipSync, createGzip} from 'zlib';
 
 import {OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
@@ -41,7 +41,8 @@ export async function produceStationFile(accumulators: Accumulators) {
             lat = makeBuilder({type: new Float32()}),
             lng = makeBuilder({type: new Float32()}),
             valid = makeBuilder({type: new Bool()}),
-            lastPacket = makeBuilder({type: new Uint32()});
+            lastPacket = makeBuilder({type: new Uint32()}),
+            layerMask = makeBuilder({type: new Uint8()});
 
         // Output an id sorted list of stations
         for (const station of statusOutput.sort((a, b) => a.id - b.id)) {
@@ -51,6 +52,7 @@ export async function produceStationFile(accumulators: Accumulators) {
             lng.append(station.lng);
             valid.append(station.valid);
             lastPacket.append(station.lastPacket);
+            layerMask.append(station.layerMask ?? 0);
         }
 
         // Convert into output file
@@ -60,7 +62,8 @@ export async function produceStationFile(accumulators: Accumulators) {
             lat: lat.finish().toVector(),
             lng: lng.finish().toVector(),
             valid: valid.finish().toVector(),
-            lastPacket: lastPacket.finish().toVector()
+            lastPacket: lastPacket.finish().toVector(),
+            layerMask: layerMask.finish().toVector()
         };
         const tableUpdates = new Table(arrow);
 

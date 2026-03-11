@@ -5,6 +5,7 @@ import {useTranslation, Trans} from 'next-i18next';
 
 import {useStationMeta} from './stationmeta';
 import type {PickableDetails} from './pickabledetails';
+import {LayerBadges} from './layerbadges';
 
 import {cellToLatLng, greatCircleDistance, getResolution, getHexagonAreaAvg, UNITS} from 'h3-js';
 
@@ -282,7 +283,7 @@ export function CoverageDetails({
         return (
             <>
                 <b>{station}</b>
-                <br />
+                <LayerBadges layerMask={stationData.layerMask} />
                 <br />
                 <AvailableFiles station={station} setFile={setFile} displayType="day" />
                 <AvailableFiles station={station} setFile={setFile} displayType="month" />

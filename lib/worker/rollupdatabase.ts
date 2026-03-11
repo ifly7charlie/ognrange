@@ -33,7 +33,7 @@ export type RollupDatabaseCommand = {
 export interface RollupResult extends RollupWorkerResult {
     elapsed: number;
     operations: number;
-    recordsRemoved: number;
+    recordsAccumulated: number;
     retiredBuckets: number;
     arrowRecords: number;
     layersWithData?: number;
@@ -278,9 +278,7 @@ export async function rollupDatabaseInternal(
             }
         } while (!advancePrimary);
 
-        // Once we have accumulated we delete the accumulator key
         h3source++;
-        dbOps.push({type: 'del', key: h3p.dbKey()});
     }
 
     // Finally if we have rollups with data after us then we need to update their invalidstations
@@ -404,17 +402,9 @@ export async function rollupDatabaseInternal(
     // If we have a new accumulator then we need to purge the old meta data records - we
     // have already purged the data above
     dbOps.push({type: 'del', key: CoverageHeader.getAccumulatorMeta('current', accumulators.current.bucket, layer).dbKey()});
-    const recordsRemoved = dbOps.filter((o) => o.type === 'del').length - 1;
-    //if (db.global) {
-    //    if (countToDelete > 0) {
-    //        console.log(`rollup: ${db.ognStationName}: current bucket ${[accumulators.current.bucket]} completed, removing ${countToDelete} records`);
-    //    }
+    const recordsAccumulated = h3source;
 
-    //
     // Finally execute all the operations on the database
-    if (name == 'LASHAM') {
-        console.log(name, JSON.stringify(dbOps));
-    }
     await db.batch(dbOps);
 
     const retired = {retiredBuckets: 1};
@@ -429,11 +419,10 @@ export async function rollupDatabaseInternal(
         retired.retiredBuckets += retiredAccumulators.length;
     }
 
-    // Purge everything from the current accumulator, this should just do a compact as we
-    // have already deleted in the batch above
+    // Purge everything from the current accumulator
     await purge(db, CoverageHeader.getDbSearchRangeForAccumulator('current', accumulators.current.bucket, true, layer));
 
-    return {elapsed: Date.now() - startTime, operations: dbOps.length, recordsRemoved, arrowRecords, ...retired};
+    return {elapsed: Date.now() - startTime, operations: dbOps.length, recordsAccumulated, arrowRecords, ...retired};
 }
 
 //
@@ -622,12 +611,12 @@ export async function rollupDatabaseStartup(
         if (missingBuckets.length < 3) {
             Object.values(hangingAccumulators).forEach((v) => delete v.found);
             const commonArgs = {accumulators: hangingAccumulators, now, needValidPurge: false, stationMeta, historical: true, wasMissing: missingBuckets};
-            const rollupResult: RollupResult = {elapsed: 0, operations: 0, recordsRemoved: 0, retiredBuckets: 0, arrowRecords: 0, layersWithData: 0};
+            const rollupResult: RollupResult = {elapsed: 0, operations: 0, recordsAccumulated: 0, retiredBuckets: 0, arrowRecords: 0, layersWithData: 0};
             for (const layer of allLayers) {
                 const r = await rollupDatabaseInternal(db, commonArgs, layer);
                 rollupResult.elapsed += r.elapsed;
                 rollupResult.operations += r.operations;
-                rollupResult.recordsRemoved += r.recordsRemoved;
+                rollupResult.recordsAccumulated += r.recordsAccumulated;
                 rollupResult.retiredBuckets += r.retiredBuckets;
                 rollupResult.arrowRecords += r.arrowRecords;
                 if (r.arrowRecords > 0) rollupResult.layersWithData!++;

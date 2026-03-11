@@ -1,10 +1,12 @@
 import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 
-import {createContext, useContext, useEffect, useCallback, useState} from 'react';
+import {createContext, useContext, useEffect, useMemo, useCallback, useState, useRef} from 'react';
 import {useSearchParams} from 'next/navigation';
 
 import {ArrowLoader} from '@loaders.gl/arrow';
 import {load} from '@loaders.gl/core';
+
+import {Layer, LAYER_BIT, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
 
 const StationMetaContext = createContext<StationMeta | null>(null);
 
@@ -15,6 +17,7 @@ export interface StationMeta {
     id: Uint32Array;
     valid?: boolean[];
     lastPacket?: Uint32Array;
+    layerMask?: Uint8Array;
 
     length: number;
 }
@@ -28,8 +31,23 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
     const params = useSearchParams();
     const file = params.get('file')?.toString() ?? 'year'; // default if no file is current year
     const allStations = parseInt(params.get('allStations')?.toString() ?? '0');
+    const layersParam = params.get('layers')?.toString();
 
-    // What has been loaded
+    // Compute selected layer bitmask from URL params
+    const selectedLayerMask = useMemo(() => {
+        if (!layersParam) return null; // no filter — show all
+        const layerValues = layersParam
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => ALL_LAYER_NAMES.has(s)) as Layer[];
+        if (layerValues.length === 0) return null;
+        return layerMaskFromSet(layerValues);
+    }, [layersParam]);
+
+    // Raw data from the arrow file (unfiltered)
+    const rawData = useRef<StationMeta | null>(null);
+
+    // What has been loaded (filtered)
     const [stationMeta, setStationMetaInternal] = useState<StationMeta>(() => ({
         name: [], //
         lng: new Float32Array(),
@@ -39,30 +57,51 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
         length: 0
     }));
 
-    const setStationMeta = useCallback(
-        (data) => {
-            const validFilter = (_value: any, index: number) => data.valid[index];
-            const filteredData =
-                allStations || !('valid' in data)
-                    ? data
-                    : {
-                          name: data.name.filter(validFilter), //
-                          lng: data.lng.filter(validFilter),
-                          lat: data.lat.filter(validFilter),
-                          id: data.id.filter(validFilter),
-                          valid: data.valid.filter(validFilter)
-                      };
+    // Apply both valid and layer filters to raw data
+    const applyFilters = useCallback(
+        (data: StationMeta) => {
+            const combinedBit = 1 << LAYER_BIT[Layer.COMBINED];
+
+            // Build a combined filter predicate
+            const passesFilter = (_value: any, index: number): boolean => {
+                // Valid filter
+                if (!allStations && data.valid && !data.valid[index]) return false;
+                // Layer filter
+                if (selectedLayerMask !== null) {
+                    const mask = data.layerMask ? data.layerMask[index] : 0;
+                    const effectiveMask = mask === 0 ? combinedBit : mask;
+                    if ((effectiveMask & selectedLayerMask) === 0) return false;
+                }
+                return true;
+            };
+
+            const filteredData = {
+                name: data.name.filter(passesFilter),
+                lng: data.lng.filter(passesFilter),
+                lat: data.lat.filter(passesFilter),
+                id: data.id.filter(passesFilter),
+                valid: data.valid?.filter(passesFilter),
+                layerMask: data.layerMask?.filter(passesFilter)
+            };
             setStationMetaInternal({...filteredData, length: filteredData.id.length});
         },
-        [allStations]
+        [allStations, selectedLayerMask]
     );
+
+    // Re-apply filters when allStations or selectedLayerMask changes
+    useEffect(() => {
+        if (rawData.current) {
+            applyFilters(rawData.current);
+        }
+    }, [applyFilters]);
 
     useEffect(() => {
         load(`${props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations/stations.${file}.arrow`, ArrowLoader)
             .then((result) => {
                 const data = (result as any).data as StationMeta;
                 console.log('setting station meta for', file, 'with', data.id.length, 'stations');
-                setStationMeta(data);
+                rawData.current = data;
+                applyFilters(data);
             })
             .catch((e) => {
                 if (e.message.match(/arrow \(404\)/)) {
@@ -71,14 +110,15 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
                         .then((result) => {
                             const data = (result as any).data as StationMeta;
                             console.log('setting station meta', data.id.length, 'stations');
-                            setStationMeta(data);
+                            rawData.current = data;
+                            applyFilters(data);
                         })
                         .catch((e) => {
                             console.log('Error loading stations.arrow (fallback)', e);
                         });
                 }
             });
-    }, [file, allStations]);
+    }, [file]);
 
     return <StationMetaContext.Provider value={stationMeta}>{props.children}</StationMetaContext.Provider>;
 }

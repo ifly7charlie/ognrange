@@ -147,12 +147,12 @@ if (!isMainThread) {
                 switch (task.action) {
                     case 'rollup': {
                         const allLayers = ENABLED_LAYERS ? [...ENABLED_LAYERS] : [...ALL_LAYERS];
-                        out = {elapsed: 0, operations: 0, recordsRemoved: 0, retiredBuckets: 0, arrowRecords: 0, layersWithData: 0};
+                        out = {elapsed: 0, operations: 0, recordsAccumulated: 0, retiredBuckets: 0, arrowRecords: 0, layersWithData: 0};
                         for (const layer of allLayers) {
                             const r = await rollupDatabaseInternal(db, task.commonArgs, layer);
                             out.elapsed += r.elapsed;
                             out.operations += r.operations;
-                            out.recordsRemoved += r.recordsRemoved;
+                            out.recordsAccumulated += r.recordsAccumulated;
                             out.retiredBuckets += r.retiredBuckets;
                             out.arrowRecords += r.arrowRecords;
                             if (r.arrowRecords > 0) out.layersWithData++;
@@ -171,7 +171,7 @@ if (!isMainThread) {
                         }
                         break;
                     case 'purge':
-                        await purgeDatabaseInternal(db, 'purge');
+                        await purgeDatabaseInternal(db);
                         break;
                     case 'backup':
                         out = await backupDatabaseInternal(db, task);
@@ -221,9 +221,7 @@ async function postMessage(command: RollupWorkerCommands, transferables: ArrayBu
     });
 }
 
-async function purgeDatabaseInternal(db: DB, reason: string) {
-    // empty the database... we could delete it but this is very simple and should be good enough
-    console.log(`clearing database for ${db.ognStationName} because ${reason}`);
+async function purgeDatabaseInternal(db: DB) {
     await db.clear();
     return;
 }

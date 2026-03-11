@@ -13,7 +13,8 @@
         "adsl": "ADS-L",
         "fanet": "FANET",
         "paw": "PilotAware",
-        "ogntrk": "OGN Tracker"
+        "ogntrk": "OGN Tracker",
+        "safesky": "SafeSky"
     },
     "period": {
         "title": "Select time period to display",

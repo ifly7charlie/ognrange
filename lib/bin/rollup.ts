@@ -28,7 +28,7 @@ export interface RollupStats {
         sumElapsed: number;
         operations: number;
         retiredBuckets: number;
-        recordsRemoved: number;
+        recordsAccumulated: number;
         databases: number;
         skippedStations: number;
         arrowRecords: number;
@@ -87,7 +87,8 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
             // Any of these, if we don't have a timestamp yet assume it is valid
             const stationValidityTimestamp = station.lastPacket || station.lastBeacon || nowEpoch;
 
-            if (station.moved) {
+            const wasMoved = station.moved;
+            if (wasMoved) {
                 station.moved = false;
                 station.valid = false;
                 rollupStats.movedStations++;
@@ -102,7 +103,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
                 await updateStationStatus(station);
                 needValidPurge = true;
                 invalidStations++;
-                console.log(`purging ${station.moved ? 'moved' : 'expired'} station ${station.station} last timestamp ${new Date(stationValidityTimestamp * 1000).toISOString()}`);
+                console.log(`station ${station.station} now invalid: ${wasMoved ? 'moved' : 'expired'}, last activity ${new Date(stationValidityTimestamp * 1000).toISOString()}`);
             }
         }
 
@@ -156,7 +157,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
                 sumElapsed: 0, //
                 operations: 0,
                 retiredBuckets: 0,
-                recordsRemoved: 0,
+                recordsAccumulated: 0,
                 databases: 0,
                 skippedStations: 0,
                 arrowRecords: 0
@@ -183,8 +184,9 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
 
                 // If a station is not valid we are clearing the data from it from the registers
                 if (stationMeta.station != 'global' && needValidPurge && !validStations.has(stationMeta.id)) {
-                    // empty the database... we could delete it but this is very simple and should be good enough
-                    console.log(`clearing database for ${station} as it is not valid`);
+                    const lastActivity = stationMeta.lastPacket || stationMeta.lastBeacon;
+                    const reason = stationMeta.moved ? 'moved' : !lastActivity ? 'no activity recorded' : `expired, last activity ${new Date(lastActivity * 1000).toISOString()}`;
+                    console.log(`clearing database for ${station}: ${reason}`);
                     await purgeDatabase(station);
                     rollupStats.last!.databases++;
                 } else {
@@ -194,7 +196,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
                         rollupStats.last!.sumElapsed += r.elapsed;
                         rollupStats.last!.operations += r.operations;
                         rollupStats.last!.retiredBuckets += r.retiredBuckets;
-                        rollupStats.last!.recordsRemoved += r.recordsRemoved;
+                        rollupStats.last!.recordsAccumulated += r.recordsAccumulated;
                         rollupStats.last!.arrowRecords += r.arrowRecords;
                         rollupStats.last!.databases++;
                     }

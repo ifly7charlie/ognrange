@@ -8,7 +8,7 @@ vi.mock('../../lib/worker/rollupworker', () => ({
         elapsed: 100,
         operations: 50,
         retiredBuckets: 0,
-        recordsRemoved: 5,
+        recordsAccumulated: 5,
         arrowRecords: 25
     })),
     purgeDatabase: vi.fn(async () => {}),

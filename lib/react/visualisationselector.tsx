@@ -2,7 +2,8 @@ import {useMemo, useCallback, useEffect} from 'react';
 import {useTranslation} from 'next-i18next';
 
 import Select from 'react-select';
-import {LAYER_COLOR, Layer} from '../common/layers';
+import {Layer, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
+import {LayerBadges} from './layerbadges';
 
 const normalVisualisations = ['avgSig', 'maxSig', 'count', 'minAlt', 'minAgl', 'minAltSig', 'avgCrc', 'avgGap'];
 const signalVisualisations = new Set(['avgSig', 'maxSig', 'minAltSig', 'avgCrc']);
@@ -13,26 +14,12 @@ const defaultVisualisation = 'avgSig';
 
 function LayerCoverageLegend({layers}: {layers: string[]}) {
     const {t} = useTranslation();
+    const validLayers = layers.filter((l) => ALL_LAYER_NAMES.has(l)) as Layer[];
+    const mask = validLayers.length > 0 ? layerMaskFromSet(validLayers) : undefined;
     return (
-        <div style={{marginTop: '6px', fontSize: '0.85em'}}>
-            {layers.map((l) => {
-                const color = LAYER_COLOR[l as Layer];
-                return (
-                    <div key={l} style={{display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px'}}>
-                        <div
-                            style={{
-                                width: '14px',
-                                height: '14px',
-                                borderRadius: '2px',
-                                flexShrink: 0,
-                                backgroundColor: color ? `rgb(${color[0]},${color[1]},${color[2]})` : '#808080'
-                            }}
-                        />
-                        <span>{t(`layers.${l}`)}</span>
-                    </div>
-                );
-            })}
-            <div style={{color: '#888', marginTop: '2px', fontStyle: 'italic'}}>{t('visualisation.layerCoverageBlend')}</div>
+        <div style={{marginTop: '6px'}}>
+            <LayerBadges layerMask={mask} />
+            <div style={{color: '#888', marginTop: '2px', fontStyle: 'italic', fontSize: '0.85em'}}>{t('visualisation.layerCoverageBlend')}</div>
         </div>
     );
 }
