@@ -6,6 +6,7 @@ import {tableFromIPC, Table} from 'apache-arrow/Arrow.node';
 import {gunzipSync} from 'zlib';
 
 import {MAX_ARROW_FILES, ARROW_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
+import {ALL_LAYER_NAMES} from '../common/layers';
 
 type ArrowTableType = Table<any>;
 
@@ -127,7 +128,8 @@ export async function searchMatchingArrowFiles(
     combine: (row: RowResult, date: string, layer: string) => void,
     layers?: string[]
 ) {
-    const effectiveLayers = layers?.length ? layers : ['combined'];
+    const effectiveLayers = (layers?.length ? layers : ['combined']).filter((l) => ALL_LAYER_NAMES.has(l));
+    if (!effectiveLayers.length) return;
     const includeCombined = effectiveLayers.includes('combined');
     const nonCombined = effectiveLayers.filter((l) => l !== 'combined');
 

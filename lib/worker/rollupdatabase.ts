@@ -441,7 +441,7 @@ export async function rollupDatabaseInternal(
 // merging with any existing prefixed data. This ensures rollupDatabaseInternal (which only
 // iterates prefixed ranges) doesn't miss legacy data.
 //
-async function migrateLegacyKeysToPrefix(db: DB, accumulators: Accumulators): Promise<number> {
+export async function migrateLegacyKeysToPrefix(db: DB, accumulators: Accumulators): Promise<number> {
     let migrated = 0;
 
     for (const typeName of Object.keys(accumulators) as AccumulatorTypeString[]) {

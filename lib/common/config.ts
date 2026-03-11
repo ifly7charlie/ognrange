@@ -107,8 +107,9 @@ export const ELEVATION_TILE_RESOLUTION = parseInt(process.env.ELEVATION_TILE_RES
 
 /* # Which coverage layers to capture. Comma-separated list of layer names.
  * # Defaults to all layers. Set to "combined" for backwards-compatible single-layer mode. */
-import {parseEnabledLayers} from './layers';
+import {parseEnabledLayers, layerMaskFromSet} from './layers';
 export const ENABLED_LAYERS = parseEnabledLayers(process.env.ENABLED_LAYERS);
+export const ENABLED_LAYERS_MASK = layerMaskFromSet(ENABLED_LAYERS);
 
 /* # version number if exported during build - normally calls git to get it for development
  * # environment */

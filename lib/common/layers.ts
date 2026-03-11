@@ -7,17 +7,21 @@ export enum Layer {
     ADSL = 'adsl',
     FANET = 'fanet',
     OGNTRK = 'ogntrk',
-    PAW = 'paw'
+    PAW = 'paw',
+    SAFESKY = 'safesky'
 }
 
 // APRS TOCALL (destCallsign) → Layer mapping
 const TOCALL_TO_LAYER: Record<string, Layer> = {
     OGFLR: Layer.FLARM,
+    OGFLR7: Layer.FLARM,
+    APRS: Layer.FLARM,
     OGADSB: Layer.ADSB,
     OGADSL: Layer.ADSL,
     OGNFNT: Layer.FANET,
     OGNTRK: Layer.OGNTRK,
-    OGPAW: Layer.PAW
+    OGPAW: Layer.PAW,
+    OGNSKY: Layer.SAFESKY
 };
 
 // DB key prefix per layer — sorted alphabetically for contiguous iteration
@@ -28,6 +32,7 @@ const LAYER_DB_PREFIX: Record<Layer, string> = {
     [Layer.FLARM]: 'f/',
     [Layer.FANET]: 'n/',
     [Layer.PAW]: 'p/',
+    [Layer.SAFESKY]: 's/',
     [Layer.OGNTRK]: 't/'
 };
 
@@ -47,7 +52,10 @@ export const PRESENCE_SIGNAL = 4;
 export const COMBINED_LAYERS: ReadonlySet<Layer> = new Set([Layer.FLARM, Layer.OGNTRK]);
 
 // All layers in DB sort order
-export const ALL_LAYERS: readonly Layer[] = [Layer.ADSB, Layer.COMBINED, Layer.ADSL, Layer.FLARM, Layer.FANET, Layer.PAW, Layer.OGNTRK];
+export const ALL_LAYERS: readonly Layer[] = [Layer.ADSB, Layer.COMBINED, Layer.ADSL, Layer.FLARM, Layer.FANET, Layer.PAW, Layer.SAFESKY, Layer.OGNTRK];
+
+// Set of valid layer name strings for input validation
+export const ALL_LAYER_NAMES: ReadonlySet<string> = new Set(Object.values(Layer));
 
 export function layerFromDestCallsign(destCallsign: string): Layer | null {
     return TOCALL_TO_LAYER[destCallsign] ?? null;
@@ -69,7 +77,7 @@ export function getWriteLayers(layer: Layer): Layer[] {
     return [layer];
 }
 
-// Bit position for each layer in the layerMask coverage bitmask (Uint8, max 7 bits)
+// Bit position for each layer in the layerMask coverage bitmask (Uint8, max 8 bits)
 export const LAYER_BIT: Record<Layer, number> = {
     [Layer.COMBINED]: 0,
     [Layer.FLARM]:    1,
@@ -77,7 +85,8 @@ export const LAYER_BIT: Record<Layer, number> = {
     [Layer.ADSL]:     3,
     [Layer.FANET]:    4,
     [Layer.PAW]:      5,
-    [Layer.OGNTRK]:   6
+    [Layer.OGNTRK]:   6,
+    [Layer.SAFESKY]:  7
 };
 
 // Display color per layer for the layerCoverage visualisation [R, G, B]
@@ -88,8 +97,36 @@ export const LAYER_COLOR: Record<Layer, [number, number, number]> = {
     [Layer.ADSL]:     [ 52, 152, 219], // blue
     [Layer.FANET]:    [ 46, 204, 113], // green
     [Layer.PAW]:      [241, 196,  15], // yellow
-    [Layer.OGNTRK]:   [231,  76,  60]  // red
+    [Layer.OGNTRK]:   [231,  76,  60], // red
+    [Layer.SAFESKY]:  [236, 100, 206]  // pink
 };
+
+// Bitmask with all layer bits set
+export const ALL_LAYERS_MASK = ALL_LAYERS.reduce((m, l) => m | (1 << LAYER_BIT[l]), 0);
+
+// Pre-computed: prefix char → bit value (1 << bit position)
+const PREFIX_TO_BIT: Record<string, number> = {};
+for (const [prefix, layer] of Object.entries(PREFIX_TO_LAYER)) {
+    PREFIX_TO_BIT[prefix] = 1 << LAYER_BIT[layer];
+}
+
+/** Returns the single-bit mask for a db key prefix char, or 0 if unknown */
+export function layerBitFromPrefix(prefix: string): number {
+    return PREFIX_TO_BIT[prefix[0]] ?? 0;
+}
+
+/** Converts a layer bitmask back to an array of Layer values */
+export function layersFromBitfield(mask: number): Layer[] {
+    return ALL_LAYERS.filter((l) => mask & (1 << LAYER_BIT[l]));
+}
+
+/** Computes a layer bitmask from an iterable of layers */
+export function layerMaskFromSet(layers: Iterable<Layer> | null): number {
+    if (!layers) return ALL_LAYERS_MASK;
+    let mask = 0;
+    for (const l of layers) mask |= 1 << LAYER_BIT[l];
+    return mask;
+}
 
 /** Returns the layerMask bit value for a given Arrow file URL */
 export function layerBitFromUrl(url: string): number {

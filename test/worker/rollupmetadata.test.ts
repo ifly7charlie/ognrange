@@ -3,6 +3,7 @@ import {Uint8FromObject, saveAccumulatorMetadata} from '../../lib/worker/rollupm
 import type {AccumulatorBucket} from '../../lib/bin/coverageheader';
 import type {Accumulators} from '../../lib/bin/accumulators';
 import type {Epoch} from '../../lib/bin/types';
+import {ALL_LAYERS, Layer} from '../../lib/common/layers';
 
 describe('Uint8FromObject', () => {
     it('converts object to Uint8Array of JSON bytes', () => {
@@ -46,19 +47,38 @@ describe('saveAccumulatorMetadata', () => {
         };
     }
 
-    it('writes metadata for each accumulator type', async () => {
+    it('writes metadata for each accumulator type across all layers', async () => {
         const db = makeMockDb();
         const accumulators = makeTestAccumulators();
         await saveAccumulatorMetadata(db as any, accumulators);
-        // 5 accumulator types = 5 get calls + 5 put calls
+        // 5 accumulator types × 7 layers = 35 get/put calls
+        const expectedCalls = 5 * ALL_LAYERS.length;
+        expect(db.get).toHaveBeenCalledTimes(expectedCalls);
+        expect(db.put).toHaveBeenCalledTimes(expectedCalls);
+    });
+
+    it('writes metadata for single layer when one layer specified', async () => {
+        const db = makeMockDb();
+        const accumulators = makeTestAccumulators();
+        await saveAccumulatorMetadata(db as any, accumulators, Layer.COMBINED);
+        // 5 accumulator types × 1 layer = 5 get/put calls
         expect(db.get).toHaveBeenCalledTimes(5);
         expect(db.put).toHaveBeenCalledTimes(5);
+    });
+
+    it('writes metadata for only the specified set of layers', async () => {
+        const db = makeMockDb();
+        const accumulators = makeTestAccumulators();
+        await saveAccumulatorMetadata(db as any, accumulators, new Set([Layer.COMBINED, Layer.FLARM]));
+        // 5 accumulator types × 2 layers = 10 get/put calls
+        expect(db.get).toHaveBeenCalledTimes(10);
+        expect(db.put).toHaveBeenCalledTimes(10);
     });
 
     it('creates new when get() rejects (no existing)', async () => {
         const db = makeMockDb();
         const accumulators = makeTestAccumulators();
-        await saveAccumulatorMetadata(db as any, accumulators);
+        await saveAccumulatorMetadata(db as any, accumulators, Layer.COMBINED);
         // All should go through catch path and still put
         expect(db.put).toHaveBeenCalledTimes(5);
         // Verify each put call wrote valid JSON

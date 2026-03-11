@@ -2,7 +2,6 @@
 module.exports = {
     i18n: {
         defaultLocale: 'en',
-        transSupportBasicHtmlNodes: true,
         locales: ['en']
     }
 };

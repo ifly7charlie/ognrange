@@ -18,7 +18,7 @@ export interface DBMetaRecord {
     allStarts: {start: Epoch; startUtc: string}[];
 }
 
-export async function saveAccumulatorMetadata(db: DB, accumulators: Accumulators, onlyLayer?: Layer): Promise<DB> {
+export async function saveAccumulatorMetadata(db: DB, accumulators: Accumulators, forLayers?: Layer | Iterable<Layer>): Promise<DB> {
     const now = new Date();
     const nowEpoch = Math.trunc(now.valueOf() / 1000) as Epoch;
 
@@ -33,10 +33,15 @@ export async function saveAccumulatorMetadata(db: DB, accumulators: Accumulators
         };
     };
 
-    // When called from a rollup, only write metadata for the layer being rolled up.
-    // When called from a flush (no layer), write for every enabled layer so the
-    // startup rollup can find and properly handle hanging accumulators for all layers.
-    const layers: Layer[] = onlyLayer ? [onlyLayer] : ENABLED_LAYERS ? [...ENABLED_LAYERS] : [...ALL_LAYERS];
+    // Write metadata only for the specified layers. Callers should pass the layers
+    // that actually contain data to avoid creating phantom metadata.
+    const layers: Layer[] = forLayers
+        ? typeof forLayers === 'string'
+            ? [forLayers]
+            : [...forLayers]
+        : ENABLED_LAYERS
+          ? [...ENABLED_LAYERS]
+          : [...ALL_LAYERS];
 
     for (const layer of layers) {
         for (const typeString in accumulators) {

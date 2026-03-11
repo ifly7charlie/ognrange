@@ -9,6 +9,9 @@ import {Accumulators} from '../bin/accumulators';
 
 import {saveAccumulatorMetadata} from './rollupmetadata';
 
+import {layerBitFromPrefix, layersFromBitfield} from '../common/layers';
+import {ENABLED_LAYERS_MASK} from '../common/config';
+
 type PendingRecord = {header: CoverageHeader; record: CoverageRecord};
 let h3Pending = new Map<StationName, Map<string, PendingRecord>>();
 
@@ -66,8 +69,13 @@ export async function flushH3DbOps(accumulators: Accumulators): Promise<{databas
                                 : incoming;
                             batchOps.push({type: 'put', key, value: finalRecord.buffer()});
                         }
-                        // Make sure we have updated the metadata before we write the batch
-                        return saveAccumulatorMetadata(db, accumulators).then((db) => db.batch(batchOps));
+                        // Only write metadata for layers that actually have data in this batch
+                        let layerMask = 0;
+                        for (const k of keys) {
+                            layerMask |= layerBitFromPrefix(k[0]);
+                            if ((layerMask & ENABLED_LAYERS_MASK) === ENABLED_LAYERS_MASK) break;
+                        }
+                        return saveAccumulatorMetadata(db, accumulators, layersFromBitfield(layerMask)).then((db) => db.batch(batchOps));
                     })
                     .catch((e) => {
                         console.error(`${station}: error flushing ${keyMap.size} pending records: ${e}`);
