@@ -146,13 +146,16 @@ if (!isMainThread) {
                 db = await getDbThrow(task.station);
                 switch (task.action) {
                     case 'rollup': {
-                        out = await rollupDatabaseInternal(db, task.commonArgs, Layer.COMBINED);
-                        const layersToExport = (ENABLED_LAYERS ? [...ENABLED_LAYERS] : [...ALL_LAYERS]).filter((l) => l !== Layer.COMBINED);
-                        for (const layer of layersToExport) {
+                        const allLayers = ENABLED_LAYERS ? [...ENABLED_LAYERS] : [...ALL_LAYERS];
+                        out = {elapsed: 0, operations: 0, recordsRemoved: 0, retiredBuckets: 0, arrowRecords: 0, layersWithData: 0};
+                        for (const layer of allLayers) {
                             const r = await rollupDatabaseInternal(db, task.commonArgs, layer);
-                            out.arrowRecords += r.arrowRecords;
                             out.elapsed += r.elapsed;
                             out.operations += r.operations;
+                            out.recordsRemoved += r.recordsRemoved;
+                            out.retiredBuckets += r.retiredBuckets;
+                            out.arrowRecords += r.arrowRecords;
+                            if (r.arrowRecords > 0) out.layersWithData++;
                         }
                         break;
                     }

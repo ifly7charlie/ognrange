@@ -2,10 +2,10 @@ import {CoverageRecord, bufferTypes} from '../bin/coveragerecord';
 import {CoverageHeader} from '../bin/coverageheader';
 import {CoverageRecordWriter} from '../bin/coveragerecordwriter';
 
-import {Layer} from '../common/layers';
+import {Layer, ALL_LAYERS} from '../common/layers';
+import {ENABLED_LAYERS} from '../common/config';
 
 //import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
-
 
 import {writeFileSync, mkdirSync, unlinkSync, symlinkSync, renameSync} from 'fs';
 
@@ -36,6 +36,7 @@ export interface RollupResult extends RollupWorkerResult {
     recordsRemoved: number;
     retiredBuckets: number;
     arrowRecords: number;
+    layersWithData?: number;
 }
 
 export interface RollupDatabaseArgs {
@@ -397,8 +398,8 @@ export async function rollupDatabaseInternal(
         }
     }
 
-    // Make sure we have updated the meta data
-    await saveAccumulatorMetadata(db, accumulators);
+    // Make sure we have updated the meta data (only for this layer)
+    await saveAccumulatorMetadata(db, accumulators, layer);
 
     // If we have a new accumulator then we need to purge the old meta data records - we
     // have already purged the data above
@@ -411,23 +412,95 @@ export async function rollupDatabaseInternal(
 
     //
     // Finally execute all the operations on the database
+    if (name == 'LASHAM') {
+        console.log(name, JSON.stringify(dbOps));
+    }
     await db.batch(dbOps);
 
     const retired = {retiredBuckets: 1};
     if (retiredAccumulators) {
         // And we then need to purge anything that is no longer current
-        await Promise.allSettled(
-            retiredAccumulators //
-                .map((type) => purge(db, new CoverageHeader(0 as StationId, type as AccumulatorTypeString, accumulators[type as AccumulatorTypeString].bucket, '', layer)))
-        );
+        const retiredPurges = retiredAccumulators.flatMap((type) => {
+            const t = type as AccumulatorTypeString;
+            const b = accumulators[t].bucket;
+            return [purge(db, CoverageHeader.getDbSearchRangeForAccumulator(t, b, true, layer))];
+        });
+        await Promise.allSettled(retiredPurges);
         retired.retiredBuckets += retiredAccumulators.length;
     }
 
     // Purge everything from the current accumulator, this should just do a compact as we
     // have already deleted in the batch above
-    await purge(db, CoverageHeader.getAccumulatorMeta('current', accumulators.current.bucket, layer));
+    await purge(db, CoverageHeader.getDbSearchRangeForAccumulator('current', accumulators.current.bucket, true, layer));
 
     return {elapsed: Date.now() - startTime, operations: dbOps.length, recordsRemoved, arrowRecords, ...retired};
+}
+
+//
+// Migrate legacy unprefixed keys (e.g. "1042/h3...") to layer-prefixed format ("c/1042/h3...")
+// merging with any existing prefixed data. This ensures rollupDatabaseInternal (which only
+// iterates prefixed ranges) doesn't miss legacy data.
+//
+async function migrateLegacyKeysToPrefix(db: DB, accumulators: Accumulators): Promise<number> {
+    let migrated = 0;
+
+    for (const typeName of Object.keys(accumulators) as AccumulatorTypeString[]) {
+        const bucket = accumulators[typeName].bucket;
+        const legacyRange = CoverageHeader.getLegacyDbSearchRangeForAccumulator(typeName, bucket);
+
+        const legacyKeys: string[] = [];
+        const legacyValues: Uint8Array[] = [];
+        const prefixedKeys: string[] = [];
+
+        for await (const [key, value] of db.iterator(legacyRange)) {
+            const hr = new CoverageHeader(key);
+            if (hr.isMeta) continue;
+
+            legacyKeys.push(key.toString());
+            legacyValues.push(value);
+            prefixedKeys.push(hr.dbKey());
+        }
+
+        // Always delete legacy meta key for this accumulator
+        const legacyMetaKey = CoverageHeader.getLegacyAccumulatorMetaDbKey(typeName, bucket);
+        const legacyMetaOp: BatchOperation[] = [];
+        try {
+            if (await db.get(legacyMetaKey)) {
+                legacyMetaOp.push({type: 'del', key: legacyMetaKey});
+            }
+        } catch (_e) {
+            // key doesn't exist
+        }
+
+        if (legacyKeys.length === 0 && legacyMetaOp.length === 0) continue;
+
+        if (legacyKeys.length === 0) {
+            await db.batch(legacyMetaOp);
+            continue;
+        }
+
+        const existingValues = await db.getMany(prefixedKeys);
+        const ops: BatchOperation[] = [...legacyMetaOp];
+
+        for (let i = 0; i < legacyKeys.length; i++) {
+            const legacyRecord = new CoverageRecord(legacyValues[i]);
+            const existing = existingValues[i];
+
+            if (existing) {
+                const existingRecord = new CoverageRecord(existing);
+                const merged = existingRecord.rollup(legacyRecord);
+                ops.push({type: 'put', key: prefixedKeys[i], value: (merged ?? existingRecord).buffer()});
+            } else {
+                ops.push({type: 'put', key: prefixedKeys[i], value: legacyRecord.buffer()});
+            }
+            ops.push({type: 'del', key: legacyKeys[i]});
+        }
+
+        await db.batch(ops);
+        migrated += legacyKeys.length;
+    }
+
+    return migrated;
 }
 
 //
@@ -463,12 +536,18 @@ export async function rollupDatabaseStartup(
         const [key, value] = row;
         let hr = new CoverageHeader(key);
 
+        // Legacy keys lack the layer prefix; detect so we seek correctly
+        const isLegacyKey = hr.layer === Layer.COMBINED && !key.toString().startsWith('c/');
+        const seekEnd = isLegacyKey
+            ? CoverageHeader.getLegacyDbSearchRangeForAccumulator(hr.type, hr.bucket).lt
+            : CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket, hr.layer);
+
         // 80000000 is the h3 cell code we use to
         // store the metadata for our iterator
         if (!hr.isMeta) {
             accumulatorsToPurge[hr.dbKey()] = hr.accumulator;
             console.log(`${db.ognStationName}: purging entry without metadata ${hr.lockKey}`);
-            iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket, hr.layer));
+            iterator.seek(seekEnd);
             iteratorPromise = iterator.next();
             continue;
         }
@@ -509,11 +588,20 @@ export async function rollupDatabaseStartup(
         }
 
         // Done with this one lets skip forward
-        iterator.seek(CoverageHeader.getAccumulatorEnd(hr.type, hr.bucket, hr.layer));
+        iterator.seek(seekEnd);
         iteratorPromise = iterator.next();
     }
 
     let arrowRecords = 0;
+
+    // Migrate any legacy unprefixed keys to prefixed format before rolling up,
+    // so rollupDatabaseInternal (which only iterates prefixed ranges) sees all data
+    for (const key in hangingRollups) {
+        const migrated = await migrateLegacyKeysToPrefix(db, hangingRollups[key]);
+        if (migrated > 0) {
+            console.log(`${db.ognStationName}: migrated ${migrated} legacy keys to prefixed format`);
+        }
+    }
 
     // This is more interesting, this is a current that could be rolled into one of the other
     // existing accumulators... Current's are a "buffering" of the points until they get
@@ -528,19 +616,23 @@ export async function rollupDatabaseStartup(
 
         const [currentStart, destinationFiles] = describeAccumulators(hangingAccumulators);
 
+        const allLayers = ENABLED_LAYERS ? [...ENABLED_LAYERS] : [...ALL_LAYERS];
+
         // As long as we have a single bucket then we can proceed
         if (missingBuckets.length < 3) {
             Object.values(hangingAccumulators).forEach((v) => delete v.found);
-            const rollupResult = await rollupDatabaseInternal(db, {
-                //
-                accumulators: hangingAccumulators,
-                now,
-                needValidPurge: false,
-                stationMeta,
-                historical: true,
-                wasMissing: missingBuckets
-            });
-            arrowRecords += rollupResult.arrowRecords;
+            const commonArgs = {accumulators: hangingAccumulators, now, needValidPurge: false, stationMeta, historical: true, wasMissing: missingBuckets};
+            const rollupResult: RollupResult = {elapsed: 0, operations: 0, recordsRemoved: 0, retiredBuckets: 0, arrowRecords: 0, layersWithData: 0};
+            for (const layer of allLayers) {
+                const r = await rollupDatabaseInternal(db, commonArgs, layer);
+                rollupResult.elapsed += r.elapsed;
+                rollupResult.operations += r.operations;
+                rollupResult.recordsRemoved += r.recordsRemoved;
+                rollupResult.retiredBuckets += r.retiredBuckets;
+                rollupResult.arrowRecords += r.arrowRecords;
+                if (r.arrowRecords > 0) rollupResult.layersWithData!++;
+                arrowRecords += r.arrowRecords;
+            }
             if (hangingAccumulators.current.bucket !== expectedAccumulators.current.bucket) {
                 console.log(
                     `${db.ognStationName}: rolled up hanging current accumulator ${key}(${currentStart}) into ${destinationFiles}: ${JSON.stringify(rollupResult)}` + //
@@ -560,12 +652,13 @@ export async function rollupDatabaseStartup(
         // in expected)
         ...Object.values(allAccumulators)
             .filter((ch) => expectedAccumulators[ch.typeName].bucket != ch.bucket)
-            .map((hr) => purge(db, hr)),
+            .map((hr) => purge(db, CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true, hr.layer))),
 
         // These are old accumulators we purge them because we aren't sure what else can be done
         ...Object.keys(accumulatorsToPurge).map((key) => {
             datapurged = true;
-            return purge(db, new CoverageHeader(key));
+            const hr = new CoverageHeader(key);
+            return purge(db, CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true, hr.layer));
         })
     ];
     const purgedAccumulators =
@@ -598,7 +691,6 @@ function symlink(src: string, dest: string) {
 }
 
 // Clear data from the db
-async function purge(db: DB, hr: CoverageHeader) {
-    // Now clear and compact
-    await db.clear(CoverageHeader.getDbSearchRangeForAccumulator(hr.type, hr.bucket, true, hr.layer));
+async function purge(db: DB, range: {gte: string; lt: string}) {
+    await db.clear(range);
 }

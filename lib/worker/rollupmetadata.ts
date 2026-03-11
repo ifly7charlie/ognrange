@@ -1,12 +1,13 @@
 import {AccumulatorBucket, CoverageHeader} from '../bin/coverageheader';
 
-import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
-
-import {Epoch, EpochMS} from '../bin/types';
+import {Epoch} from '../bin/types';
 
 import {DB} from './stationcache';
 
 import {Accumulators, AccumulatorTypeString} from '../bin/accumulators';
+
+import {ALL_LAYERS, Layer} from '../common/layers';
+import {ENABLED_LAYERS} from '../common/config';
 
 export interface DBMetaRecord {
     start: Epoch;
@@ -17,7 +18,7 @@ export interface DBMetaRecord {
     allStarts: {start: Epoch; startUtc: string}[];
 }
 
-export async function saveAccumulatorMetadata(db: DB, accumulators: Accumulators): Promise<DB> {
+export async function saveAccumulatorMetadata(db: DB, accumulators: Accumulators, onlyLayer?: Layer): Promise<DB> {
     const now = new Date();
     const nowEpoch = Math.trunc(now.valueOf() / 1000) as Epoch;
 
@@ -32,20 +33,26 @@ export async function saveAccumulatorMetadata(db: DB, accumulators: Accumulators
         };
     };
 
-    // make sure we have an up to date header for each accumulator
-    for (const typeString in accumulators) {
-        const type = typeString as AccumulatorTypeString;
-        const currentHeader = CoverageHeader.getAccumulatorMeta(type, accumulators[type].bucket);
-        const dbkey = currentHeader.dbKey();
-        await db
-            .get(dbkey)
-            .then((value) => {
-                const meta = value ? JSON.parse(String(value)) : {};
-                db.put(dbkey, Uint8FromObject(updateMeta(meta)));
-            })
-            .catch((e) => {
-                db.put(dbkey, Uint8FromObject(updateMeta({})));
-            });
+    // When called from a rollup, only write metadata for the layer being rolled up.
+    // When called from a flush (no layer), write for every enabled layer so the
+    // startup rollup can find and properly handle hanging accumulators for all layers.
+    const layers: Layer[] = onlyLayer ? [onlyLayer] : ENABLED_LAYERS ? [...ENABLED_LAYERS] : [...ALL_LAYERS];
+
+    for (const layer of layers) {
+        for (const typeString in accumulators) {
+            const type = typeString as AccumulatorTypeString;
+            const currentHeader = CoverageHeader.getAccumulatorMeta(type, accumulators[type].bucket, layer);
+            const dbkey = currentHeader.dbKey();
+            await db
+                .get(dbkey)
+                .then((value) => {
+                    const meta = value ? JSON.parse(String(value)) : {};
+                    return db.put(dbkey, Uint8FromObject(updateMeta(meta)));
+                })
+                .catch(() => {
+                    return db.put(dbkey, Uint8FromObject(updateMeta({})));
+                });
+        }
     }
 
     return db;

@@ -158,6 +158,11 @@ export class CoverageHeader {
         return dbKeyPrefix(this._layer) + prefixWithZeros(4, this._tb.toString(16)) + '/' + this._h3;
     }
 
+    // Get the key string without layer prefix (legacy format)
+    legacyDbKey() {
+        return prefixWithZeros(4, this._tb.toString(16)) + '/' + this._h3;
+    }
+
     // Helpers for working with the data, no setters for these because
     // the can only be set on construction (all the h3 functions can
     // handle split longs, though they all return strings)
@@ -229,6 +234,21 @@ export class CoverageHeader {
     static getAccumulatorMeta(t: AccumulatorTypeString | AccumulatorType, b: AccumulatorBucket, layer: Layer = Layer.COMBINED) {
         const h = new CoverageHeader(0 as StationId, t, b, '00_meta', layer); // should be out of the begin/end search range for accumulator
         return h;
+    }
+
+    // Legacy versions without layer prefix for migration/compat with old databases
+    static getLegacyAccumulatorMetaDbKey(t: AccumulatorTypeString | AccumulatorType, b: AccumulatorBucket) {
+        const tb = typeof t === 'string' ? accumulatorTypes[t] : t;
+        return prefixWithZeros(4, ((((tb & 0x0f) << 12) | (b & 0x0fff)) as AccumulatorTypeAndBucket).toString(16)) + '/00_meta';
+    }
+
+    static getLegacyDbSearchRangeForAccumulator(t: AccumulatorType | AccumulatorTypeString, b: AccumulatorBucket) {
+        const tb = typeof t === 'string' ? accumulatorTypes[t] : t;
+        const acc = prefixWithZeros(4, ((((tb & 0x0f) << 12) | (b & 0x0fff)) as AccumulatorTypeAndBucket).toString(16));
+        return {
+            gte: acc + '/00_',
+            lt: acc + '/9000000000000000'
+        };
     }
 
     // Compares in db order so by bytes, yes please make this better I'm tired

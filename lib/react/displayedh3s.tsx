@@ -106,7 +106,7 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
         for (const layer of layerList) {
             const layerFiles = typeFiles?.[layer];
             for (const path of (layerFiles?.all || []) as string[]) {
-                const match = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)$/);
+                const match = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)(?:\.[a-z]+)?$/);
                 if (!match) continue;
                 const key = `${match[1]}.${match[2]}`;
                 if (key >= dateStart && key <= dateEnd) {

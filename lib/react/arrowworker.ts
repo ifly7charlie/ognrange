@@ -136,6 +136,47 @@ function mergeData(newData: any, presenceOnly: boolean, layerBit: number): void 
     const outStationsArr = stationsArr ? new Array<string>(maxLen) : null;
     const outNumStationsArr = stationsArr ? new Uint8Array(maxLen) : null;
     const outExpectedGapArr = stationsArr ? new Uint8Array(maxLen) : null;
+    const newExpectedGap: Uint8Array | undefined = newData.expectedGap;
+
+    const bulkCopyExisting = (iStart: number, iEnd: number, kDest: number) => {
+        outH3lo.set(h3lo.subarray(iStart, iEnd), kDest);
+        outH3hi.set(h3hi.subarray(iStart, iEnd), kDest);
+        outMinAgl.set(minAgl.subarray(iStart, iEnd), kDest);
+        outMinAlt.set(minAlt.subarray(iStart, iEnd), kDest);
+        outMinAltSig.set(minAltSig.subarray(iStart, iEnd), kDest);
+        outMaxSig.set(maxSig.subarray(iStart, iEnd), kDest);
+        outAvgSig.set(avgSig.subarray(iStart, iEnd), kDest);
+        outAvgCrc.set(avgCrc.subarray(iStart, iEnd), kDest);
+        outCount.set(count.subarray(iStart, iEnd), kDest);
+        outAvgGap.set(avgGap.subarray(iStart, iEnd), kDest);
+        if (outLayerMaskArr) outLayerMaskArr.set(layerMask.subarray(iStart, iEnd), kDest);
+        if (outStationsArr) {
+            const run = iEnd - iStart;
+            for (let x = 0; x < run; x++) outStationsArr[kDest + x] = stationsArr![iStart + x];
+            outNumStationsArr!.set(numStationsArr!.subarray(iStart, iEnd), kDest);
+            outExpectedGapArr!.set(expectedGapArr!.subarray(iStart, iEnd), kDest);
+        }
+    };
+
+    const bulkCopyNew = (jStart: number, jEnd: number, kDest: number) => {
+        const run = jEnd - jStart;
+        outH3lo.set(newH3lo.subarray(jStart, jEnd), kDest);
+        outH3hi.set(newH3hi.subarray(jStart, jEnd), kDest);
+        outMinAgl.set(newMinAgl.subarray(jStart, jEnd), kDest);
+        outMinAlt.set(newMinAlt.subarray(jStart, jEnd), kDest);
+        outMinAltSig.set(newMinAltSig.subarray(jStart, jEnd), kDest);
+        outMaxSig.set(newMaxSig.subarray(jStart, jEnd), kDest);
+        outAvgSig.set(newAvgSig.subarray(jStart, jEnd), kDest);
+        outAvgCrc.set(newAvgCrc.subarray(jStart, jEnd), kDest);
+        outCount.set(newCount.subarray(jStart, jEnd), kDest);
+        outAvgGap.set(newAvgGap.subarray(jStart, jEnd), kDest);
+        if (outLayerMaskArr) outLayerMaskArr.fill(layerBit, kDest, kDest + run);
+        if (outStationsArr && newStations) {
+            for (let x = 0; x < run; x++) outStationsArr[kDest + x] = newStations[jStart + x] ?? '';
+            if (newNumStations) outNumStationsArr!.set(newNumStations.subarray(jStart, jEnd), kDest);
+            if (newExpectedGap) outExpectedGapArr!.set(newExpectedGap.subarray(jStart, jEnd), kDest);
+        }
+    };
 
     let i = 0, j = 0, k = 0;
     while (i < length && j < newLen) {
@@ -145,43 +186,19 @@ function mergeData(newData: any, presenceOnly: boolean, layerBit: number): void 
         else                              cmp = 0;
 
         if (cmp < 0) {
-            // existing hex not in new file — copy as-is
-            outH3lo[k] = h3lo[i];
-            outH3hi[k] = h3hi[i];
-            outMinAgl[k] = minAgl[i];
-            outMinAlt[k] = minAlt[i];
-            outMinAltSig[k] = minAltSig[i];
-            outMaxSig[k] = maxSig[i];
-            outAvgSig[k] = avgSig[i];
-            outAvgCrc[k] = avgCrc[i];
-            outCount[k] = count[i];
-            outAvgGap[k] = avgGap[i];
-            if (outLayerMaskArr) outLayerMaskArr[k] = layerMask[i];
-            if (outStationsArr) {
-                outStationsArr[k] = stationsArr![i];
-                outNumStationsArr![k] = numStationsArr![i];
-                outExpectedGapArr![k] = expectedGapArr![i];
-            }
-            k++; i++;
+            // existing hex not in new file — bulk-copy the contiguous run
+            let iEnd = i + 1;
+            const tHi = newH3hi[j], tLo = newH3lo[j];
+            while (iEnd < length && (h3hi[iEnd] < tHi || (h3hi[iEnd] === tHi && h3lo[iEnd] < tLo))) iEnd++;
+            bulkCopyExisting(i, iEnd, k);
+            k += iEnd - i; i = iEnd;
         } else if (cmp > 0) {
-            // new hex not in existing — copy from new file
-            outH3lo[k] = newH3lo[j];
-            outH3hi[k] = newH3hi[j];
-            outMinAgl[k] = newMinAgl[j];
-            outMinAlt[k] = newMinAlt[j];
-            outMinAltSig[k] = newMinAltSig[j];
-            outMaxSig[k] = newMaxSig[j];
-            outAvgSig[k] = newAvgSig[j];
-            outAvgCrc[k] = newAvgCrc[j];
-            outCount[k] = newCount[j];
-            outAvgGap[k] = newAvgGap[j];
-            if (outLayerMaskArr) outLayerMaskArr[k] = layerBit;
-            if (outStationsArr && newStations) {
-                outStationsArr[k] = newStations[j] ?? '';
-                outNumStationsArr![k] = newNumStations?.[j] ?? 0;
-                outExpectedGapArr![k] = newData.expectedGap?.[j] ?? 0;
-            }
-            k++; j++;
+            // new hex not in existing — bulk-copy the contiguous run
+            let jEnd = j + 1;
+            const tHi = h3hi[i], tLo = h3lo[i];
+            while (jEnd < newLen && (newH3hi[jEnd] < tHi || (newH3hi[jEnd] === tHi && newH3lo[jEnd] < tLo))) jEnd++;
+            bulkCopyNew(j, jEnd, k);
+            k += jEnd - j; j = jEnd;
         } else {
             // same hex — merge
             const oldCount = count[i];
@@ -234,50 +251,9 @@ function mergeData(newData: any, presenceOnly: boolean, layerBit: number): void 
         }
     }
 
-    // drain remaining existing entries
-    const remExisting = length - i;
-    if (remExisting > 0) {
-        outH3lo.set(h3lo.subarray(i, length), k);
-        outH3hi.set(h3hi.subarray(i, length), k);
-        outMinAgl.set(minAgl.subarray(i, length), k);
-        outMinAlt.set(minAlt.subarray(i, length), k);
-        outMinAltSig.set(minAltSig.subarray(i, length), k);
-        outMaxSig.set(maxSig.subarray(i, length), k);
-        outAvgSig.set(avgSig.subarray(i, length), k);
-        outAvgCrc.set(avgCrc.subarray(i, length), k);
-        outCount.set(count.subarray(i, length), k);
-        outAvgGap.set(avgGap.subarray(i, length), k);
-        if (outLayerMaskArr) outLayerMaskArr.set(layerMask.subarray(i, length), k);
-        if (outStationsArr) {
-            for (let x = 0; x < remExisting; x++) outStationsArr[k + x] = stationsArr![i + x];
-            outNumStationsArr!.set(numStationsArr!.subarray(i, length), k);
-            outExpectedGapArr!.set(expectedGapArr!.subarray(i, length), k);
-        }
-        k += remExisting;
-    }
-
-    // drain remaining new-file entries
-    const remNew = newLen - j;
-    if (remNew > 0) {
-        outH3lo.set(newH3lo.subarray(j, newLen), k);
-        outH3hi.set(newH3hi.subarray(j, newLen), k);
-        outMinAgl.set(newMinAgl.subarray(j, newLen), k);
-        outMinAlt.set(newMinAlt.subarray(j, newLen), k);
-        outMinAltSig.set(newMinAltSig.subarray(j, newLen), k);
-        outMaxSig.set(newMaxSig.subarray(j, newLen), k);
-        outAvgSig.set(newAvgSig.subarray(j, newLen), k);
-        outAvgCrc.set(newAvgCrc.subarray(j, newLen), k);
-        outCount.set(newCount.subarray(j, newLen), k);
-        outAvgGap.set(newAvgGap.subarray(j, newLen), k);
-        if (outLayerMaskArr) outLayerMaskArr.fill(layerBit, k, k + remNew);
-        if (outStationsArr && newStations) {
-            for (let x = 0; x < remNew; x++) outStationsArr[k + x] = newStations[j + x] ?? '';
-            outNumStationsArr!.set((newNumStations ?? new Uint8Array(remNew)).subarray(j, newLen), k);
-            const newExpectedGap: Uint8Array | undefined = newData.expectedGap;
-            outExpectedGapArr!.set((newExpectedGap ?? new Uint8Array(remNew)).subarray(j, newLen), k);
-        }
-        k += remNew;
-    }
+    // drain remaining entries from whichever side wasn't exhausted
+    if (i < length) { bulkCopyExisting(i, length, k); k += length - i; }
+    if (j < newLen)  { bulkCopyNew(j, newLen, k);     k += newLen - j; }
 
     // trim to exact size
     h3lo = outH3lo.slice(0, k);

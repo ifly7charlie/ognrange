@@ -82,7 +82,7 @@ import {Layer, layerFromDestCallsign, getWriteLayers, PRESENCE_ONLY, PRESENCE_SI
 import {flushDirtyH3s, updateCachedH3, getH3CacheSize} from '../lib/bin/h3cache';
 
 // Rollup functions
-import {rollupAll, rollupStartupAll, rollupStats} from '../lib/bin/rollup';
+import {rollupAll, rollupStartupAll, rollupStats, waitForRollup} from '../lib/bin/rollup';
 import {rollupAbortStartup, shutdownRollupWorker, dumpRollupWorkerStatus} from '../lib/worker/rollupworker';
 import {getCurrentAccumulators, updateAndProcessAccumulators, initialiseAccumulators} from '../lib/bin/accumulators';
 
@@ -180,6 +180,7 @@ async function handleExit(signal: string) {
         await rollupAbortStartup();
         await startupPromise;
     } else {
+        await waitForRollup();
         for (const i of intervals) {
             clearInterval(i);
         }
@@ -505,7 +506,7 @@ async function processPacket(packet: AprsLocationPacket) {
     // vertical speed of 30 is ~0.5feet per second or ~15cm/sec and I'm guessing
     // helicopters can't hover that precisely. NOTE this threshold is not 0 because
     // the roc jumps a lot in the packet stream.
-    if (packet.speed ?? 99 < 1) {
+    if ((packet.speed ?? 99) < 1) {
         const rawRot = parseFloat((packet.comment.match(reExtractRot) || [0, '0'])[1]);
         const rawVC = parseFloat((packet.comment.match(reExtractVC) || [0, '0'])[1]);
         if (rawRot == 0.0 && rawVC < 30) {

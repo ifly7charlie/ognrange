@@ -266,10 +266,10 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
             <b>{t('title')}:</b>
             {/* Row 1: type selector + date picker (single mode only) + range expand button */}
             <div style={{display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px'}}>
-                <div style={{flex: '0 0 auto', minWidth: '100px'}}>
+                <div style={{flex: '1 1 0', minWidth: 0}}>
                     <Select options={typeOptions} value={selectedType} onChange={onTypeChange} isSearchable={false} />
                 </div>
-                {!showRange ? <div style={{flex: 1, minWidth: 0}}>{fromPicker()}</div> : null}
+                {!showRange ? <div style={{flex: '1 1 0', minWidth: 0}}>{fromPicker()}</div> : null}
             </div>
             {/* Row 2 (range mode): from → to + collapse button */}
             <div style={{display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px'}}>

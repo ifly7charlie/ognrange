@@ -211,7 +211,7 @@ export function updateStationBeacon(stationName: StationName, body: string, time
 }
 
 export function updateStationStatus(details: StationDetails): Promise<void> {
-    return statusDb?.put(details.station, details) ?? Promise.resolve();
+    return statusDb?.put(details.station, details).catch((e) => console.log(details.station, e)) ?? Promise.resolve();
 }
 
 export async function closeStatusDb(): Promise<void> {

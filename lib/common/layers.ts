@@ -44,7 +44,7 @@ export const PRESENCE_ONLY: ReadonlySet<Layer> = new Set([Layer.ADSB, Layer.PAW]
 export const PRESENCE_SIGNAL = 4;
 
 // Protocols that also write to the combined layer
-const COMBINED_LAYERS: ReadonlySet<Layer> = new Set([Layer.FLARM, Layer.OGNTRK]);
+export const COMBINED_LAYERS: ReadonlySet<Layer> = new Set([Layer.FLARM, Layer.OGNTRK]);
 
 // All layers in DB sort order
 export const ALL_LAYERS: readonly Layer[] = [Layer.ADSB, Layer.COMBINED, Layer.ADSL, Layer.FLARM, Layer.FANET, Layer.PAW, Layer.OGNTRK];

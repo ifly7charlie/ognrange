@@ -16,6 +16,9 @@ import {debounce as _debounce} from 'lodash';
 
 import {useStationMeta} from '../lib/react/stationmeta';
 import {useDisplayedH3s, DisplayedH3s} from '../lib/react/displayedh3s';
+import {COMBINED_LAYERS} from '../lib/common/layers';
+
+const COMBINED_LAYERS_LIST: string[] = [...COMBINED_LAYERS];
 
 import type {PickableDetails} from '../lib/react/pickabledetails';
 import {getObjectFromH3s} from '../lib/react/pickabledetails';
@@ -171,7 +174,18 @@ export default function CombinePage(props) {
 
     const setLayers = useCallback(
         (l: string[]) => {
-            updateUrl({layers: l.join(',')});
+            let normalized = l;
+            // flarm + ogntrk → combined
+            if (COMBINED_LAYERS_LIST.every((layer) => normalized.includes(layer))) {
+                normalized = ['combined', ...normalized.filter((layer) => !COMBINED_LAYERS_LIST.includes(layer))].filter(
+                    (v, i, a) => a.indexOf(v) === i
+                );
+            }
+            // combined + flarm/ogntrk → remove the redundant sublayers
+            if (normalized.includes('combined')) {
+                normalized = normalized.filter((layer) => !COMBINED_LAYERS_LIST.includes(layer));
+            }
+            updateUrl({layers: (normalized.length ? normalized : ['combined']).join(',')});
         },
         [updateUrl]
     );

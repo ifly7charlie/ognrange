@@ -7,12 +7,12 @@
     },
     "layers": {
         "all": "All",
-        "combined": "FLARM/OGN",
+        "combined": "FLARM+OGN",
         "flarm": "FLARM",
         "adsb": "ADS-B",
         "adsl": "ADS-L",
         "fanet": "FANET",
-        "paw": "PAW",
+        "paw": "PilotAware",
         "ogntrk": "OGN Tracker"
     },
     "period": {

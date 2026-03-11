@@ -21,6 +21,8 @@ async function main() {
         .option('match', {type: 'string', description: 'regex match of dbkey'})
         .option('size', {alias: 's', type: 'boolean', description: 'determine approximate size of each block of records'})
         .option('count', {alias: 'c', type: 'boolean', description: 'count number of records in each block'})
+        .option('keys', {alias: 'k', type: 'boolean', description: 'dump only keys'})
+        .option('summary', {type: 'boolean', description: 'show decoded keys, summarising h3 data keys per accumulator'})
         .help()
         .alias('help', 'h').argv;
 
@@ -48,6 +50,51 @@ async function main() {
     }
 
     console.log('---', dbPath, '---');
+
+    if (args.keys) {
+        for await (const key of db.keys()) {
+            console.log(key);
+        }
+        await db.close();
+        return;
+    }
+
+    if (args.summary) {
+        let currentCount = 0;
+        let currentAcc = '';
+
+        const flush = () => {
+            if (currentCount > 0) {
+                console.log(`${currentAcc}    ${currentCount} h3 keys`);
+            }
+        };
+
+        for await (const [key, value] of db.iterator()) {
+            const hr = new CoverageHeader(key);
+            const isLegacy = hr.layer === 'combined' && !key.startsWith('c/');
+            const layerLabel = isLegacy ? 'LEGACY' : hr.layer;
+            const acc = `${layerLabel} ${hr.typeName} [${hr.accumulator}]`;
+            if (hr.isMeta) {
+                flush();
+                currentCount = 0;
+                currentAcc = '';
+                const meta = JSON.parse(String(value));
+                const file = meta?.accumulators?.[hr.typeName]?.file ?? '';
+                const start = meta?.startUtc ?? '';
+                console.log(`${acc}  META  ${file}  started=${start}  key=${key}`);
+            } else {
+                if (acc !== currentAcc) {
+                    flush();
+                    currentCount = 0;
+                    currentAcc = acc;
+                }
+                currentCount++;
+            }
+        }
+        flush();
+        await db.close();
+        return;
+    }
 
     let n = db.iterator();
     let accumulators: Record<string, any> = {};

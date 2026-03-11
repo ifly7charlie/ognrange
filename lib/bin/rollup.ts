@@ -46,6 +46,13 @@ export let rollupStats: RollupStats = {completed: 0, elapsed: 0};
 import AsyncLock from 'async-lock';
 const lock = new AsyncLock();
 
+// Returns a promise that resolves once any in-progress rollupAll has finished.
+export async function waitForRollup(): Promise<void> {
+    if (lock.isBusy('rollup')) {
+        await lock.acquire('rollup', () => {});
+    }
+}
+
 //
 // This iterates through all open databases and rolls them up.
 export async function rollupAll(accumulators: Accumulators, nextAccumulators?: Accumulators): Promise<RollupStats> {
@@ -92,7 +99,7 @@ export async function rollupAll(accumulators: Accumulators, nextAccumulators?: A
             }
 
             if (!station.valid && wasStationValid) {
-                updateStationStatus(station);
+                await updateStationStatus(station);
                 needValidPurge = true;
                 invalidStations++;
                 console.log(`purging ${station.moved ? 'moved' : 'expired'} station ${station.station} last timestamp ${new Date(stationValidityTimestamp * 1000).toISOString()}`);
