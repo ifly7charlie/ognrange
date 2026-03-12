@@ -73,7 +73,7 @@ export function VisualisationSelector({
         }
     }, [multiLayer]);
 
-    const selectVisualisationOnChange = useCallback((v) => setVisualisation(v.value), [false]);
+    const selectVisualisationOnChange = useCallback((v) => setVisualisation(v.value), [setVisualisation]);
 
     return (
         <>
