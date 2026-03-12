@@ -49,7 +49,7 @@ export function Dock(props: {
                 <br />
                 <FileSelector station={props.station} dateRange={props.dateRange} setDateRange={props.setDateRange} layers={props.layers} />
                 <br />
-                <VisualisationSelector station={props.station} setVisualisation={props.setVisualisation} visualisation={props.visualisation} isPresenceOnly={props.isPresenceOnly} layers={props.layers} />
+                <VisualisationSelector station={props.station} setVisualisation={props.setVisualisation} visualisation={props.visualisation} isPresenceOnly={props.isPresenceOnly} layers={props.layers} setLayers={props.setLayers} />
                 <br />
                 <hr />
                 {props.expanded ? (

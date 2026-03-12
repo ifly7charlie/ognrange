@@ -12,21 +12,21 @@ const globalVisualisations = ['expectedGap', 'stations', 'primaryStation'];
 
 const defaultVisualisation = 'avgSig';
 
-function LayerCoverageLegend({layers}: {layers: string[]}) {
+function LayerCoverageLegend({layers, setLayers}: {layers: string[]; setLayers?: (l: string[]) => void}) {
     const {t} = useTranslation();
     const validLayers = layers.filter((l) => ALL_LAYER_NAMES.has(l)) as Layer[];
     const mask = validLayers.length > 0 ? layerMaskFromSet(validLayers) : undefined;
     return (
         <div style={{marginTop: '6px'}}>
-            <LayerBadges layerMask={mask} />
+            <LayerBadges layerMask={mask} layers={layers} setLayers={setLayers} />
             <div style={{color: '#888', marginTop: '2px', fontStyle: 'italic', fontSize: '0.85em'}}>{t('visualisation.layerCoverageBlend')}</div>
         </div>
     );
 }
 
-export function VisualisationLegend({visualisation, layers}: {visualisation?: string | null; layers?: string[]}) {
+export function VisualisationLegend({visualisation, layers, setLayers}: {visualisation?: string | null; layers?: string[]; setLayers?: (l: string[]) => void}) {
     if (visualisation === 'layerCoverage' && layers && layers.length > 1) {
-        return <LayerCoverageLegend layers={layers} />;
+        return <LayerCoverageLegend layers={layers} setLayers={setLayers} />;
     }
     return null;
 }
@@ -36,13 +36,15 @@ export function VisualisationSelector({
     station,
     setVisualisation,
     isPresenceOnly,
-    layers
+    layers,
+    setLayers
 }: {
     visualisation?: string | null;
     station?: string | null;
     setVisualisation: (a: string) => void;
     isPresenceOnly?: boolean;
     layers?: string[];
+    setLayers?: (l: string[]) => void;
 }) {
     const {t} = useTranslation();
     const multiLayer = (layers?.length ?? 0) > 1;
@@ -77,7 +79,7 @@ export function VisualisationSelector({
         <>
             <b>{t('selectors.visualisation')}:</b>
             <Select options={visualisations} value={selectedVisualisation} onChange={selectVisualisationOnChange} />
-            <VisualisationLegend visualisation={visualisation} layers={layers} />
+            <VisualisationLegend visualisation={visualisation} layers={layers} setLayers={setLayers} />
         </>
     );
 }

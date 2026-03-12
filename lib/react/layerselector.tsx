@@ -3,9 +3,57 @@
 import {useCallback, useMemo} from 'react';
 import {useTranslation} from 'next-i18next';
 
-import Select from 'react-select';
+import Select, {type StylesConfig} from 'react-select';
 
-import {ALL_LAYERS, COMBINED_LAYERS, LAYER_BIT} from '../common/layers';
+import {ALL_LAYERS, COMBINED_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
+
+interface LayerOption {
+    value: string;
+    label: string;
+    color: [number, number, number];
+}
+
+const selectStyles: StylesConfig<LayerOption, true> = {
+    multiValue: (base, {data}) => ({
+        ...base,
+        backgroundColor: `rgba(${data.color[0]},${data.color[1]},${data.color[2]},0.2)`
+    }),
+    multiValueLabel: (base) => ({
+        ...base
+    }),
+    multiValueRemove: (base, {data}) => ({
+        ...base,
+        color: `rgb(${data.color[0]},${data.color[1]},${data.color[2]})`,
+        ':hover': {
+            backgroundColor: `rgb(${data.color[0]},${data.color[1]},${data.color[2]})`,
+            color: 'white'
+        }
+    })
+};
+
+function ColorDot({color}: {color: [number, number, number]}) {
+    return (
+        <span
+            style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '2px',
+                display: 'inline-block',
+                marginRight: '6px',
+                backgroundColor: `rgb(${color[0]},${color[1]},${color[2]})`
+            }}
+        />
+    );
+}
+
+function formatOptionLabel(option: LayerOption) {
+    return (
+        <span style={{display: 'flex', alignItems: 'center'}}>
+            <ColorDot color={option.color} />
+            {option.label}
+        </span>
+    );
+}
 
 export function LayerSelector({layers, setLayers, stationLayerMask}: {layers: string[]; setLayers: (l: string[]) => void; stationLayerMask?: number}) {
     const {t} = useTranslation('common');
@@ -20,7 +68,8 @@ export function LayerSelector({layers, setLayers, stationLayerMask}: {layers: st
                 return true;
             }).map((layer) => ({
                 value: layer as string,
-                label: t(`layers.${layer}`)
+                label: t(`layers.${layer}`),
+                color: LAYER_COLOR[layer]
             })),
         [t, hasCombined, stationLayerMask]
     );
@@ -28,7 +77,7 @@ export function LayerSelector({layers, setLayers, stationLayerMask}: {layers: st
     const selectedOptions = useMemo(() => options.filter((o) => layers.includes(o.value)), [options, layers]);
 
     const onChange = useCallback(
-        (selected: readonly {value: string; label: string}[]) => {
+        (selected: readonly LayerOption[]) => {
             const vals = selected.map((o) => o.value);
             setLayers(vals.length ? vals : ['combined']);
         },
@@ -38,7 +87,7 @@ export function LayerSelector({layers, setLayers, stationLayerMask}: {layers: st
     return (
         <>
             <b>{t('selectors.layers')}:</b>
-            <Select isMulti options={options} value={selectedOptions} onChange={onChange} />
+            <Select isMulti options={options} value={selectedOptions} onChange={onChange} styles={selectStyles} formatOptionLabel={formatOptionLabel} />
         </>
     );
 }

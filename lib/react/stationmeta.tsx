@@ -78,11 +78,11 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
     }, [layersParam]);
 
     // Raw data from the arrow file (unfiltered)
-    const [rawData, setRawData] = useState<StationMeta | null>(null);
-    const rawDataRef = useRef<StationMeta | null>(null);
+    const [unfilteredList, setUnfilteredList] = useState<StationMeta | null>(null);
+    const unfilteredListRef = useRef<StationMeta | null>(null);
 
     // What has been loaded (filtered)
-    const [stationMeta, setStationMetaInternal] = useState<StationMeta>(() => ({
+    const [filteredList, setFilteredList] = useState<StationMeta>(() => ({
         name: [], //
         lng: new Float32Array(),
         lat: new Float32Array(),
@@ -117,15 +117,15 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
                 valid: data.valid?.filter(passesFilter),
                 layerMask: data.layerMask?.filter(passesFilter)
             };
-            setStationMetaInternal({...filteredData, length: filteredData.id.length});
+            setFilteredList({...filteredData, length: filteredData.id.length});
         },
         [allStations, selectedLayerMask]
     );
 
     // Re-apply filters when allStations or selectedLayerMask changes
     useEffect(() => {
-        if (rawDataRef.current) {
-            applyFilters(rawDataRef.current);
+        if (unfilteredListRef.current) {
+            applyFilters(unfilteredListRef.current);
         }
     }, [applyFilters]);
 
@@ -134,8 +134,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
             .then((result) => {
                 const data = (result as any).data as StationMeta;
                 console.log('setting station meta for', file, 'with', data.id.length, 'stations');
-                rawDataRef.current = data;
-                setRawData(data);
+                unfilteredListRef.current = data;
+                setUnfilteredList(data);
                 applyFilters(data);
             })
             .catch((e) => {
@@ -145,8 +145,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
                         .then((result) => {
                             const data = (result as any).data as StationMeta;
                             console.log('setting station meta', data.id.length, 'stations');
-                            rawDataRef.current = data;
-                            setRawData(data);
+                            unfilteredListRef.current = data;
+                            setUnfilteredList(data);
                             applyFilters(data);
                         })
                         .catch((e) => {
@@ -156,7 +156,7 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
             });
     }, [file]);
 
-    const contextValue = useMemo(() => ({filteredList: stationMeta, unfilteredList: rawData}), [stationMeta, rawData]);
+    const contextValue = useMemo(() => ({filteredList, unfilteredList}), [filteredList, unfilteredList]);
 
     return <StationMetaContext.Provider value={contextValue}>{props.children}</StationMetaContext.Provider>;
 }
