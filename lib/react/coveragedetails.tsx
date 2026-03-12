@@ -1,4 +1,4 @@
-import {useMemo, useState, useCallback, useEffect} from 'react';
+import {useState, useCallback, useEffect} from 'react';
 import useSWR from 'swr';
 
 import {useTranslation, Trans} from 'next-i18next';
@@ -11,7 +11,7 @@ import {cellToLatLng, greatCircleDistance, getResolution, getHexagonAreaAvg, UNI
 
 import {IoLockOpenOutline} from 'react-icons/io5';
 
-import {findIndex as _findIndex, reduce as _reduce, debounce as _debounce, map as _map} from 'lodash';
+import {debounce as _debounce} from 'lodash';
 
 import VisibilitySensor from 'react-visibility-sensor';
 
@@ -33,11 +33,7 @@ const fetcher = (url: string) => fetch(url).then((res) => res.json());
 export function CoverageDetailsToolTip({details, station}) {
     //
     const {t} = useTranslation();
-    const stationMeta = useStationMeta();
-    const sd = useMemo(() => {
-        const index = _findIndex<string>(stationMeta?.name, station ?? 'global');
-        return index != -1 ? [stationMeta.lng[index], stationMeta.lat[index]] : null;
-    }, [station, stationMeta != undefined]);
+    const stationMeta = useStationMeta(station ?? '');
 
     if (details.type === 'station') {
         return (
@@ -72,9 +68,9 @@ export function CoverageDetailsToolTip({details, station}) {
     } else if (details.type === 'hexagon') {
         return (
             <div>
-                {sd ? (
+                {stationMeta ? (
                     <>
-                        {greatCircleDistance(cellToLatLng(details.h), sd, 'km').toFixed(0)}km to <b>{station}</b>
+                        {greatCircleDistance(cellToLatLng(details.h), [stationMeta.lng, stationMeta.lat], 'km').toFixed(0)}km to <b>{station}</b>
                         <hr />
                     </>
                 ) : null}
@@ -176,12 +172,7 @@ export function CoverageDetails({
     const tabKeys = showTabs ? ['all', ...(layers ?? [])] : [];
     const activeByDay = showTabs ? byDay?.layers?.[selectedLayer] : byDay?.layers?.[Object.keys(byDay?.layers ?? {})[0]] ?? byDay;
 
-    // Find the station not ideal as linear search so memoize it
-    const stationMeta = useStationMeta();
-    const sd = useMemo(() => {
-        const index = stationMeta && station ? _findIndex<string>(stationMeta?.name, (a) => a === station) : -1;
-        return index != -1 ? [stationMeta.lat[index], stationMeta.lng[index]] : null;
-    }, [station, stationMeta.length]);
+    const stationMeta = useStationMeta(station ?? '');
 
     const {data: stationDataDate, error} = useSWR(
         !h3 && station //
@@ -225,10 +216,10 @@ export function CoverageDetails({
                         &nbsp;<span>{t('unlock')}</span>
                     </button>
                 ) : null}
-                {sd ? (
+                {stationMeta ? (
                     <>
                         <br />
-                        {t('distance', {station, km: greatCircleDistance(cellToLatLng(details.h), sd, 'km').toFixed(0)})}
+                        {t('distance', {station, km: greatCircleDistance(cellToLatLng(details.h), [stationMeta.lat, stationMeta.lng], 'km').toFixed(0)})}
                     </>
                 ) : null}
                 <br style={{clear: 'both'}} />

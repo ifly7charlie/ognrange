@@ -4,7 +4,7 @@ import {useTranslation} from 'next-i18next';
 
 import {reduce as _reduce, sortedIndexOf as _sortedIndexOf} from 'lodash';
 
-import {useStationMeta} from './stationmeta';
+import {useStationListMeta} from './stationmeta';
 import {cellToLatLng, greatCircleDistance} from 'h3-js';
 
 export function StationList({
@@ -18,7 +18,7 @@ export function StationList({
     setStation: (a: string) => void;
 }) {
     const {t} = useTranslation('common', {keyPrefix: 'details.stations'});
-    const stationMeta = useStationMeta();
+    const stationMeta = useStationListMeta();
     const selectStation = useCallback(
         (e) => {
             setStation(e.currentTarget?.id);

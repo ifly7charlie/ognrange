@@ -14,7 +14,7 @@ import {serverSideTranslations} from 'next-i18next/serverSideTranslations';
 
 import {debounce as _debounce} from 'lodash';
 
-import {useStationMeta} from '../lib/react/stationmeta';
+import {useStationListMeta} from '../lib/react/stationmeta';
 import {useDisplayedH3s, DisplayedH3s} from '../lib/react/displayedh3s';
 import {COMBINED_LAYERS} from '../lib/common/layers';
 
@@ -93,7 +93,7 @@ export default function CombinePage(props) {
         pitch: !(mapType % 2) ? 70 : 0
     });
 
-    const stationMeta = useStationMeta();
+    const stationMeta = useStationListMeta();
     const displayedH3s = useDisplayedH3s();
 
     // Tooltip or sidebar

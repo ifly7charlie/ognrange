@@ -8,7 +8,12 @@ import {load} from '@loaders.gl/core';
 
 import {Layer, LAYER_BIT, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
 
-const StationMetaContext = createContext<StationMeta | null>(null);
+interface StationMetaContextValue {
+    filteredList: StationMeta;
+    unfilteredList: StationMeta | null;
+}
+
+const StationMetaContext = createContext<StationMetaContextValue | null>(null);
 
 export interface StationMeta {
     name: string[];
@@ -22,8 +27,36 @@ export interface StationMeta {
     length: number;
 }
 
-export function useStationMeta() {
-    return useContext(StationMetaContext);
+export interface SingleStationMeta {
+    name: string;
+    lat: number;
+    lng: number;
+    id: number;
+    layerMask: number;
+}
+
+/** Returns the filtered station list (filtered by selected layers and online/offline) */
+export function useStationListMeta() {
+    return useContext(StationMetaContext)?.filteredList;
+}
+
+/** Look up a single station by name from the unfiltered data */
+export function useStationMeta(stationName: string): SingleStationMeta | null {
+    const ctx = useContext(StationMetaContext);
+    return useMemo(() => {
+        if (!stationName || !ctx?.unfilteredList) return null;
+        const raw = ctx.unfilteredList;
+        const idx = raw.name.indexOf(stationName);
+        if (idx === -1) return null;
+        const mask = raw.layerMask ? raw.layerMask[idx] : 0;
+        return {
+            name: raw.name[idx],
+            lat: raw.lat[idx],
+            lng: raw.lng[idx],
+            id: raw.id[idx],
+            layerMask: mask || (1 << LAYER_BIT[Layer.COMBINED])
+        };
+    }, [stationName, ctx?.unfilteredList]);
 }
 
 export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DATA_URL: string}}>) {
@@ -45,7 +78,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
     }, [layersParam]);
 
     // Raw data from the arrow file (unfiltered)
-    const rawData = useRef<StationMeta | null>(null);
+    const [rawData, setRawData] = useState<StationMeta | null>(null);
+    const rawDataRef = useRef<StationMeta | null>(null);
 
     // What has been loaded (filtered)
     const [stationMeta, setStationMetaInternal] = useState<StationMeta>(() => ({
@@ -90,8 +124,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
 
     // Re-apply filters when allStations or selectedLayerMask changes
     useEffect(() => {
-        if (rawData.current) {
-            applyFilters(rawData.current);
+        if (rawDataRef.current) {
+            applyFilters(rawDataRef.current);
         }
     }, [applyFilters]);
 
@@ -100,7 +134,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
             .then((result) => {
                 const data = (result as any).data as StationMeta;
                 console.log('setting station meta for', file, 'with', data.id.length, 'stations');
-                rawData.current = data;
+                rawDataRef.current = data;
+                setRawData(data);
                 applyFilters(data);
             })
             .catch((e) => {
@@ -110,7 +145,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
                         .then((result) => {
                             const data = (result as any).data as StationMeta;
                             console.log('setting station meta', data.id.length, 'stations');
-                            rawData.current = data;
+                            rawDataRef.current = data;
+                            setRawData(data);
                             applyFilters(data);
                         })
                         .catch((e) => {
@@ -120,5 +156,7 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
             });
     }, [file]);
 
-    return <StationMetaContext.Provider value={stationMeta}>{props.children}</StationMetaContext.Provider>;
+    const contextValue = useMemo(() => ({filteredList: stationMeta, unfilteredList: rawData}), [stationMeta, rawData]);
+
+    return <StationMetaContext.Provider value={contextValue}>{props.children}</StationMetaContext.Provider>;
 }

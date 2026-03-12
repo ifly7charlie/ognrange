@@ -40,7 +40,7 @@ const altitudeFunctions = {
     minAgl: (f) => f.g
 };
 
-import {useStationMeta, StationMeta} from './stationmeta';
+import {useStationListMeta, StationMeta} from './stationmeta';
 import {useDisplayedH3s} from './displayedh3s';
 import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
 
@@ -247,7 +247,7 @@ export function CoverageMap(props: {
     setViewport: Function;
     dockSplit: number | string;
 }) {
-    const stationMeta = useStationMeta();
+    const stationMeta = useStationListMeta();
     const displayedh3s = useDisplayedH3s();
     const router = useRouter();
     const params = useSearchParams();

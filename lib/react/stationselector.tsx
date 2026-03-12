@@ -6,7 +6,7 @@ import {useTranslation} from 'next-i18next';
 
 import {Checkbox} from './checkbox';
 
-import {useStationMeta} from './stationmeta';
+import {useStationListMeta} from './stationmeta';
 
 export function StationSelector({
     station, //
@@ -29,7 +29,7 @@ export function StationSelector({
         {label: t('stations.global'), value: ''}
     ];
 
-    const stationMeta = useStationMeta();
+    const stationMeta = useStationListMeta();
     const params = useSearchParams();
     const allStations = !!parseInt(params.get('allStations')?.toString() ?? '0');
 
@@ -63,7 +63,13 @@ export function StationSelector({
         },
         [stationMeta.length]
     );
-    const selectStationOnChange = useCallback((v: {value: string}) => setStation(v.value), [false]);
+    const selectStationOnChange = useCallback(
+        (v: {value: string}) => {
+            console.log('[StationSelector] onChange fired, value:', JSON.stringify(v));
+            setStation(v.value);
+        },
+        [false]
+    );
 
     return (
         <>

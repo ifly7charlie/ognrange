@@ -7,6 +7,7 @@ import {VisualisationSelector} from './visualisationselector';
 import {FileSelector} from './fileselector';
 import {StationSelector} from './stationselector';
 import {LayerSelector} from './layerselector';
+import {useStationMeta} from './stationmeta';
 
 import type {PickableDetails} from './pickabledetails';
 
@@ -31,6 +32,8 @@ export function Dock(props: {
     const file = props.dateRange?.start ?? 'year';
     const setFile = (f: string) => props.setDateRange({start: f, end: f});
 
+    const stationMeta = useStationMeta(props.station ?? '');
+
     return (
         <>
             <div style={{padding: '1px'}}>
@@ -42,7 +45,7 @@ export function Dock(props: {
             <div style={{padding: '7px'}}>
                 <StationSelector station={props.station} setStation={props.setStation} updateUrl={props.updateUrl} />
                 <br />
-                <LayerSelector layers={props.layers} setLayers={props.setLayers} />
+                <LayerSelector layers={props.layers} setLayers={props.setLayers} stationLayerMask={stationMeta?.layerMask ?? 0} />
                 <br />
                 <FileSelector station={props.station} dateRange={props.dateRange} setDateRange={props.setDateRange} layers={props.layers} />
                 <br />
