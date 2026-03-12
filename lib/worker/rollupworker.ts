@@ -2,7 +2,7 @@ import {Worker, parentPort, isMainThread, SHARE_ENV} from 'node:worker_threads';
 
 import {getDbThrow, DB, closeAllStationDbs} from './stationcache';
 
-import {EpochMS, StationName, H3LockKey} from '../bin/types';
+import {Epoch, EpochMS, StationName, H3LockKey} from '../bin/types';
 
 import {Accumulators} from '../bin/accumulators';
 import {StationDetails} from '../bin/stationstatus';
@@ -49,7 +49,7 @@ type RollupWorkerCommands =
     | {
           action: 'startup';
           station: StationName;
-          now: EpochMS;
+          now: Epoch;
           accumulators: Accumulators;
           stationMeta?: StationDetails;
       };
@@ -85,7 +85,7 @@ export async function shutdownRollupWorker() {
 
 export async function rollupStartup(station: StationName, accumulators: Accumulators, stationMeta?: StationDetails): Promise<any> {
     // Do the sync in the worker thread
-    return postMessage({station, action: 'startup', now: Date.now() as EpochMS, accumulators, stationMeta});
+    return postMessage({station, action: 'startup', now: Math.floor(Date.now() / 1000) as Epoch, accumulators, stationMeta});
 }
 
 export async function rollupAbortStartup() {

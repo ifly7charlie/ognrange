@@ -3,7 +3,7 @@ import {CoverageHeader} from '../bin/coverageheader';
 import {CoverageRecordWriter} from '../bin/coveragerecordwriter';
 
 import {Layer, ALL_LAYERS} from '../common/layers';
-import {ENABLED_LAYERS} from '../common/config';
+import {ENABLED_LAYERS, ROLLUP_PERIOD_MINUTES} from '../common/config';
 
 //import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
 
@@ -52,6 +52,8 @@ export interface RollupDatabaseArgs {
 
 import type {DBMetaRecord} from './rollupmetadata';
 
+import {updateActivity} from './rollupactivity';
+
 export type AccumulatorsExtended = {
     [key in AccumulatorTypeString]: {
         found?: boolean;
@@ -74,7 +76,6 @@ export async function rollupDatabaseInternal(
     const startTime = Date.now();
     const name = db.ognStationName;
     const layerSuffix = layer === Layer.COMBINED ? '' : `.${layer}`;
-    let currentMeta = {};
     if (needValidPurge && !validStations) {
         throw new Error(`${db.ognStationName}: invalid arguments to rollupDatabaseInternal( needValidPurge && ! validStations)`);
     }
@@ -104,7 +105,7 @@ export async function rollupDatabaseInternal(
                 type: r,
                 bucket: par!.bucket,
                 file: par!.file,
-                meta: {rollups: []},
+                meta: {},
                 stats: {
                     h3added: 0, // missing from dest (ie was added unchanged)
                     h3noChange: 0, // unchanged in dest (no disk op required)
@@ -332,18 +333,12 @@ export async function rollupDatabaseInternal(
     for (const r of rollupData) {
         const rType = r.type as AccumulatorTypeString;
 
-        // We are going to write out our accumulators this saves us writing it
-        // in a different process and ensures that we always write the correct thing
-        const accumulatorName = `${name}/${name}.${rType}.${accumulators[rType]!.file}${layerSuffix}`;
-
-        // Keep a record of all the rollups in the meta
-        // each record
-        if (!r.meta.rollups) {
-            r.meta.rollups = [];
-        }
         r.stats.dbOps = dbOps.length;
         r.stats.h3source = h3source;
-        r.meta.rollups.push({source: currentMeta, stats: r.stats, file: accumulatorName});
+
+        const periodStart = (accumulators.current.effectiveStart ?? 0) as Epoch;
+        const periodEnd = (periodStart + ROLLUP_PERIOD_MINUTES * 60) as Epoch;
+        updateActivity(r.meta, h3source, periodStart, periodEnd, now);
 
         if (r.stats.h3source != r.stats.h3added + r.stats.h3updated) {
             console.error("********* stats don't add up ", rType, r.bucket.toString(16), JSON.stringify({m: r.meta, s: r.stats}));
@@ -369,7 +364,7 @@ export async function rollupDatabaseInternal(
         try {
             const output = (stationMeta ?? {}) as any;
             output.lastOutputFile = now;
-            output.rollups = r.meta;
+            output.activity = r.meta.activity;
             writeFileSync(OUTPUT_PATH + `${name}/${name}.${rType}.${accumulators[rType]!.file}${layerSuffix}.json`, JSON.stringify(output, null, 2));
             symlink(`${name}.${rType}.${accumulators[rType]!.file}${layerSuffix}.json`, OUTPUT_PATH + `${name}/${name}.${rType}${layerSuffix}.json`);
         } catch (err) {

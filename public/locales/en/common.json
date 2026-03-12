@@ -145,6 +145,18 @@
             "number": "{{count}} coverage cells",
             "area": "{{area}} sq km"
         },
+        "activity": {
+            "title": "Station Activity",
+            "active": "Active: {{percent}}%",
+            "periods": "Active Periods",
+            "totalRollups": "Total rollup cycles: {{count}}",
+            "activeRollups": "Active rollup cycles: {{count}}",
+            "totalCells": "Total cells processed: {{count}}",
+            "firstSeen": "First seen",
+            "lastSeen": "Last seen",
+            "lastRollup": "Last rollup",
+            "activeRanges": "{{count}} active periods"
+        },
         "status": {
             "title": "Last status message"
         },

@@ -52,6 +52,8 @@ vi.mock('../../lib/common/config', () => ({
 }));
 
 import {migrateLegacyKeysToPrefix, rollupDatabaseStartup} from '../../lib/worker/rollupdatabase';
+import {updateActivity} from '../../lib/worker/rollupactivity';
+import type {RollupActivity} from '../../lib/worker/rollupactivity';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -337,6 +339,108 @@ describe('rollupDatabaseStartup — legacy migration integration', () => {
         expect(db._store.has(prefixedDataKey('day', acc.day.bucket, H3A))).toBe(true);
 
         consoleSpy.mockRestore();
+    });
+});
+
+// ── updateActivity tests ────────────────────────────────────────────────
+
+const PERIOD = 12 * 60; // ROLLUP_PERIOD_MINUTES * 60 (seconds)
+
+describe('updateActivity', () => {
+    it('first rollup with data creates single range and sets firstSeen/lastSeen', () => {
+        const meta: any = {};
+        updateActivity(meta, 5, 1000 as Epoch, (1000 + PERIOD) as Epoch, 2000 as Epoch);
+
+        const a: RollupActivity = meta.activity;
+        expect(a.ranges).toHaveLength(1);
+        expect(a.ranges[0]).toEqual({start: 1000, end: 1000 + PERIOD, cells: 5});
+        expect(a.totalRollups).toBe(1);
+        expect(a.activeRollups).toBe(1);
+        expect(a.totalCells).toBe(5);
+        expect(a.firstSeen).toBe(1000);
+        expect(a.lastSeen).toBe(1000 + PERIOD);
+        expect(a.lastRollup).toBe(2000);
+    });
+
+    it('contiguous rollup extends existing range', () => {
+        const meta: any = {};
+        const t0 = 1000 as Epoch;
+        const t1 = (t0 + PERIOD) as Epoch;
+        const t2 = (t1 + PERIOD) as Epoch;
+
+        updateActivity(meta, 3, t0, t1, 2000 as Epoch);
+        updateActivity(meta, 7, t1, t2, 3000 as Epoch);
+
+        const a: RollupActivity = meta.activity;
+        expect(a.ranges).toHaveLength(1);
+        expect(a.ranges[0]).toEqual({start: 1000, end: t2, cells: 10});
+        expect(a.activeRollups).toBe(2);
+        expect(a.totalCells).toBe(10);
+        expect(a.lastSeen).toBe(t2);
+    });
+
+    it('gap then data creates new range', () => {
+        const meta: any = {};
+        const t0 = 1000 as Epoch;
+        const t1 = (t0 + PERIOD) as Epoch;
+        // gap: skip one period
+        const t2 = (t1 + PERIOD) as Epoch;
+        const t3 = (t2 + PERIOD) as Epoch;
+
+        updateActivity(meta, 2, t0, t1, 2000 as Epoch);
+        updateActivity(meta, 0, t1, t2, 3000 as Epoch); // no data
+        updateActivity(meta, 4, t2, t3, 4000 as Epoch);
+
+        const a: RollupActivity = meta.activity;
+        expect(a.ranges).toHaveLength(2);
+        expect(a.ranges[0]).toEqual({start: 1000, end: t1, cells: 2});
+        expect(a.ranges[1]).toEqual({start: t2, end: t3, cells: 4});
+        expect(a.totalRollups).toBe(3);
+        expect(a.activeRollups).toBe(2);
+    });
+
+    it('no data increments totalRollups only', () => {
+        const meta: any = {};
+        updateActivity(meta, 0, 1000 as Epoch, (1000 + PERIOD) as Epoch, 2000 as Epoch);
+
+        const a: RollupActivity = meta.activity;
+        expect(a.ranges).toHaveLength(0);
+        expect(a.totalRollups).toBe(1);
+        expect(a.activeRollups).toBe(0);
+        expect(a.totalCells).toBe(0);
+        expect(a.firstSeen).toBe(0);
+        expect(a.lastSeen).toBe(0);
+        expect(a.lastRollup).toBe(2000);
+    });
+
+    it('caps ranges at 500, dropping oldest', () => {
+        const meta: any = {};
+        // Create 501 non-contiguous ranges (gap between each)
+        for (let i = 0; i < 501; i++) {
+            const start = (i * PERIOD * 2) as Epoch; // gap between each
+            const end = (start + PERIOD) as Epoch;
+            updateActivity(meta, 1, start, end, end as Epoch);
+        }
+
+        const a: RollupActivity = meta.activity;
+        expect(a.ranges).toHaveLength(500);
+        // First range should be the second one we added (index 1), not index 0
+        expect(a.ranges[0].start).toBe(1 * PERIOD * 2);
+        expect(a.totalRollups).toBe(501);
+        expect(a.activeRollups).toBe(501);
+        expect(a.totalCells).toBe(501);
+    });
+
+    it('legacy meta (old rollups array) gets activity initialized fresh', () => {
+        const meta: any = {rollups: [{source: {}, stats: {h3source: 5}}]};
+        updateActivity(meta, 3, 1000 as Epoch, (1000 + PERIOD) as Epoch, 2000 as Epoch);
+
+        const a: RollupActivity = meta.activity;
+        expect(a.ranges).toHaveLength(1);
+        expect(a.totalRollups).toBe(1);
+        expect(a.activeRollups).toBe(1);
+        // Old rollups field untouched
+        expect(meta.rollups).toBeDefined();
     });
 });
 

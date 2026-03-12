@@ -23,8 +23,10 @@ import {CountDetails} from './coveragedetails/countdetails';
 import {SignalDetails} from './coveragedetails/signaldetails';
 import {LowestPointDetails} from './coveragedetails/lowestpointdetails';
 import {AvailableFiles} from './coveragedetails/availablefiles';
+import {ActivityDetails} from './coveragedetails/activitydetails';
 
 import {NEXT_PUBLIC_DATA_URL} from '../common/config';
+import {formatEpoch} from './formatdate';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -289,9 +291,11 @@ export function CoverageDetails({
                 <AvailableFiles station={station} setFile={setFile} displayType="month" />
                 <AvailableFiles station={station} setFile={setFile} displayType="year" />
 
+                <ActivityDetails activity={stationData?.activity} />
+
                 {stationData?.stats ? (
                     <>
-                        <b>{t('statistics.title', {when: new Date(stationData.outputEpoch * 1000).toISOString().replace('.000', '')})}</b>
+                        <b>{t('statistics.title', {when: formatEpoch(stationData.outputEpoch)})}</b>
                         <table>
                             <tbody>
                                 {Object.keys(stationData.stats).map((key) => (
@@ -320,19 +324,19 @@ export function CoverageDetails({
                             {stationData?.lastLocation ? (
                                 <tr key="location">
                                     <td>{t('times.location')}</td>
-                                    <td>{new Date((stationData.lastLocation ?? 0) * 1000).toISOString().replace('.000', '')}</td>
+                                    <td>{formatEpoch(stationData.lastLocation)}</td>
                                 </tr>
                             ) : null}
                             {stationData?.lastPacket ? (
                                 <tr key="packet">
                                     <td>{t('times.packet')}</td>
-                                    <td>{new Date((stationData.lastPacket ?? 0) * 1000).toISOString().replace('.000', '')}</td>
+                                    <td>{formatEpoch(stationData.lastPacket)}</td>
                                 </tr>
                             ) : null}
                             {stationData?.outputDate ? (
                                 <tr key="output">
                                     <td>{t('times.output')}</td>
-                                    <td>{stationData.outputDate?.replace(/\.[0-9]*Z/, 'Z')}</td>
+                                    <td>{formatEpoch(stationData.outputEpoch)}</td>
                                 </tr>
                             ) : null}
                         </tbody>
