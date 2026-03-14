@@ -21,8 +21,6 @@ fn is_shutdown() -> bool {
     SHUTDOWN.load(Ordering::Relaxed)
 }
 
-use rusty_leveldb::LdbIterator;
-
 use arrow::array::{
     ArrayRef, StringArray, UInt16Array, UInt32Array, UInt8Array,
 };
@@ -46,7 +44,7 @@ use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
 use crate::h3cache::H3Cache;
 use crate::layers::Layer;
 use crate::station::{StationDetails, StationManager};
-use crate::storage::Storage;
+use crate::db::{self, Storage, TrackedDb};
 use crate::types::{Epoch, H3Index, StationId, StationName};
 
 #[derive(Debug, Default)]
@@ -398,66 +396,6 @@ impl RollupAccumulator {
     }
 }
 
-/// Read a key range from an open DB, returns (key, value) pairs.
-/// Updates `progress` (if provided) with iteration count every 10000 entries.
-/// Returns early if the global shutdown flag is set.
-fn db_read_range(
-    db: &mut rusty_leveldb::DB,
-    start_key: &str,
-    end_key: &str,
-    progress: Option<&std::sync::Mutex<RollupProgress>>,
-) -> Vec<(String, Vec<u8>)> {
-    let mut iter = match db.new_iter() {
-        Ok(iter) => iter,
-        Err(_) => return Vec::new(),
-    };
-    iter.seek(start_key.as_bytes());
-    let end_bytes = end_key.as_bytes();
-    let mut results = Vec::new();
-    let mut key_buf = Vec::new();
-    let mut val_buf = Vec::new();
-    let mut prev_key: Option<Vec<u8>> = None;
-    let mut scanned: usize = 0;
-    while iter.current(&mut key_buf, &mut val_buf) {
-        if is_shutdown() {
-            warn!("db_read_range: shutdown requested after scanning {} keys ({}..{}), returning {} results",
-                scanned, start_key, end_key, results.len());
-            break;
-        }
-        if key_buf.as_slice() >= end_bytes {
-            break;
-        }
-        scanned += 1;
-        // Guard against infinite loop: if key hasn't advanced, bail out
-        if let Some(ref pk) = prev_key {
-            if pk == &key_buf {
-                error!(
-                    "db_read_range: iterator stuck at key {:?} after {} keys, aborting",
-                    String::from_utf8_lossy(&key_buf), scanned
-                );
-                break;
-            }
-        }
-        prev_key = Some(key_buf.clone());
-        if let Ok(key_str) = std::str::from_utf8(&key_buf) {
-            if key_str >= start_key {
-                results.push((key_str.to_string(), val_buf.clone()));
-            }
-        }
-        if scanned % 10000 == 0 {
-            if let Some(prog) = progress {
-                if let Ok(mut p) = prog.lock() {
-                    p.records_read = scanned;
-                }
-            }
-        }
-        if !iter.advance() {
-            break;
-        }
-    }
-    results
-}
-
 /// Per-station rollup: open the DB once, roll up all layers, flush and close.
 fn rollup_station_all_layers(
     station_path: &str,
@@ -469,13 +407,9 @@ fn rollup_station_all_layers(
     station_meta: Option<&crate::station::StationDetails>,
     progress: &std::sync::Mutex<RollupProgress>,
 ) -> Result<RollupStats, String> {
-    let mut opts = rusty_leveldb::Options::default();
-    opts.create_if_missing = true;
-    crate::storage::track_db_open(station_path, "rollup");
-    let mut db = match rusty_leveldb::DB::open(station_path, opts) {
+    let mut db = match TrackedDb::open(station_path, true, "rollup") {
         Ok(db) => db,
         Err(e) => {
-            crate::storage::track_db_close(station_path);
             return Err(format!("Failed to open DB {}: {}", station_path, e));
         }
     };
@@ -490,7 +424,6 @@ fn rollup_station_all_layers(
         match rollup_station_layer(
             &mut db, station_path, station_name, accumulators,
             *layer, layer_suffix, valid_stations, is_global, station_meta,
-            Some(progress),
         ) {
             Ok(stats) => {
                 total_stats.records_written += stats.records_written;
@@ -517,8 +450,6 @@ fn rollup_station_all_layers(
     }
     db.compact_range(b"0", b"Z").map_err(|e| format!("compact failed for {}: {}", station_name, e))?;
     db.flush().map_err(|e| format!("flush after compact failed for {}: {}", station_name, e))?;
-    drop(db);
-    crate::storage::track_db_close(station_path);
     Ok(total_stats)
 }
 
@@ -533,7 +464,6 @@ fn rollup_station_layer(
     valid_stations: Option<&HashSet<StationId>>,
     is_global: bool,
     station_meta: Option<&crate::station::StationDetails>,
-    progress: Option<&std::sync::Mutex<RollupProgress>>,
 ) -> Result<RollupStats, String> {
     let mut stats = RollupStats::default();
 
@@ -543,7 +473,7 @@ fn rollup_station_layer(
         accumulators.current.bucket,
         layer,
     );
-    let current_records = db_read_range(db, &current_start, &current_end, progress);
+    let current_records = db::read_range(db, &current_start, &current_end, Some(&SHUTDOWN));
 
     if is_shutdown() || current_records.is_empty() {
         return Ok(stats);
@@ -560,7 +490,7 @@ fn rollup_station_layer(
     let mut destinations: Vec<RollupAccumulator> = Vec::with_capacity(dest_entries.len());
     for (acc_type, entry) in &dest_entries {
         let (start, end) = CoverageHeader::db_search_range(*acc_type, entry.bucket, layer);
-        let records = db_read_range(db, &start, &end, progress);
+        let records = db::read_range(db, &start, &end, Some(&SHUTDOWN));
 
         let meta_key = CoverageHeader::accumulator_meta(*acc_type, entry.bucket, layer).db_key();
         let activity = load_activity_from_db(db, &meta_key);
@@ -680,7 +610,7 @@ fn rollup_station_layer(
     for dest in &destinations {
         let meta_key = CoverageHeader::accumulator_meta(dest.acc_type, dest.bucket, layer).db_key();
         let existing = db.get(meta_key.as_bytes());
-        let mut meta_bytes = crate::storage::build_accumulator_meta(
+        let mut meta_bytes = crate::db::build_accumulator_meta(
             existing.as_deref(),
             &acc_json,
             accumulators.current.bucket.0,
@@ -1101,8 +1031,18 @@ pub async fn rollup_startup(
                 }
             };
 
+            // Open DB once for all operations on this station
+            let mut db = match TrackedDb::open(&station_path, true, "startup_rollup") {
+                Ok(db) => db,
+                Err(e) => {
+                    error!("Startup rollup: failed to open DB {}: {}", station_path, e);
+                    log_progress(&completed);
+                    return (0, 0, 0, 0);
+                }
+            };
+
             // Scan all keys to find hanging current accumulator metas
-            let all_entries = Storage::read_all_sync(&station_path);
+            let all_entries = db::read_all(&mut db);
             let mut hanging_buckets: HashMap<(AccumulatorBucket, Layer), Accumulators> = HashMap::new();
 
             for (key, value) in &all_entries {
@@ -1133,24 +1073,10 @@ pub async fn rollup_startup(
             let mut arrow = 0usize;
             let mut deleted = 0usize;
 
-            // Open DB once for all operations on this station
             let is_global = station_name == "global";
             let station_meta: Option<&crate::station::StationDetails> = all_details
                 .iter()
                 .find(|s| s.station.as_str() == station_name);
-
-            let mut opts = rusty_leveldb::Options::default();
-            opts.create_if_missing = true;
-            crate::storage::track_db_open(&station_path, "startup_rollup");
-            let mut db = match rusty_leveldb::DB::open(&station_path, opts) {
-                Ok(db) => db,
-                Err(e) => {
-                    error!("Startup rollup: failed to open DB {}: {}", station_path, e);
-                    crate::storage::track_db_close(&station_path);
-                    log_progress(&completed);
-                    return (0, 0, 0, 0);
-                }
-            };
 
             // Scan existing destination accumulators to detect missing buckets
             let all_dest_files: HashSet<String> = all_entries.iter()
@@ -1219,7 +1145,6 @@ pub async fn rollup_startup(
                     None,
                     is_global,
                     station_meta,
-                    None,
                 ) {
                     Ok(stats) => {
                         info!(
@@ -1254,8 +1179,6 @@ pub async fn rollup_startup(
             if let Err(e) = db.flush() {
                 error!("Failed to flush DB for {}: {}", station_name, e);
             }
-            drop(db);
-            crate::storage::track_db_close(&station_path);
 
             log_progress(&completed);
 
@@ -1347,7 +1270,7 @@ fn migrate_legacy_keys(
         let legacy_prefix = format!("{}/8", tb.to_hex());
         let legacy_end = format!("{}/9", tb.to_hex());
 
-        let legacy_records = db_read_range(db, &legacy_prefix, &legacy_end, None);
+        let legacy_records = db::read_range(db, &legacy_prefix, &legacy_end, None);
 
         // Delete legacy meta key
         let legacy_meta = CoverageHeader::legacy_meta_key(*acc_type, entry.bucket);
@@ -1445,9 +1368,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let station_path = tmp.path().to_string_lossy().to_string();
 
-        // Create an empty LevelDB
         let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
-        let _db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
+        let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
 
         let accumulators = Accumulators {
             current: AccumulatorEntry { bucket: AccumulatorBucket(0x042), file: String::new(), effective_start: Epoch(0) },
@@ -1457,8 +1379,8 @@ mod tests {
             yearnz: AccumulatorEntry { bucket: AccumulatorBucket(0x5000), file: "2025nz".into(), effective_start: Epoch(0) },
         };
 
-        let stats = rollup_station(
-            &station_path, "test_station", &accumulators,
+        let stats = rollup_station_layer(
+            &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None,
         ).unwrap();
 
@@ -1476,21 +1398,14 @@ mod tests {
             let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
             let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
 
-            // Create a coverage record
             let mut rec = CoverageRecord::new(BufferType::Station);
             rec.update(1000, 500, 2, 28, 5);
             rec.update(900, 400, 1, 32, 3);
 
-            // Write under current accumulator key
             let key = "c/0042/8828308283fffff";
             let _ = db.put(key.as_bytes(), &rec.to_bytes());
             let _ = db.flush();
         }
-
-        let output_tmp = tempfile::tempdir().unwrap();
-        // Override OUTPUT_PATH for test — write arrow to temp dir
-        let output_dir = output_tmp.path().join("stations/test_station");
-        std::fs::create_dir_all(&output_dir).unwrap();
 
         let accumulators = Accumulators {
             current: AccumulatorEntry { bucket: AccumulatorBucket(0x042), file: String::new(), effective_start: Epoch(0) },
@@ -1500,8 +1415,13 @@ mod tests {
             yearnz: AccumulatorEntry { bucket: AccumulatorBucket(0x5000), file: "2025nz".into(), effective_start: Epoch(0) },
         };
 
-        let stats = rollup_station(
-            &station_path, "test_station", &accumulators,
+        let mut db = {
+            let opts = rusty_leveldb::Options { create_if_missing: false, ..Default::default() };
+            rusty_leveldb::DB::open(&station_path, opts).unwrap()
+        };
+
+        let stats = rollup_station_layer(
+            &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None,
         ).unwrap();
 
@@ -1510,20 +1430,14 @@ mod tests {
         assert_eq!(stats.records_deleted, 1);
 
         // Verify the current record was deleted and dest records were written
-        {
-            let opts = rusty_leveldb::Options { create_if_missing: false, ..Default::default() };
-            let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
-            // Current should be deleted
-            assert!(db.get("c/0042/8828308283fffff".as_bytes()).is_none());
-            // Day should exist
-            let day_key = make_dest_key(
-                AccumulatorType::Day, AccumulatorBucket(0x1001),
-                Layer::Combined, "8828308283fffff",
-            );
-            let day_data = db.get(day_key.as_bytes()).expect("day record should exist");
-            let day_rec = CoverageRecord::from_bytes(&day_data).unwrap();
-            assert_eq!(day_rec.count(), 2);
-        }
+        assert!(db.get("c/0042/8828308283fffff".as_bytes()).is_none());
+        let day_key = make_dest_key(
+            AccumulatorType::Day, AccumulatorBucket(0x1001),
+            Layer::Combined, "8828308283fffff",
+        );
+        let day_data = db.get(day_key.as_bytes()).expect("day record should exist");
+        let day_rec = CoverageRecord::from_bytes(&day_data).unwrap();
+        assert_eq!(day_rec.count(), 2);
     }
 
     #[test]

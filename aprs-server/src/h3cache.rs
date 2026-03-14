@@ -13,7 +13,7 @@ use crate::coverage::header::{AccumulatorType, CoverageHeader};
 use crate::coverage::record::{BufferType, CoverageRecord};
 use crate::layers::{layer_from_prefix, Layer};
 use crate::station::StationManager;
-use crate::storage::Storage;
+use crate::db::Storage;
 use crate::types::{H3Index, H3LockKey, StationId};
 
 struct CacheEntry {

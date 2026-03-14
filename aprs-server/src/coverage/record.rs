@@ -79,13 +79,13 @@ impl ObservationData {
 
     /// Merge another record's data into this one (additive accumulation).
     fn merge_from(&mut self, src: &ObservationData) {
-        if src.min_alt > 0 && (self.min_alt == 0 || self.min_alt > src.min_alt) {
+        if self.min_alt == 0 || self.min_alt > src.min_alt {
             self.min_alt = src.min_alt;
             self.min_alt_max_sig = src.min_alt_max_sig;
         } else if self.min_alt == src.min_alt {
             self.min_alt_max_sig = self.min_alt_max_sig.max(src.min_alt_max_sig);
         }
-        if src.min_alt_agl > 0 && (self.min_alt_agl == 0 || self.min_alt_agl > src.min_alt_agl) {
+        if self.min_alt_agl == 0 || self.min_alt_agl > src.min_alt_agl {
             self.min_alt_agl = src.min_alt_agl;
         }
         self.max_sig = self.max_sig.max(src.max_sig);
@@ -443,7 +443,8 @@ impl CoverageRecord {
         let total_count = summary.count.max(1);
         for (i, ns) in stations_slice.iter().take(30).enumerate() {
             if i > 0 { stations_str.push(','); }
-            let pct = ((ns.data.count as u64 * 16) / total_count as u64).min(15) as u16;
+            // Match TS encoding: 0-10 scale (each unit = 10%), masked to 4 bits
+            let pct = ((ns.data.count as u64 * 10) / total_count as u64) as u16 & 0x0f;
             let encoded = ((ns.station_id as u32) << 4) | pct as u32;
             stations_str.push_str(&to_base36(encoded));
         }
@@ -650,6 +651,21 @@ mod tests {
 
         let merged = r1.rollup(&r2, None).unwrap();
         assert_eq!(merged.count(), 2);
+    }
+
+    #[test]
+    fn test_merge_sea_level_altitude() {
+        let mut r1 = CoverageRecord::new(BufferType::Station);
+        r1.update(500, 200, 1, 20, 5);
+
+        let mut r2 = CoverageRecord::new(BufferType::Station);
+        r2.update(0, 0, 1, 20, 5);
+
+        // sea level (0) is lower than 500, should win
+        let merged = r1.rollup(&r2, None).unwrap();
+        let row = merged.to_arrow_station(0, 0);
+        assert_eq!(row.min_alt, 0);
+        assert_eq!(row.min_agl, 0);
     }
 
     #[test]

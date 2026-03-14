@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::RwLock;
-use rusty_leveldb::LdbIterator;
 use tracing::{error, info, warn};
 
 use crate::config::{DB_PATH, STATION_MOVE_THRESHOLD_KM};
+use crate::db::TrackedDb;
 use crate::types::{Epoch, StationId, StationName};
 
 /// Message sent to the DB writer thread
@@ -112,12 +112,10 @@ impl StationManager {
             std::process::exit(1);
         }
 
-        // Now spawn the writer thread which takes over the DB lock
+        // Spawn the writer thread which takes over the DB lock
         let writer_db_path = db_path;
         std::thread::spawn(move || {
-            let mut opts = rusty_leveldb::Options::default();
-            opts.create_if_missing = true;
-            let mut db = match rusty_leveldb::DB::open(&writer_db_path, opts) {
+            let mut db = match TrackedDb::open(&writer_db_path, true, "station_writer") {
                 Ok(db) => db,
                 Err(e) => {
                     error!("Fatal: writer thread failed to open status DB {}: {}", writer_db_path, e);
@@ -146,53 +144,43 @@ impl StationManager {
     }
 
     fn load_sync(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut opts = rusty_leveldb::Options::default();
-        opts.create_if_missing = true;
-
-        let mut db = rusty_leveldb::DB::open(&self.db_path, opts)?;
-        let mut iter = db.new_iter()?;
+        let mut db = TrackedDb::open(&self.db_path, true, "station_load")?;
+        let entries = crate::db::read_all(&mut db);
 
         let mut max_id: u16 = 0;
-        let mut key_buf = Vec::new();
-        let mut val_buf = Vec::new();
         let mut has_global = false;
 
-        while iter.advance() {
-            if iter.current(&mut key_buf, &mut val_buf) {
-                let raw_name = String::from_utf8_lossy(&key_buf).to_string();
-                if raw_name == "global" {
-                    has_global = true;
-                    continue;
+        for (raw_name, val_buf) in &entries {
+            if raw_name == "global" {
+                has_global = true;
+                continue;
+            }
+            let name = if self.case_insensitive {
+                raw_name.to_uppercase()
+            } else {
+                raw_name.clone()
+            };
+            match serde_json::from_slice::<StationDetails>(val_buf) {
+                Ok(mut details) => {
+                    if details.id.0 > max_id {
+                        max_id = details.id.0;
+                    }
+                    let station_name = StationName(name);
+                    details.station = station_name.clone();
+                    self.station_ids
+                        .write()
+                        .unwrap()
+                        .insert(details.id, station_name.clone());
+                    self.stations
+                        .write()
+                        .unwrap()
+                        .insert(station_name, details);
                 }
-                let name = if self.case_insensitive {
-                    raw_name.to_uppercase()
-                } else {
-                    raw_name
-                };
-                match serde_json::from_slice::<StationDetails>(&val_buf) {
-                    Ok(mut details) => {
-                        if details.id.0 > max_id {
-                            max_id = details.id.0;
-                        }
-                        let station_name = StationName(name);
-                        details.station = station_name.clone();
-                        self.station_ids
-                            .write()
-                            .unwrap()
-                            .insert(details.id, station_name.clone());
-                        self.stations
-                            .write()
-                            .unwrap()
-                            .insert(station_name, details);
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse station {}: {}", name, e);
-                    }
+                Err(e) => {
+                    warn!("Failed to parse station {}: {}", name, e);
                 }
             }
         }
-
-        drop(iter);
 
         if has_global {
             info!("Removing stale 'global' entry from station status DB");

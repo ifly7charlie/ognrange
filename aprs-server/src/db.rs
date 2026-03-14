@@ -1,22 +1,23 @@
-//! LevelDB storage layer for station H3 databases.
+//! LevelDB abstraction layer.
 //!
-//! Each station has its own LevelDB database under DB_PATH/stations/STATION_NAME/.
-//! Mirrors the worker thread storage from the TypeScript codebase.
+//! Provides `TrackedDb` (RAII wrapper with open/close tracking), shared iteration
+//! helpers, and `Storage` for per-station database paths and batch writes.
 
 use rusty_leveldb::LdbIterator;
-use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tracing::error;
 
 use crate::config::DB_PATH;
 use crate::coverage::record::CoverageRecord;
 
-/// Track which station DB paths are currently open (for debugging LockErrors)
+// ---- DB open/close tracking (for debugging LockErrors) ----
+
 static OPEN_DBS: std::sync::LazyLock<Mutex<std::collections::HashMap<String, &'static str>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
-pub fn track_db_open(path: &str, operation: &'static str) {
+fn track_db_open(path: &str, operation: &'static str) {
     let mut open = OPEN_DBS.lock().unwrap();
     if let Some(existing_op) = open.insert(path.to_string(), operation) {
         tracing::error!(
@@ -26,13 +27,136 @@ pub fn track_db_open(path: &str, operation: &'static str) {
     }
 }
 
-pub fn track_db_close(path: &str) {
+fn track_db_close(path: &str) {
     OPEN_DBS.lock().unwrap().remove(path);
 }
 
-pub fn open_dbs_summary() -> Vec<(String, &'static str)> {
+fn open_dbs_summary() -> Vec<(String, &'static str)> {
     OPEN_DBS.lock().unwrap().iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
+
+// ---- TrackedDb: RAII wrapper for LevelDB with open/close tracking ----
+
+/// A tracked LevelDB handle that automatically manages open/close tracking via Drop.
+pub struct TrackedDb {
+    db: rusty_leveldb::DB,
+    path: String,
+}
+
+impl TrackedDb {
+    /// Open a LevelDB database with automatic open/close tracking.
+    pub fn open(path: &str, create_if_missing: bool, operation: &'static str) -> Result<Self, rusty_leveldb::Status> {
+        track_db_open(path, operation);
+        let mut opts = rusty_leveldb::Options::default();
+        opts.create_if_missing = create_if_missing;
+        match rusty_leveldb::DB::open(path, opts) {
+            Ok(db) => Ok(TrackedDb { db, path: path.to_string() }),
+            Err(e) => {
+                track_db_close(path);
+                Err(e)
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for TrackedDb {
+    type Target = rusty_leveldb::DB;
+    fn deref(&self) -> &Self::Target { &self.db }
+}
+
+impl std::ops::DerefMut for TrackedDb {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.db }
+}
+
+impl Drop for TrackedDb {
+    fn drop(&mut self) {
+        track_db_close(&self.path);
+    }
+}
+
+// ---- Shared iteration helpers ----
+
+/// Read key-value pairs within a key range from an open DB.
+/// Checks `shutdown` flag (if provided) to exit early.
+/// Guards against stuck iterators.
+pub fn read_range(
+    db: &mut rusty_leveldb::DB,
+    start_key: &str,
+    end_key: &str,
+    shutdown: Option<&AtomicBool>,
+) -> Vec<(String, Vec<u8>)> {
+    let mut iter = match db.new_iter() {
+        Ok(iter) => iter,
+        Err(_) => return Vec::new(),
+    };
+    iter.seek(start_key.as_bytes());
+    let end_bytes = end_key.as_bytes();
+    let mut results = Vec::new();
+    let mut key_buf = Vec::new();
+    let mut val_buf = Vec::new();
+    let mut prev_key: Option<Vec<u8>> = None;
+    let mut scanned: usize = 0;
+    while iter.current(&mut key_buf, &mut val_buf) {
+        if let Some(flag) = shutdown {
+            if flag.load(Ordering::Relaxed) {
+                tracing::warn!(
+                    "db_read_range: shutdown requested after scanning {} keys ({}..{}), returning {} results",
+                    scanned, start_key, end_key, results.len()
+                );
+                break;
+            }
+        }
+        if key_buf.as_slice() >= end_bytes {
+            break;
+        }
+        scanned += 1;
+        if let Some(ref pk) = prev_key {
+            if pk == &key_buf {
+                error!(
+                    "db_read_range: iterator stuck at key {:?} after {} keys, aborting",
+                    String::from_utf8_lossy(&key_buf), scanned
+                );
+                break;
+            }
+        }
+        prev_key = Some(key_buf.clone());
+        if let Ok(key_str) = std::str::from_utf8(&key_buf) {
+            if key_str >= start_key {
+                results.push((key_str.to_string(), val_buf.clone()));
+            }
+        }
+        if !iter.advance() {
+            break;
+        }
+    }
+    results
+}
+
+/// Read all key-value pairs from an already-open database (full scan).
+pub fn read_all(db: &mut rusty_leveldb::DB) -> Vec<(String, Vec<u8>)> {
+    let mut iter = match db.new_iter() {
+        Ok(iter) => iter,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    let mut key_buf = Vec::new();
+    let mut val_buf = Vec::new();
+
+    iter.seek(&[]);
+    while iter.current(&mut key_buf, &mut val_buf) {
+        if let Ok(key_str) = std::str::from_utf8(&key_buf) {
+            results.push((key_str.to_string(), val_buf.clone()));
+        }
+        if !iter.advance() {
+            break;
+        }
+    }
+
+    results
+}
+
+// ---- Storage struct ----
 
 /// Storage manages station database paths and provides convenience methods.
 pub struct Storage {
@@ -43,7 +167,6 @@ impl Storage {
     pub fn new() -> Self {
         let db_path = PathBuf::from(format!("{}stations", *DB_PATH));
 
-        // Ensure base directory exists
         if let Err(e) = std::fs::create_dir_all(&db_path) {
             error!("Failed to create stations directory {:?}: {}", db_path, e);
         }
@@ -66,19 +189,13 @@ impl Storage {
         let records_owned: Vec<(String, Vec<u8>)> = records.to_vec();
 
         tokio::task::spawn_blocking(move || {
-            track_db_open(&station_path_str, "write_batch");
-
-            let mut opts = rusty_leveldb::Options::default();
-            opts.create_if_missing = true;
-
-            let mut db = match rusty_leveldb::DB::open(&station_path_str, opts) {
+            let mut db = match TrackedDb::open(&station_path_str, true, "write_batch") {
                 Ok(db) => db,
                 Err(e) => {
                     error!(
                         "Failed to open DB for {}: {} — currently open: {:?}",
                         station_path_str, e, open_dbs_summary()
                     );
-                    track_db_close(&station_path_str);
                     return;
                 }
             };
@@ -87,7 +204,6 @@ impl Storage {
                 let existing = db.get(key.as_bytes());
 
                 let merged = if key.contains("00_meta") {
-                    // Meta keys are JSON — merge allStarts from existing
                     merge_meta_json(existing.as_deref(), new_data)
                 } else if let Some(existing_bytes) = existing {
                     if let Some(existing_record) = CoverageRecord::from_bytes(&existing_bytes) {
@@ -112,34 +228,10 @@ impl Storage {
             if let Err(e) = db.flush() {
                 error!("Failed to flush DB for {}: {}", station_path_str, e);
             }
-            drop(db);
-            OPEN_DBS.lock().unwrap().remove(&station_path_str);
         })
         .await?;
 
         Ok(())
-    }
-
-    /// Read a single record from a station's database
-    pub async fn read(
-        &self,
-        station_name: &str,
-        db_key: &str,
-    ) -> Option<CoverageRecord> {
-        let station_path = self.station_path(station_name).to_string_lossy().to_string();
-        let key = db_key.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let mut opts = rusty_leveldb::Options::default();
-            opts.create_if_missing = false;
-
-            let mut db = rusty_leveldb::DB::open(&station_path, opts).ok()?;
-            let data = db.get(key.as_bytes())?;
-            CoverageRecord::from_bytes(&data)
-        })
-        .await
-        .ok()
-        .flatten()
     }
 
     /// Get the path for a station's database directory.
@@ -150,116 +242,6 @@ impl Storage {
         } else {
             self.db_path.join(station_name)
         }
-    }
-
-    /// Read all key-value pairs in a range from a station's database.
-    /// Returns (db_key, raw_bytes) pairs sorted by key.
-    pub fn read_range_sync(
-        station_path: &str,
-        start_key: &str,
-        end_key: &str,
-    ) -> Vec<(String, Vec<u8>)> {
-        let mut opts = rusty_leveldb::Options::default();
-        opts.create_if_missing = false;
-
-        let mut db = match rusty_leveldb::DB::open(station_path, opts) {
-            Ok(db) => db,
-            Err(e) => {
-                error!("Failed to open DB for range read {}: {}", station_path, e);
-                return Vec::new();
-            }
-        };
-
-        let mut iter = match db.new_iter() {
-            Ok(iter) => iter,
-            Err(_) => return Vec::new(),
-        };
-
-        // Seek to start
-        iter.seek(start_key.as_bytes());
-
-        let mut results = Vec::new();
-        let mut key_buf = Vec::new();
-        let mut val_buf = Vec::new();
-        let end_bytes = end_key.as_bytes();
-
-        while iter.current(&mut key_buf, &mut val_buf) {
-            if key_buf.as_slice() >= end_bytes {
-                break;
-            }
-            if let Ok(key_str) = std::str::from_utf8(&key_buf) {
-                if key_str >= start_key {
-                    results.push((key_str.to_string(), val_buf.clone()));
-                }
-            }
-            if !iter.advance() {
-                break;
-            }
-        }
-
-        results
-    }
-
-    /// Read all key-value pairs from a database (full scan).
-    pub fn read_all_sync(station_path: &str) -> Vec<(String, Vec<u8>)> {
-        let mut opts = rusty_leveldb::Options::default();
-        opts.create_if_missing = false;
-
-        track_db_open(station_path, "read_all_sync");
-        let mut db = match rusty_leveldb::DB::open(station_path, opts) {
-            Ok(db) => db,
-            Err(_) => {
-                track_db_close(station_path);
-                return Vec::new();
-            }
-        };
-
-        let mut iter = match db.new_iter() {
-            Ok(iter) => iter,
-            Err(_) => return Vec::new(),
-        };
-
-        let mut results = Vec::new();
-        let mut key_buf = Vec::new();
-        let mut val_buf = Vec::new();
-
-        iter.seek(&[]);
-        while iter.current(&mut key_buf, &mut val_buf) {
-            if let Ok(key_str) = std::str::from_utf8(&key_buf) {
-                results.push((key_str.to_string(), val_buf.clone()));
-            }
-            if !iter.advance() {
-                break;
-            }
-        }
-
-        drop(iter);
-        drop(db);
-        track_db_close(station_path);
-        results
-    }
-
-    /// Apply a batch of put/delete operations to a station database.
-    pub fn apply_batch_sync(
-        station_path: &str,
-        puts: &[(String, Vec<u8>)],
-        deletes: &[String],
-    ) -> Result<(), String> {
-        let mut opts = rusty_leveldb::Options::default();
-        opts.create_if_missing = true;
-
-        let mut db = rusty_leveldb::DB::open(station_path, opts)
-            .map_err(|e| format!("Failed to open DB: {}", e))?;
-
-        for key in deletes {
-            let _ = db.delete(key.as_bytes());
-        }
-        for (key, value) in puts {
-            let _ = db.put(key.as_bytes(), value);
-        }
-        db.flush()
-            .map_err(|e| format!("Failed to flush DB: {}", e))?;
-        Ok(())
     }
 
     /// Purge a station's database by removing its directory.

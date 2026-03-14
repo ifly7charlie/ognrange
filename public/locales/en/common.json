@@ -126,8 +126,8 @@
         "statistics": {
             "title": "Statistics at {{when}}",
             "count": "Total Packet Count",
-            "ignoredTracker": "Ignored (OGN Tracker)",
-            "invalidTracker": "Invalid (OGN Tracker",
+            "ignoredTracker": "Ignored (Relayed)",
+            "invalidTracker": "Invalid (Short Tracker ID)",
             "invalidTimestamp": "Invalid Timestamp",
             "ignoredStationary": "Ignored (Stationary)",
             "ignoredSignal0": "Ignored (No signal strength)",

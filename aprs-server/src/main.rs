@@ -10,10 +10,10 @@ mod reject_log;
 mod rollup;
 mod station;
 mod stationfile;
-mod storage;
+mod db;
 mod types;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +29,7 @@ use layers::{
     PRESENCE_SIGNAL,
 };
 use station::StationManager;
-use storage::Storage;
+use db::Storage;
 use types::{Epoch, H3Index, StationId, StationName};
 
 /// Global packet statistics
@@ -87,9 +87,32 @@ struct PacketStatsSnapshot {
     raw_count: u64,
 }
 
+impl std::fmt::Display for PacketStatsSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut parts = Vec::new();
+        if self.ignored_station > 0 { parts.push(format!("station:{}", self.ignored_station)); }
+        if self.ignored_protocol > 0 { parts.push(format!("protocol:{}", self.ignored_protocol)); }
+        if self.ignored_stationary > 0 { parts.push(format!("stationary:{}", self.ignored_stationary)); }
+        if self.ignored_h3stationary > 0 { parts.push(format!("h3stationary:{}", self.ignored_h3stationary)); }
+        if self.ignored_signal0 > 0 { parts.push(format!("signal0:{}", self.ignored_signal0)); }
+        if self.ignored_tracker > 0 { parts.push(format!("relayed:{}", self.ignored_tracker)); }
+        if self.ignored_paw > 0 { parts.push(format!("paw:{}", self.ignored_paw)); }
+        if self.ignored_elevation > 0 { parts.push(format!("elevation:{}", self.ignored_elevation)); }
+        if self.invalid_packet > 0 { parts.push(format!("invalid:{}", self.invalid_packet)); }
+        if self.invalid_tracker > 0 { parts.push(format!("bad_tracker:{}", self.invalid_tracker)); }
+        if self.invalid_timestamp > 0 { parts.push(format!("bad_ts:{}", self.invalid_timestamp)); }
+        if parts.is_empty() {
+            write!(f, "no rejects")
+        } else {
+            write!(f, "rejected: {}", parts.join(", "))
+        }
+    }
+}
+
 /// Aircraft tracking for gap calculation and stationary detection
 struct AircraftState {
-    h3s: HashSet<String>,
+    /// H3 cells at resolution 10 — kept in insertion order (oldest first) for FIFO eviction
+    h3s: Vec<String>,
     first: u32,
     packets: u32,
     seen: u32,
@@ -436,10 +459,22 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
         }
     }
 
-    let altitude = packet.altitude.unwrap_or(0.0).floor() as u16;
+    let altitude = (packet.altitude.unwrap_or(0.0).floor().clamp(0.0, 55000.0)) as u16;
     let lat = packet.latitude.unwrap();
     let lng = packet.longitude.unwrap();
     let comment = packet.comment.as_deref().unwrap_or("");
+
+    // Ensure aircraft entry exists before stationary check (matches TS: aircraft
+    // is always created before stationary filter so seen time is always tracked)
+    {
+        let mut all_aircraft = state.all_aircraft.lock().await;
+        all_aircraft.entry(flarm_id.to_string()).or_insert_with(|| AircraftState {
+            h3s: Vec::new(),
+            first: timestamp,
+            packets: 0,
+            seen: 0,
+        });
+    }
 
     // Check if moving
     let speed = packet.speed.unwrap_or(99.0);
@@ -452,7 +487,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
                 .ignored_stationary
                 .fetch_add(1, Ordering::Relaxed);
             station_details.stats.ignored_stationary += 1;
-            // Update aircraft seen time
+            // Update aircraft seen time (always succeeds — entry created above)
             let mut all_aircraft = state.all_aircraft.lock().await;
             if let Some(aircraft) = all_aircraft.get_mut(flarm_id) {
                 aircraft.seen = timestamp;
@@ -470,21 +505,14 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
         let mut aircraft_station = state.aircraft_station.lock().await;
         let mut all_aircraft = state.all_aircraft.lock().await;
 
-        let aircraft = all_aircraft.entry(flarm_id.to_string()).or_insert_with(|| AircraftState {
-            h3s: HashSet::new(),
-            first: timestamp,
-            packets: 0,
-            seen: 0,
-        });
+        // Entry guaranteed to exist from above
+        let aircraft = all_aircraft.get_mut(flarm_id).unwrap();
 
         let seen = aircraft.seen;
         let when = aircraft_station.get(&gs).copied();
-        let raw_gap = if let Some(w) = when {
-            (timestamp.saturating_sub(w)).min(60)
-        } else {
-            (timestamp.saturating_sub(seen.max(timestamp).min(timestamp + 1))).min(60).max(1)
-        };
-        gap = raw_gap as u8;
+        // last_seen = when ?? seen ?? timestamp
+        let last = when.unwrap_or(if seen > 0 { seen } else { timestamp });
+        gap = (timestamp.abs_diff(last)).min(60).max(1) as u8;
 
         aircraft_station.insert(gs, timestamp);
         first = aircraft.seen < timestamp;
@@ -500,12 +528,15 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
             } else {
                 format!("{:.4},{:.4}", lat, lng) // fallback
             };
-            aircraft.h3s.insert(h3_key_10);
+
+            // Insert only if not already present (Vec used for insertion-order FIFO)
+            if !aircraft.h3s.contains(&h3_key_10) {
+                aircraft.h3s.push(h3_key_10);
+            }
 
             if aircraft.h3s.len() > 4 {
-                // Remove oldest (arbitrary for HashSet, but matches intent)
-                let first_key = aircraft.h3s.iter().next().cloned().unwrap();
-                aircraft.h3s.remove(&first_key);
+                // Remove oldest (first in Vec is always the earliest added)
+                aircraft.h3s.remove(0);
                 aircraft.packets = 0;
             } else {
                 aircraft.packets += 1;
@@ -577,7 +608,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
     let station_id = station_details.id;
 
     let gl = elevation_service.get_elevation(lat, lng).await;
-    let agl = (altitude as f64 - gl).max(0.0).round() as u16;
+    let agl = (altitude as f64 - gl).clamp(0.0, 55000.0).round() as u16;
 
     // Get current accumulator bucket
     let current_bucket = state.accumulators.read().await.current.bucket;
@@ -713,12 +744,8 @@ async fn periodic_tasks(state: Arc<AppState>) {
             state.station_manager.next_station_id() - 1
         );
         info!(
-            "{:?} valid packets: {} {:.1}/s, all packets {} {:.1}/s",
-            serde_json::to_string(&stats).unwrap_or_default(),
-            packets,
-            pps,
-            raw_packets,
-            raw_pps
+            "valid: {} ({:.1}/s), total: {} ({:.1}/s), {}",
+            packets, pps, raw_packets, raw_pps, stats
         );
         info!(
             "h3s: {} delta {} ({:.0}%): expired {} ({:.0}%), written {} ({:.0}%)[{} stations] {:.1}% {:.1}/s {}:1",
