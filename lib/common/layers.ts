@@ -43,7 +43,7 @@ for (const [layer, prefix] of Object.entries(LAYER_DB_PREFIX)) {
 }
 
 // Protocols that store synthetic signal (no real dB value available)
-export const PRESENCE_ONLY: ReadonlySet<Layer> = new Set([Layer.ADSB, Layer.PAW]);
+export const PRESENCE_ONLY: ReadonlySet<Layer> = new Set([Layer.ADSB, Layer.PAW, Layer.SAFESKY]);
 
 // Synthetic signal value for presence-only layers (4 = ~1.0dB equivalent)
 export const PRESENCE_SIGNAL = 4;
