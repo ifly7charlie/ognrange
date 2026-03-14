@@ -1112,7 +1112,8 @@ pub async fn rollup_startup(
             // Scan DB using seeking iterator (like TypeScript) — only reads meta keys,
             // skips past data ranges to avoid reading all H3 records into memory.
             let mut hanging_buckets: HashMap<(AccumulatorBucket, Layer), Accumulators> = HashMap::new();
-            let mut to_purge: Vec<(AccumulatorType, AccumulatorBucket, Layer)> = Vec::new();
+            // (type, bucket, layer, description) for purging
+            let mut to_purge: Vec<(AccumulatorType, AccumulatorBucket, Layer, String)> = Vec::new();
             let mut all_accumulators: Vec<(AccumulatorType, AccumulatorBucket, Layer, String)> = Vec::new();
 
             {
@@ -1147,8 +1148,8 @@ pub async fn rollup_startup(
 
                     if !header.is_meta() {
                         // Data entry without meta — orphaned, mark for purge
-                        info!("{}: purging entry without metadata {}", station_name, key_str);
-                        to_purge.push((acc_type, bucket, layer));
+                        to_purge.push((acc_type, bucket, layer,
+                            format!("{}/{}/{:04x}(orphaned)", layer.name(), acc_type.name(), bucket.0)));
                         iter.seek(seek_end.as_bytes());
                         continue;
                     }
@@ -1180,9 +1181,8 @@ pub async fn rollup_startup(
                                 all_accumulators.push((acc_type, bucket, layer, file));
                             }
                             None => {
-                                info!("{}: invalid accumulator or missing metadata for {}, purging",
-                                    station_name, key_str);
-                                to_purge.push((acc_type, bucket, layer));
+                                to_purge.push((acc_type, bucket, layer,
+                                    format!("{}/{}/{:04x}(invalid meta)", layer.name(), acc_type.name(), bucket.0)));
                             }
                         }
                     }
@@ -1210,10 +1210,11 @@ pub async fn rollup_startup(
                 m
             };
 
-            for (acc_type, bucket, layer, _file) in &all_accumulators {
+            for (acc_type, bucket, layer, file) in &all_accumulators {
                 if let Some(expected_bucket) = expected_buckets.get(&(*acc_type, *layer)) {
                     if bucket != expected_bucket {
-                        to_purge.push((*acc_type, *bucket, *layer));
+                        to_purge.push((*acc_type, *bucket, *layer,
+                            format!("{}/{}/{:04x}", layer.name(), file, bucket.0)));
                     }
                 }
             }
@@ -1221,10 +1222,10 @@ pub async fn rollup_startup(
             // Execute purges
             if !to_purge.is_empty() {
                 let purge_desc: Vec<String> = to_purge.iter()
-                    .map(|(t, b, l)| format!("{}/{:04x}/{}", l.db_prefix(), b.0, t.name()))
+                    .map(|(_, _, _, desc)| desc.clone())
                     .collect();
                 let mut purged = 0usize;
-                for (acc_type, bucket, layer) in &to_purge {
+                for (acc_type, bucket, layer, _) in &to_purge {
                     let (start, end) = CoverageHeader::db_search_range_with_meta(*acc_type, *bucket, *layer);
                     purged += db::delete_range(&mut db, &start, &end);
                 }

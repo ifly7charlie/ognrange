@@ -34,16 +34,16 @@ impl Accumulators {
         let current_start = self.current.effective_start.0 as i64;
         let current_text = if current_start > 0 {
             let dt = chrono::DateTime::from_timestamp(current_start, 0);
-            dt.map(|d| format!("{:02}:{:02}", d.hour(), d.minute()))
+            dt.map(|d| format!("{:02}:{:02}/{:04x}", d.hour(), d.minute(), self.current.bucket.0))
                 .unwrap_or_else(|| format!("{:04x}", self.current.bucket.0))
         } else {
             format!("{:04x}", self.current.bucket.0)
         };
 
-        let dest_files: Vec<&str> = [&self.day, &self.month, &self.year, &self.yearnz]
+        let dest_files: Vec<String> = [&self.day, &self.month, &self.year, &self.yearnz]
             .iter()
-            .map(|a| a.file.as_str())
-            .filter(|f| !f.is_empty())
+            .filter(|a| !a.file.is_empty())
+            .map(|a| format!("{}/{:04x}", a.file, a.bucket.0))
             .collect();
 
         (current_text, dest_files.join(","))
@@ -58,8 +58,9 @@ pub fn what_accumulators(now: chrono::DateTime<Utc>) -> Accumulators {
     let new_bucket = ((now.day() as u16 & 0x1f) << 7) | (rollover_period & 0x7f);
 
     let y = now.year() as u32;
-    let m = now.month();
+    let m = now.month();  // 1-indexed
     let d = now.day();
+    let m0 = m - 1; // 0-indexed for bucket formulas (matches TypeScript getUTCMonth())
 
     let d_str = prefix_with_zeros(2, &d.to_string());
     let m_str = prefix_with_zeros(2, &m.to_string());
@@ -100,13 +101,13 @@ pub fn what_accumulators(now: chrono::DateTime<Utc>) -> Accumulators {
         },
         day: AccumulatorEntry {
             bucket: AccumulatorBucket(
-                (((y as u16) & 0x07) << 9) | (((m as u16) & 0x0f) << 5) | ((d as u16) & 0x1f),
+                (((y as u16) & 0x07) << 9) | (((m0 as u16) & 0x0f) << 5) | ((d as u16) & 0x1f),
             ),
             file: format!("{}-{}-{}", y, m_str, d_str),
             effective_start: Epoch(day_start),
         },
         month: AccumulatorEntry {
-            bucket: AccumulatorBucket((((y as u16) & 0xff) << 4) | ((m as u16) & 0x0f)),
+            bucket: AccumulatorBucket((((y as u16) & 0xff) << 4) | ((m0 as u16) & 0x0f)),
             file: format!("{}-{}", y, m_str),
             effective_start: Epoch(month_start),
         },
