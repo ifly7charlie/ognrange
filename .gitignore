@@ -44,3 +44,4 @@ public/data
 *~
 package-lock.json
 tsconfig.tsbuildinfo
+/aprs-server/target
