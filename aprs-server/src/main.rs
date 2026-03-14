@@ -214,7 +214,10 @@ async fn main() {
 
     // Startup rollup
     info!("Performing startup rollup...");
-    rollup::rollup_startup(&state.storage, &state.station_manager).await;
+    {
+        let acc = state.accumulators.read().await;
+        rollup::rollup_startup(&state.storage, &state.station_manager, &acc).await;
+    }
 
     // Start APRS listener
     info!("Starting APRS...");

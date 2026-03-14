@@ -132,6 +132,60 @@ pub fn read_range(
     results
 }
 
+/// Delete all keys within a range from an open DB (data + meta).
+/// Returns the number of keys deleted.
+pub fn delete_range(
+    db: &mut rusty_leveldb::DB,
+    start_key: &str,
+    end_key: &str,
+) -> usize {
+    let mut iter = match db.new_iter() {
+        Ok(iter) => iter,
+        Err(_) => return 0,
+    };
+    iter.seek(start_key.as_bytes());
+    let end_bytes = end_key.as_bytes();
+    let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+    let mut key_buf = Vec::new();
+    let mut val_buf = Vec::new();
+    let mut prev_key: Option<Vec<u8>> = None;
+
+    while iter.current(&mut key_buf, &mut val_buf) {
+        if key_buf.as_slice() >= end_bytes {
+            break;
+        }
+        if let Some(ref pk) = prev_key {
+            if pk == &key_buf {
+                error!(
+                    "delete_range: iterator stuck at key {:?}, aborting",
+                    String::from_utf8_lossy(&key_buf)
+                );
+                break;
+            }
+        }
+        prev_key = Some(key_buf.clone());
+        if key_buf.as_slice() >= start_key.as_bytes() {
+            keys_to_delete.push(key_buf.clone());
+        }
+        if !iter.advance() {
+            break;
+        }
+    }
+    drop(iter);
+
+    let count = keys_to_delete.len();
+    if count > 0 {
+        let mut batch = rusty_leveldb::WriteBatch::default();
+        for key in &keys_to_delete {
+            batch.delete(key);
+        }
+        if let Err(e) = db.write(batch, true) {
+            error!("delete_range failed: {}", e);
+        }
+    }
+    count
+}
+
 /// Read all key-value pairs from an already-open database (full scan).
 pub fn read_all(db: &mut rusty_leveldb::DB) -> Vec<(String, Vec<u8>)> {
     let mut iter = match db.new_iter() {

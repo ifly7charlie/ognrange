@@ -204,7 +204,7 @@ impl CoverageHeader {
         CoverageHeader::new(self.dbid, t, b, self.h3.clone(), self.layer)
     }
 
-    /// Get DB search range for an accumulator block
+    /// Get DB search range for an accumulator block (data records only)
     pub fn db_search_range(
         t: AccumulatorType,
         b: AccumulatorBucket,
@@ -215,6 +215,22 @@ impl CoverageHeader {
         let hex = tb.to_hex();
         (
             format!("{}{}/8000000000000000", prefix, hex),
+            format!("{}{}/9000000000000000", prefix, hex),
+        )
+    }
+
+    /// Get DB search range including metadata key (for purging).
+    /// Starts at "00_" to include the "00_meta" key.
+    pub fn db_search_range_with_meta(
+        t: AccumulatorType,
+        b: AccumulatorBucket,
+        layer: Layer,
+    ) -> (String, String) {
+        let tb = AccumulatorTypeAndBucket::new(t, b);
+        let prefix = layer.db_prefix();
+        let hex = tb.to_hex();
+        (
+            format!("{}{}/00_", prefix, hex),
             format!("{}{}/9000000000000000", prefix, hex),
         )
     }
