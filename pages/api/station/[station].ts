@@ -4,7 +4,7 @@
 
 import {ARROW_PATH, ROLLUP_PERIOD_MINUTES} from '../../../lib/common/config';
 import {ignoreStation} from '../../../lib/common/ignorestation';
-import {Layer} from '../../../lib/common/layers';
+import {Layer, shouldProduceOutput} from '../../../lib/common/layers';
 
 import {readdirSync} from 'fs';
 
@@ -43,7 +43,7 @@ export default async function getH3Details(req, res) {
             }
             return {fileName, type: parts[1], date: parts[2], layerName: parts[3] || 'combined'};
         })
-        .filter((parts) => parts && parts.type && parts.date)
+        .filter((parts) => parts && parts.type && parts.date && shouldProduceOutput((parts.layerName ?? 'combined') as Layer, parts.type))
         .sort((a, b) => a.date.localeCompare(b.date))
         .reduce((output, parts) => {
             const {type, date, layerName} = parts;

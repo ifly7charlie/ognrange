@@ -136,6 +136,12 @@ export function layerBitFromUrl(url: string): number {
     return 1 << LAYER_BIT[Layer.COMBINED];
 }
 
+/** Whether a specific accumulator type should be produced for a layer.
+ *  ADSB daily output suppressed to reduce data volume. */
+export function shouldProduceOutput(layer: Layer, accType: string): boolean {
+    return !(layer === Layer.ADSB && accType === 'day');
+}
+
 /** Parse ENABLED_LAYERS env var. Returns null to mean "all layers enabled" */
 export function parseEnabledLayers(envValue: string | undefined): Set<Layer> | null {
     if (!envValue) return null;

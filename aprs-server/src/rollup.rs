@@ -485,7 +485,10 @@ fn rollup_station_layer(
         (AccumulatorType::Month, &accumulators.month),
         (AccumulatorType::Year, &accumulators.year),
         (AccumulatorType::YearNz, &accumulators.yearnz),
-    ];
+    ]
+    .into_iter()
+    .filter(|(acc_type, _)| crate::layers::should_produce(layer, *acc_type))
+    .collect();
 
     let mut destinations: Vec<RollupAccumulator> = Vec::with_capacity(dest_entries.len());
     for (acc_type, entry) in &dest_entries {

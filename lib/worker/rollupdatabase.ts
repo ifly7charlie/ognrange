@@ -2,7 +2,7 @@ import {CoverageRecord, bufferTypes} from '../bin/coveragerecord';
 import {CoverageHeader} from '../bin/coverageheader';
 import {CoverageRecordWriter} from '../bin/coveragerecordwriter';
 
-import {Layer, ALL_LAYERS} from '../common/layers';
+import {Layer, ALL_LAYERS, shouldProduceOutput} from '../common/layers';
 import {ENABLED_LAYERS, ROLLUP_PERIOD_MINUTES} from '../common/config';
 
 //import {cloneDeep as _clonedeep, isEqual as _isequal, map as _map, reduce as _reduce, sortBy as _sortBy, filter as _filter, uniq as _uniq} from 'lodash';
@@ -97,6 +97,7 @@ export async function rollupDatabaseInternal(
     // We step through all of the items together and update as one
     const rollupIterators = Object.keys(accumulators)
         .filter((t) => t != 'current') // all but current accumulator
+        .filter((t) => shouldProduceOutput(layer, t)) // skip suppressed layer/type combos (e.g. ADSB daily)
         .map((key: string): any => {
             const r = key as AccumulatorTypeString;
             const par = accumulators[r];

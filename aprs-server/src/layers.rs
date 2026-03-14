@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use crate::coverage::header::AccumulatorType;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Layer {
     Combined,
@@ -98,6 +100,12 @@ pub const ALL_LAYERS: &[Layer] = &[
     Layer::Safesky,
     Layer::Ogntrk,
 ];
+
+/// Whether a specific accumulator type should be produced for this layer.
+/// ADSB daily output is suppressed to reduce data volume (presence-only, high volume).
+pub fn should_produce(layer: Layer, acc_type: AccumulatorType) -> bool {
+    !matches!((layer, acc_type), (Layer::Adsb, AccumulatorType::Day))
+}
 
 /// Protocols that store synthetic signal (no real dB value available)
 pub fn is_presence_only(layer: Layer) -> bool {
