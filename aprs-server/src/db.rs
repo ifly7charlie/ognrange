@@ -92,11 +92,9 @@ pub fn read_range(
     iter.seek(start_key.as_bytes());
     let end_bytes = end_key.as_bytes();
     let mut results = Vec::new();
-    let mut key_buf = Vec::new();
-    let mut val_buf = Vec::new();
     let mut prev_key: Option<Vec<u8>> = None;
     let mut scanned: usize = 0;
-    while iter.current(&mut key_buf, &mut val_buf) {
+    while let Some((key_bytes, val_bytes)) = iter.current() {
         if let Some(flag) = shutdown {
             if flag.load(Ordering::Relaxed) {
                 tracing::warn!(
@@ -106,23 +104,23 @@ pub fn read_range(
                 break;
             }
         }
-        if key_buf.as_slice() >= end_bytes {
+        if key_bytes.as_ref() >= end_bytes {
             break;
         }
         scanned += 1;
         if let Some(ref pk) = prev_key {
-            if pk == &key_buf {
+            if pk.as_slice() == key_bytes.as_ref() {
                 error!(
                     "db_read_range: iterator stuck at key {:?} after {} keys, aborting",
-                    String::from_utf8_lossy(&key_buf), scanned
+                    String::from_utf8_lossy(&key_bytes), scanned
                 );
                 break;
             }
         }
-        prev_key = Some(key_buf.clone());
-        if let Ok(key_str) = std::str::from_utf8(&key_buf) {
+        prev_key = Some(key_bytes.to_vec());
+        if let Ok(key_str) = std::str::from_utf8(&key_bytes) {
             if key_str >= start_key {
-                results.push((key_str.to_string(), val_buf.clone()));
+                results.push((key_str.to_string(), val_bytes.to_vec()));
             }
         }
         if !iter.advance() {
@@ -139,36 +137,55 @@ pub fn delete_range(
     start_key: &str,
     end_key: &str,
 ) -> usize {
+    delete_ranges(db, &[(start_key.to_string(), end_key.to_string())])
+}
+
+/// Delete all keys within multiple ranges using a single iterator pass.
+/// Ranges must be non-overlapping. They will be sorted internally.
+/// Returns the total number of keys deleted.
+pub fn delete_ranges(
+    db: &mut rusty_leveldb::DB,
+    ranges: &[(String, String)],
+) -> usize {
+    if ranges.is_empty() {
+        return 0;
+    }
+
+    let mut sorted_ranges: Vec<&(String, String)> = ranges.iter().collect();
+    sorted_ranges.sort_by(|a, b| a.0.cmp(&b.0));
+
     let mut iter = match db.new_iter() {
         Ok(iter) => iter,
         Err(_) => return 0,
     };
-    iter.seek(start_key.as_bytes());
-    let end_bytes = end_key.as_bytes();
-    let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
-    let mut key_buf = Vec::new();
-    let mut val_buf = Vec::new();
-    let mut prev_key: Option<Vec<u8>> = None;
 
-    while iter.current(&mut key_buf, &mut val_buf) {
-        if key_buf.as_slice() >= end_bytes {
-            break;
-        }
-        if let Some(ref pk) = prev_key {
-            if pk == &key_buf {
-                error!(
-                    "delete_range: iterator stuck at key {:?}, aborting",
-                    String::from_utf8_lossy(&key_buf)
-                );
+    let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+
+    for (start_key, end_key) in &sorted_ranges {
+        iter.seek(start_key.as_bytes());
+        let end_bytes = end_key.as_bytes();
+        let mut prev_key: Option<Vec<u8>> = None;
+
+        while let Some((key_bytes, _val_bytes)) = iter.current() {
+            if key_bytes.as_ref() >= end_bytes {
                 break;
             }
-        }
-        prev_key = Some(key_buf.clone());
-        if key_buf.as_slice() >= start_key.as_bytes() {
-            keys_to_delete.push(key_buf.clone());
-        }
-        if !iter.advance() {
-            break;
+            if let Some(ref pk) = prev_key {
+                if pk.as_slice() == key_bytes.as_ref() {
+                    error!(
+                        "delete_ranges: iterator stuck at key {:?}, aborting range",
+                        String::from_utf8_lossy(&key_bytes)
+                    );
+                    break;
+                }
+            }
+            prev_key = Some(key_bytes.to_vec());
+            if key_bytes.as_ref() >= start_key.as_bytes() {
+                keys_to_delete.push(key_bytes.to_vec());
+            }
+            if !iter.advance() {
+                break;
+            }
         }
     }
     drop(iter);
@@ -180,7 +197,7 @@ pub fn delete_range(
             batch.delete(key);
         }
         if let Err(e) = db.write(batch, true) {
-            error!("delete_range failed: {}", e);
+            error!("delete_ranges failed: {}", e);
         }
     }
     count
@@ -194,13 +211,11 @@ pub fn read_all(db: &mut rusty_leveldb::DB) -> Vec<(String, Vec<u8>)> {
     };
 
     let mut results = Vec::new();
-    let mut key_buf = Vec::new();
-    let mut val_buf = Vec::new();
 
     iter.seek(&[]);
-    while iter.current(&mut key_buf, &mut val_buf) {
-        if let Ok(key_str) = std::str::from_utf8(&key_buf) {
-            results.push((key_str.to_string(), val_buf.clone()));
+    while let Some((key_bytes, val_bytes)) = iter.current() {
+        if let Ok(key_str) = std::str::from_utf8(&key_bytes) {
+            results.push((key_str.to_string(), val_bytes.to_vec()));
         }
         if !iter.advance() {
             break;

@@ -52,6 +52,7 @@ use crate::types::{Epoch, H3Index, StationId, StationName};
 pub struct RollupStats {
     pub stations_processed: usize,
     pub stations_skipped: usize,
+    pub records_read: usize,
     pub records_written: usize,
     pub records_deleted: usize,
     pub arrow_records: usize,
@@ -238,7 +239,7 @@ pub async fn rollup_all(
     let layers = Arc::new(layers);
     let retired_accumulators = Arc::new(retired_accumulators);
 
-    let mut tasks: Vec<(String, String, Arc<std::sync::Mutex<RollupProgress>>, tokio::task::JoinHandle<RollupStats>)> = Vec::new();
+    let mut tasks: Vec<(String, String, Arc<std::sync::Mutex<RollupProgress>>, Arc<AtomicBool>, tokio::task::JoinHandle<RollupStats>)> = Vec::new();
     let mut skipped_no_traffic: usize = 0;
 
     for (station_name, _is_global_hint, station_meta) in station_entries {
@@ -299,6 +300,8 @@ pub async fn rollup_all(
         let task_station_path = station_path.clone();
         let progress = Arc::new(std::sync::Mutex::new(RollupProgress::default()));
         let task_progress = progress.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task_cancel = cancel.clone();
 
         let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit; // released when task completes
@@ -314,6 +317,7 @@ pub async fn rollup_all(
                 station_meta.as_ref(),
                 &task_progress,
                 &retired,
+                &task_cancel,
             ) {
                 Ok(stats) => stats,
                 Err(e) => {
@@ -323,7 +327,7 @@ pub async fn rollup_all(
             };
             station_stats
         });
-        tasks.push((task_station_name, task_station_path, progress, handle));
+        tasks.push((task_station_name, task_station_path, progress, cancel, handle));
     }
 
     // Produce the master stations list (runs while station rollups are in progress)
@@ -334,9 +338,10 @@ pub async fn rollup_all(
     total_stats.stations_processed = total_stations;
     let station_timeout = std::time::Duration::from_secs(300); // 5 minutes per station
 
-    for (station_name, station_path, progress, handle) in tasks {
+    for (station_name, station_path, progress, cancel, handle) in tasks {
         match tokio::time::timeout(station_timeout, handle).await {
             Ok(Ok(stats)) => {
+                total_stats.records_read += stats.records_read;
                 total_stats.records_written += stats.records_written;
                 total_stats.records_deleted += stats.records_deleted;
                 total_stats.arrow_records += stats.arrow_records;
@@ -359,6 +364,7 @@ pub async fn rollup_all(
                 total_stats.stations_skipped += 1;
             }
             Err(_) => {
+                cancel.store(true, Ordering::Relaxed);
                 let prog = progress.lock().map(|p| p.to_string()).unwrap_or_default();
                 error!("Rollup task timed out after {}s for {} ({}) — progress: {}",
                     station_timeout.as_secs(), station_name, station_path, prog);
@@ -371,11 +377,12 @@ pub async fn rollup_all(
     total_stats.elapsed_ms = start.elapsed().as_millis() as u64;
 
     info!(
-        "Rollup complete in {}ms: {} stations ({} skipped no-traffic, {} concurrent), {} records written, {} deleted, {} arrow records",
+        "Rollup complete in {}ms: {} stations ({} skipped no-traffic, {} concurrent), {} records read, {} written, {} deleted, {} arrow records",
         total_stats.elapsed_ms,
         total_stats.stations_processed,
         skipped_no_traffic,
         max_concurrent,
+        total_stats.records_read,
         total_stats.records_written,
         total_stats.records_deleted,
         total_stats.arrow_records,
@@ -424,6 +431,7 @@ fn rollup_station_all_layers(
     station_meta: Option<&crate::station::StationDetails>,
     progress: &std::sync::Mutex<RollupProgress>,
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
+    cancel: &AtomicBool,
 ) -> Result<RollupStats, String> {
     let mut db = match TrackedDb::open(station_path, true, "rollup") {
         Ok(db) => db,
@@ -433,7 +441,12 @@ fn rollup_station_all_layers(
     };
 
     let mut total_stats = RollupStats::default();
+    let cancelled = || cancel.load(Ordering::Relaxed);
+
     for layer in layers {
+        if cancelled() {
+            break;
+        }
         if let Ok(mut p) = progress.lock() {
             p.layer = layer.name().to_string();
             p.phase = "rollup".to_string();
@@ -442,13 +455,15 @@ fn rollup_station_all_layers(
         match rollup_station_layer(
             &mut db, station_path, station_name, accumulators,
             *layer, layer_suffix, valid_stations, is_global, station_meta,
-            retired_accumulators,
+            retired_accumulators, cancel,
         ) {
             Ok(stats) => {
+                total_stats.records_read += stats.records_read;
                 total_stats.records_written += stats.records_written;
                 total_stats.records_deleted += stats.records_deleted;
                 total_stats.arrow_records += stats.arrow_records;
                 if let Ok(mut p) = progress.lock() {
+                    p.records_read = total_stats.records_read;
                     p.records_written = total_stats.records_written;
                     p.records_deleted = total_stats.records_deleted;
                     p.arrow_records = total_stats.arrow_records;
@@ -460,15 +475,21 @@ fn rollup_station_all_layers(
         }
     }
 
+    // Always flush — ensures memtable is written to SSTables so next open
+    // doesn't pay WAL replay cost (cheap if few/no layers completed)
     if let Ok(mut p) = progress.lock() {
         p.phase = "flush".to_string();
     }
     db.flush().map_err(|e| format!("flush failed for {}: {}", station_name, e))?;
-    if let Ok(mut p) = progress.lock() {
-        p.phase = "compact".to_string();
+
+    // Skip compaction on cancel — it's expensive and not needed for correctness
+    if !cancelled() {
+        if let Ok(mut p) = progress.lock() {
+            p.phase = "compact".to_string();
+        }
+        db.compact_range(b"!", b"~").map_err(|e| format!("compact failed for {}: {}", station_name, e))?;
+        db.flush().map_err(|e| format!("flush after compact failed for {}: {}", station_name, e))?;
     }
-    db.compact_range(b"0", b"Z").map_err(|e| format!("compact failed for {}: {}", station_name, e))?;
-    db.flush().map_err(|e| format!("flush after compact failed for {}: {}", station_name, e))?;
     Ok(total_stats)
 }
 
@@ -484,6 +505,7 @@ fn rollup_station_layer(
     is_global: bool,
     station_meta: Option<&crate::station::StationDetails>,
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
+    cancel: &AtomicBool,
 ) -> Result<RollupStats, String> {
     let mut stats = RollupStats::default();
 
@@ -493,9 +515,10 @@ fn rollup_station_layer(
         accumulators.current.bucket,
         layer,
     );
-    let current_records = db::read_range(db, &current_start, &current_end, Some(&SHUTDOWN));
+    let current_records = db::read_range(db, &current_start, &current_end, Some(cancel));
+    stats.records_read = current_records.len();
 
-    if is_shutdown() || current_records.is_empty() {
+    if is_shutdown() || cancel.load(Ordering::Relaxed) || current_records.is_empty() {
         return Ok(stats);
     }
 
@@ -513,7 +536,7 @@ fn rollup_station_layer(
     let mut destinations: Vec<RollupAccumulator> = Vec::with_capacity(dest_entries.len());
     for (acc_type, entry) in &dest_entries {
         let (start, end) = CoverageHeader::db_search_range(*acc_type, entry.bucket, layer);
-        let records = db::read_range(db, &start, &end, Some(&SHUTDOWN));
+        let records = db::read_range(db, &start, &end, Some(cancel));
 
         let meta_key = CoverageHeader::accumulator_meta(*acc_type, entry.bucket, layer).db_key();
         let activity = load_activity_from_db(db, &meta_key);
@@ -761,7 +784,8 @@ fn emit_at_pos(
     if let Some(valid) = valid_stations {
         match record.remove_invalid_stations(valid) {
             Some(filtered) => {
-                let changed = filtered.to_bytes() != record.to_bytes();
+                let filtered_bytes = filtered.to_bytes();
+                let changed = filtered_bytes.as_slice() != value.as_slice();
                 let (lo, hi) = H3Index(h3).split_long();
                 if is_global {
                     dest.arrow_global_rows.push(filtered.to_arrow_global(lo, hi));
@@ -769,7 +793,7 @@ fn emit_at_pos(
                     dest.arrow_station_rows.push(filtered.to_arrow_station(lo, hi));
                 }
                 if changed {
-                    Some((db_key, Some(filtered.to_bytes())))
+                    Some((db_key, Some(filtered_bytes)))
                 } else {
                     None
                 }
@@ -1125,11 +1149,9 @@ pub async fn rollup_startup(
                     }
                 };
                 iter.seek(&[]);
-                let mut key_buf = Vec::new();
-                let mut val_buf = Vec::new();
 
-                while iter.current(&mut key_buf, &mut val_buf) {
-                    let key_str = match std::str::from_utf8(&key_buf) {
+                while let Some((key_bytes, val_bytes)) = iter.current() {
+                    let key_str = match std::str::from_utf8(&key_bytes) {
                         Ok(s) => s.to_string(),
                         Err(_) => { if !iter.advance() { break; } continue; }
                     };
@@ -1157,14 +1179,14 @@ pub async fn rollup_startup(
                     // Process meta entry
                     if acc_type == AccumulatorType::Current {
                         if layers.contains(&layer) {
-                            if let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&val_buf) {
+                            if let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&val_bytes) {
                                 if let Some(acc) = parse_accumulators_from_meta(&meta) {
                                     hanging_buckets.insert((bucket, layer), acc);
                                 }
                             }
                         }
                     } else {
-                        let meta_ok = serde_json::from_slice::<serde_json::Value>(&val_buf)
+                        let meta_ok = serde_json::from_slice::<serde_json::Value>(&val_bytes)
                             .ok()
                             .and_then(|meta| {
                                 let type_name = acc_type.name();
@@ -1192,6 +1214,25 @@ pub async fn rollup_startup(
                 }
             }
 
+            if !all_accumulators.is_empty() || !hanging_buckets.is_empty() || !to_purge.is_empty() {
+                let found: Vec<String> = all_accumulators.iter()
+                    .map(|(t, b, l, f)| format!("{}/{}={:04x}({})", l.name(), t.name(), b.0, f))
+                    .collect();
+                let hanging: Vec<String> = hanging_buckets.keys()
+                    .map(|(b, l)| format!("{}/{:04x}", l.name(), b.0))
+                    .collect();
+                let orphaned: Vec<String> = to_purge.iter()
+                    .map(|(_, _, _, desc)| desc.clone())
+                    .collect();
+                info!(
+                    "{}: scan: found=[{}] hanging=[{}] orphaned=[{}] expected day={:04x} month={:04x} year={:04x} yearnz={:04x}",
+                    station_name,
+                    found.join(", "), hanging.join(", "), orphaned.join(", "),
+                    expected.day.bucket.0, expected.month.bucket.0,
+                    expected.year.bucket.0, expected.yearnz.bucket.0
+                );
+            }
+
             // Purge old accumulators whose buckets don't match expected
             // (matching TypeScript rollupdatabase.ts:638-640)
             let expected_buckets: HashMap<(AccumulatorType, Layer), AccumulatorBucket> = {
@@ -1214,21 +1255,22 @@ pub async fn rollup_startup(
                 if let Some(expected_bucket) = expected_buckets.get(&(*acc_type, *layer)) {
                     if bucket != expected_bucket {
                         to_purge.push((*acc_type, *bucket, *layer,
-                            format!("{}/{}/{:04x}", layer.name(), file, bucket.0)));
+                            format!("{}/{}/{:04x}(expected {:04x})", layer.name(), file, bucket.0, expected_bucket.0)));
                     }
                 }
             }
 
-            // Execute purges
+            // Execute purges — single iterator pass for all ranges
             if !to_purge.is_empty() {
                 let purge_desc: Vec<String> = to_purge.iter()
                     .map(|(_, _, _, desc)| desc.clone())
                     .collect();
-                let mut purged = 0usize;
-                for (acc_type, bucket, layer, _) in &to_purge {
-                    let (start, end) = CoverageHeader::db_search_range_with_meta(*acc_type, *bucket, *layer);
-                    purged += db::delete_range(&mut db, &start, &end);
-                }
+                let ranges: Vec<(String, String)> = to_purge.iter()
+                    .map(|(acc_type, bucket, layer, _)| {
+                        CoverageHeader::db_search_range_with_meta(*acc_type, *bucket, *layer)
+                    })
+                    .collect();
+                let purged = db::delete_ranges(&mut db, &ranges);
                 info!("{}: purged {} keys from {} stale accumulators: {}",
                     station_name, purged, to_purge.len(), purge_desc.join(", "));
             }
@@ -1304,6 +1346,7 @@ pub async fn rollup_startup(
                     is_global,
                     station_meta,
                     &[], // no retired accumulators during startup
+                    &SHUTDOWN, // use global shutdown for startup rollup
                 ) {
                     Ok(stats) => {
                         info!(
@@ -1540,7 +1583,7 @@ mod tests {
 
         let stats = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
-            Layer::Combined, ".combined", None, false, None, &[],
+            Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
         ).unwrap();
 
         assert_eq!(stats.records_written, 0);
@@ -1581,7 +1624,7 @@ mod tests {
 
         let stats = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
-            Layer::Combined, ".combined", None, false, None, &[],
+            Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
         ).unwrap();
 
         // Should have merged into 4 destinations (day, month, year, yearnz)
