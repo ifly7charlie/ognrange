@@ -188,15 +188,32 @@ impl H3Cache {
         });
         let meta_bytes = serde_json::to_vec(&meta_json).unwrap_or_default();
 
+        // Write metadata for all accumulator types (not just Current), matching
+        // TypeScript's saveAccumulatorMetadata called from h3storage.ts flush.
+        // This ensures day/month/year/yearnz meta keys exist before the first
+        // rollup, so startup rollup doesn't see them as "missing".
+        let all_acc_types = [
+            (AccumulatorType::Current, accumulators.current.bucket),
+            (AccumulatorType::Day, accumulators.day.bucket),
+            (AccumulatorType::Month, accumulators.month.bucket),
+            (AccumulatorType::Year, accumulators.year.bucket),
+            (AccumulatorType::YearNz, accumulators.yearnz.bucket),
+        ];
+
         for (station_name, layers) in &station_layers {
             let records = by_station.get_mut(station_name).unwrap();
             for layer in layers {
-                let meta_header = CoverageHeader::accumulator_meta(
-                    AccumulatorType::Current,
-                    accumulators.current.bucket,
-                    *layer,
-                );
-                records.push((meta_header.db_key(), meta_bytes.clone()));
+                for (acc_type, bucket) in &all_acc_types {
+                    if !crate::layers::should_produce(*layer, *acc_type) {
+                        continue;
+                    }
+                    let meta_header = CoverageHeader::accumulator_meta(
+                        *acc_type,
+                        *bucket,
+                        *layer,
+                    );
+                    records.push((meta_header.db_key(), meta_bytes.clone()));
+                }
             }
         }
 
