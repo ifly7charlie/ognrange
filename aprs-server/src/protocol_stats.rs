@@ -401,7 +401,7 @@ fn build_output_json(inner: &StatsInner) -> String {
     // Build hourly map sorted by layer name
     let mut hourly = serde_json::Map::new();
     let mut hourly_sorted: Vec<_> = inner.hourly.iter().collect();
-    hourly_sorted.sort_by_key(|(k, _)| k.clone());
+    hourly_sorted.sort_by_key(|(k, _)| (*k).clone());
     for (layer, counts) in hourly_sorted {
         let arr: Vec<serde_json::Value> = counts.iter().map(|&c| serde_json::Value::from(c)).collect();
         hourly.insert(layer.clone(), serde_json::Value::Array(arr));

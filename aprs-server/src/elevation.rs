@@ -111,12 +111,6 @@ impl ElevationService {
         }
     }
 
-    pub fn cache_size(&self) -> usize {
-        // Can't easily get this without locking; return best estimate
-        // In practice, callers will use the async version
-        0
-    }
-
     pub async fn cache_size_async(&self) -> usize {
         self.cache.lock().await.len()
     }

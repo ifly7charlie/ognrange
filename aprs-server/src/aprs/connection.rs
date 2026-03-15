@@ -23,7 +23,9 @@ pub enum AprsEvent {
 }
 
 pub struct AprsConnection {
-    /// Channel for sending shutdown signal
+    /// Held to keep the shutdown channel alive; dropping `AprsConnection`
+    /// closes the sender, which signals the connection task to stop.
+    #[allow(dead_code)]
     shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
@@ -43,12 +45,6 @@ impl AprsConnection {
         }
     }
 
-    /// Signal the connection to shut down
-    pub async fn shutdown(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(()).await;
-        }
-    }
 }
 
 async fn connection_loop(

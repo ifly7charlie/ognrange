@@ -199,11 +199,6 @@ impl CoverageHeader {
         self.tb.bucket()
     }
 
-    /// Create a new header with a different accumulator type and bucket
-    pub fn with_accumulator(&self, t: AccumulatorType, b: AccumulatorBucket) -> CoverageHeader {
-        CoverageHeader::new(self.dbid, t, b, self.h3.clone(), self.layer)
-    }
-
     /// Get DB search range for an accumulator block (data records only)
     pub fn db_search_range(
         t: AccumulatorType,
@@ -243,11 +238,6 @@ impl CoverageHeader {
     /// Create a meta key for an accumulator
     pub fn accumulator_meta(t: AccumulatorType, b: AccumulatorBucket, layer: Layer) -> Self {
         CoverageHeader::new(StationId(0), t, b, H3Index("00_meta".to_string()), layer)
-    }
-
-    /// Legacy (unprefixed) db key: "accumulator/h3"
-    pub fn legacy_db_key(&self) -> String {
-        format!("{}/{}", self.tb.to_hex(), self.h3)
     }
 
     /// Legacy meta key: "accumulator/00_meta" (no layer prefix)

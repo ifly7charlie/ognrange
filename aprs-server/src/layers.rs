@@ -123,7 +123,7 @@ pub fn is_combined_layer(layer: Layer) -> bool {
 /// APRS TOCALL (destCallsign) → Layer mapping
 pub fn layer_from_dest_callsign(dest: &str) -> Option<Layer> {
     match dest {
-        "OGFLR" | "OGFLR7" | "APRS" => Some(Layer::Flarm),
+        "OGFLR" | "OGFLR6" | "OGFLR7" | "APRS" => Some(Layer::Flarm),
         "OGADSB" => Some(Layer::Adsb),
         "OGADSL" => Some(Layer::Adsl),
         "OGNFNT" => Some(Layer::Fanet),

@@ -11,7 +11,7 @@ use crate::accumulators::Accumulators;
 use crate::config::{H3_CACHE_FLUSH_PERIOD_MS, H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS};
 use crate::coverage::header::{AccumulatorType, CoverageHeader};
 use crate::coverage::record::{BufferType, CoverageRecord};
-use crate::layers::{layer_from_prefix, Layer};
+use crate::layers::Layer;
 use crate::station::StationManager;
 use crate::db::Storage;
 use crate::types::{H3Index, H3LockKey, StationId};
@@ -40,10 +40,6 @@ impl H3Cache {
         H3Cache {
             entries: Arc::new(Mutex::new(BTreeMap::new())),
         }
-    }
-
-    pub async fn size(&self) -> usize {
-        self.entries.lock().await.len()
     }
 
     /// Update a cached H3 cell with a new observation

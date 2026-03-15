@@ -41,7 +41,6 @@ pub struct AprsPacket {
     pub speed: Option<f64>,    // knots
     pub comment: Option<String>,
     pub body: Option<String>,
-    pub raw: String,
 }
 
 impl Default for AprsPacket {
@@ -58,7 +57,6 @@ impl Default for AprsPacket {
             speed: None,
             comment: None,
             body: None,
-            raw: String::new(),
         }
     }
 }
@@ -107,10 +105,7 @@ pub fn extract_vertical_speed(comment: &str) -> f32 {
 /// MyStation>OGNSDR,TCPIP*,qAC,GLIDERN2:>123456h v0.2.8 status info
 /// ```
 pub fn parse_aprs(raw: &str) -> Option<AprsPacket> {
-    let mut packet = AprsPacket {
-        raw: raw.to_string(),
-        ..Default::default()
-    };
+    let mut packet = AprsPacket::default();
 
     // Split header from body at first ':'
     let colon_pos = raw.find(':')?;

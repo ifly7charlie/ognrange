@@ -47,3 +47,4 @@ tsconfig.tsbuildinfo
 /aprs-server/target
 /aprs-server/data
 *.aprs
+aprs-server/reject.aprs.1

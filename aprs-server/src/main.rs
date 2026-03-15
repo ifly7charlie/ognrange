@@ -114,7 +114,6 @@ impl std::fmt::Display for PacketStatsSnapshot {
 struct AircraftState {
     /// H3 cells at resolution 10 — kept in insertion order (oldest first) for FIFO eviction
     h3s: Vec<String>,
-    first: u32,
     packets: u32,
     seen: u32,
 }
@@ -488,7 +487,6 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         let mut all_aircraft = state.all_aircraft.lock().await;
         all_aircraft.entry((layer, flarm_num)).or_insert_with(|| AircraftState {
             h3s: Vec::new(),
-            first: timestamp,
             packets: 0,
             seen: 0,
         });

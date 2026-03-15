@@ -42,7 +42,6 @@ use crate::coverage::header::{
     AccumulatorBucket, AccumulatorType, AccumulatorTypeAndBucket, CoverageHeader,
 };
 use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
-use crate::h3cache::H3Cache;
 use crate::layers::Layer;
 use crate::station::{StationDetails, StationManager};
 use crate::db::{self, Storage, TrackedDb};

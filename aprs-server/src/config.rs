@@ -47,9 +47,6 @@ pub static APRS_SERVER: Lazy<String> =
 
 // Database handle limits
 pub static MAX_STATION_DBS: Lazy<usize> = Lazy::new(|| env_parse("MAX_STATION_DBS", 800));
-pub static STATION_DB_EXPIRY_MS: Lazy<u64> =
-    Lazy::new(|| env_parse::<u64>("STATION_DB_EXPIRY_HOURS", 12) * 3600 * 1000);
-
 // Rollup configuration
 pub static ROLLUP_PERIOD_MINUTES: Lazy<f64> = Lazy::new(|| {
     if let Ok(v) = env::var("ROLLUP_PERIOD_MINUTES") {

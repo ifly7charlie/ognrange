@@ -31,19 +31,8 @@ const NESTED_LEN: usize = 28;
 pub enum BufferType {
     Station = 0,
     Global = 1,
-    GlobalNested = 2,
 }
 
-impl BufferType {
-    pub fn from_byte(b: u8) -> Option<BufferType> {
-        match b {
-            0 => Some(BufferType::Station),
-            1 => Some(BufferType::Global),
-            2 => Some(BufferType::GlobalNested),
-            _ => None,
-        }
-    }
-}
 
 /// Observation data shared by all record types (22 bytes of payload at offsets 2..24).
 #[derive(Debug, Clone, Copy, Default)]
@@ -152,7 +141,7 @@ impl CoverageRecord {
             BufferType::Station => CoverageRecord {
                 inner: RecordKind::Station(ObservationData::default()),
             },
-            BufferType::Global | BufferType::GlobalNested => CoverageRecord {
+            BufferType::Global => CoverageRecord {
                 inner: RecordKind::Global {
                     summary: ObservationData::default(),
                     stations: Vec::new(),
@@ -227,6 +216,7 @@ impl CoverageRecord {
         }
     }
 
+    #[cfg(test)]
     pub fn buffer_type(&self) -> BufferType {
         match &self.inner {
             RecordKind::Station(_) => BufferType::Station,
@@ -234,6 +224,7 @@ impl CoverageRecord {
         }
     }
 
+    #[cfg(test)]
     pub fn count(&self) -> u32 {
         match &self.inner {
             RecordKind::Station(data) => data.count,
@@ -465,23 +456,6 @@ impl CoverageRecord {
             stations: stations_str,
             expected_gap,
             num_stations,
-        }
-    }
-
-    /// Add gap to the summary's sum_gap, and to the matching nested station if global.
-    pub fn update_sum_gap(&mut self, gap: u32, station_id: StationId) {
-        match &mut self.inner {
-            RecordKind::Station(data) => {
-                data.sum_gap += gap;
-            }
-            RecordKind::Global { summary, stations } => {
-                summary.sum_gap += gap;
-                if station_id.0 != 0 {
-                    if let Some(ns) = stations.iter_mut().find(|s| s.station_id == station_id.0) {
-                        ns.data.sum_gap += gap;
-                    }
-                }
-            }
         }
     }
 
