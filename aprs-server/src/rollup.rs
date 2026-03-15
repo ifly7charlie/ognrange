@@ -432,12 +432,14 @@ fn rollup_station_all_layers(
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
     cancel: &AtomicBool,
 ) -> Result<RollupStats, String> {
+    let station_start = std::time::Instant::now();
     let mut db = match TrackedDb::open(station_path, true, "rollup") {
         Ok(db) => db,
         Err(e) => {
             return Err(format!("Failed to open DB {}: {}", station_path, e));
         }
     };
+    let open_elapsed = station_start.elapsed();
 
     let mut total_stats = RollupStats::default();
     let cancelled = || cancel.load(Ordering::Relaxed);
@@ -451,6 +453,7 @@ fn rollup_station_all_layers(
             p.layer = layer.name().to_string();
             p.phase = "rollup".to_string();
         }
+        let layer_start = std::time::Instant::now();
         let layer_suffix = layer.file_suffix();
         match rollup_station_layer(
             &mut db, station_path, station_name, accumulators,
@@ -458,6 +461,13 @@ fn rollup_station_all_layers(
             retired_accumulators, cancel,
         ) {
             Ok((stats, day_activity)) => {
+                let layer_elapsed = layer_start.elapsed();
+                if layer_elapsed.as_secs() >= 20 {
+                    warn!("{}: layer {} took {:?} (read={}, written={}, deleted={}, arrow={})",
+                        station_name, layer.name(), layer_elapsed,
+                        stats.records_read, stats.records_written,
+                        stats.records_deleted, stats.arrow_records);
+                }
                 total_stats.records_read += stats.records_read;
                 total_stats.records_written += stats.records_written;
                 total_stats.records_deleted += stats.records_deleted;
@@ -497,15 +507,31 @@ fn rollup_station_all_layers(
     if let Ok(mut p) = progress.lock() {
         p.phase = "flush".to_string();
     }
+    let flush_start = std::time::Instant::now();
     db.flush().map_err(|e| format!("flush failed for {}: {}", station_name, e))?;
+    let flush_elapsed = flush_start.elapsed();
 
     // Skip compaction on cancel — it's expensive and not needed for correctness
+    let compact_elapsed;
     if !cancelled() {
         if let Ok(mut p) = progress.lock() {
             p.phase = "compact".to_string();
         }
+        let compact_start = std::time::Instant::now();
         db.compact_range(b"!", b"~").map_err(|e| format!("compact failed for {}: {}", station_name, e))?;
         db.flush().map_err(|e| format!("flush after compact failed for {}: {}", station_name, e))?;
+        compact_elapsed = compact_start.elapsed();
+    } else {
+        compact_elapsed = std::time::Duration::ZERO;
+    }
+
+    let total_elapsed = station_start.elapsed();
+    if total_elapsed.as_secs() >= 40 {
+        warn!("{}: slow station rollup {:?} — open={:?}, flush={:?}, compact={:?}, \
+               read={}, written={}, deleted={}, arrow={}",
+            station_name, total_elapsed, open_elapsed, flush_elapsed, compact_elapsed,
+            total_stats.records_read, total_stats.records_written,
+            total_stats.records_deleted, total_stats.arrow_records);
     }
     Ok(total_stats)
 }
@@ -527,6 +553,7 @@ fn rollup_station_layer(
     cancel: &AtomicBool,
 ) -> Result<(RollupStats, Option<RollupActivity>), String> {
     let mut stats = RollupStats::default();
+    let layer_t0 = std::time::Instant::now();
 
     // Read all "current" accumulator records for this layer
     let (current_start, current_end) = CoverageHeader::db_search_range(
@@ -536,6 +563,7 @@ fn rollup_station_layer(
     );
     let current_records = db::read_range(db, &current_start, &current_end, Some(cancel));
     stats.records_read = current_records.len();
+    let t_read_current = layer_t0.elapsed();
 
     if is_shutdown() || cancel.load(Ordering::Relaxed) || current_records.is_empty() {
         return Ok((stats, None));
@@ -552,10 +580,13 @@ fn rollup_station_layer(
     .filter(|(acc_type, _)| crate::layers::should_produce(layer, *acc_type))
     .collect();
 
+    let t_dest_start = std::time::Instant::now();
+    let mut dest_record_counts: Vec<(&str, usize)> = Vec::new();
     let mut destinations: Vec<RollupAccumulator> = Vec::with_capacity(dest_entries.len());
     for (acc_type, entry) in &dest_entries {
         let (start, end) = CoverageHeader::db_search_range(*acc_type, entry.bucket, layer);
         let records = db::read_range(db, &start, &end, Some(cancel));
+        dest_record_counts.push((acc_type.name(), records.len()));
 
         let meta_key = CoverageHeader::accumulator_meta(*acc_type, entry.bucket, layer).db_key();
         let activity = load_activity_from_db(db, &meta_key);
@@ -571,13 +602,18 @@ fn rollup_station_layer(
             activity,
         });
     }
+    let t_read_dest = t_dest_start.elapsed();
 
     // Batch of DB put/delete operations to apply at the end
     let mut puts: Vec<(String, Vec<u8>)> = Vec::new();
     let mut deletes: Vec<String> = Vec::new();
 
     // Walk the current accumulator and merge into each destination
+    let t_merge_start = std::time::Instant::now();
     for (current_key, current_value) in &current_records {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok((stats, None));
+        }
         let current_record = match CoverageRecord::from_bytes(current_value) {
             Some(r) => r,
             None => continue,
@@ -673,6 +709,8 @@ fn rollup_station_layer(
         update_activity(&mut dest.activity, h3source, period_start, period_end, now);
     }
 
+    let t_merge = t_merge_start.elapsed();
+
     // Build a single WriteBatch for all DB mutations
     let mut batch = rusty_leveldb::WriteBatch::default();
 
@@ -718,16 +756,21 @@ fn rollup_station_layer(
     ).db_key();
     batch.delete(current_meta_key.as_bytes());
 
+    let t_write_start = std::time::Instant::now();
     db.write(batch, true).map_err(|e| format!("write batch failed for {}: {}", station_name, e))?;
+    let t_write = t_write_start.elapsed();
 
     // Purge retired accumulators (matching TypeScript rollupdatabase.ts:407-416).
     // When a bucket changes (e.g. day rolls over), purge old bucket's data and meta.
+    let t_purge_start = std::time::Instant::now();
     for (acc_type, old_bucket) in retired_accumulators {
         let (start, end) = CoverageHeader::db_search_range_with_meta(*acc_type, *old_bucket, layer);
         db::delete_range(db, &start, &end);
     }
+    let t_purge = t_purge_start.elapsed();
 
     // Write arrow files and metadata for each destination
+    let t_arrow_start = std::time::Instant::now();
     let output_dir = crate::config::output_dir(station_name);
     if let Err(e) = std::fs::create_dir_all(&output_dir) {
         return Err(format!("Failed to create output dir: {}", e));
@@ -779,6 +822,21 @@ fn rollup_station_layer(
             arrow_count,
             Some(&dest.activity),
         );
+    }
+
+    let t_arrow = t_arrow_start.elapsed();
+
+    let layer_total = layer_t0.elapsed();
+    if layer_total.as_secs() >= 20 {
+        warn!("{}/{}: slow layer {:?} — read_current={}recs/{:?}, read_dest={:?}/{:?}, \
+               merge={:?}, write={:?}({}puts/{}dels), purge={:?}, arrow={:?}({}recs)",
+            station_name, layer.name(), layer_total,
+            current_records.len(), t_read_current,
+            dest_record_counts, t_read_dest,
+            t_merge,
+            t_write, puts.len(), deletes.len() + current_records.len(),
+            t_purge,
+            t_arrow, stats.arrow_records);
     }
 
     Ok((stats, day_activity))

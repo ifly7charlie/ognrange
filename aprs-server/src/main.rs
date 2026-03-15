@@ -649,7 +649,10 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     }
 
     state.protocol_stats.record_accepted(&packet.dest_callsign, coarse_agl);
-    state.protocol_stats.record_hourly(layer.name(), (timestamp / 3600) % 24);
+    let hour = (timestamp / 3600) % 24;
+    for wl in &write_layers {
+        state.protocol_stats.record_hourly(wl.name(), hour);
+    }
 
     // Get current accumulator bucket
     let current_bucket = state.accumulators.read().await.current.bucket;
