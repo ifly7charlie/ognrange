@@ -6,7 +6,7 @@ import {tableFromIPC, Table} from 'apache-arrow/Arrow.node';
 import {gunzipSync} from 'zlib';
 
 import {MAX_ARROW_FILES, ARROW_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
-import {ALL_LAYER_NAMES} from '../common/layers';
+import {ALL_LAYER_NAMES, Layer, shouldProduceOutput} from '../common/layers';
 
 type ArrowTableType = Table<any>;
 
@@ -138,41 +138,49 @@ export async function searchMatchingArrowFiles(
     else if (!includeCombined) layerPart = `\\.(${nonCombined.join('|')})`;
     else layerPart = '';
 
-    const fileMatcher = new RegExp(`day\\.([0-9-]+)${layerPart}\\.arrow\\.gz$`);
+    const fileMatcher = new RegExp(`^(day|month|year)\\.([0-9-]+)${layerPart}\\.arrow\\.gz$`);
 
     const pending = new Map<string, Promise<string>>();
     try {
         const files = readdirSync(ARROW_PATH + station)
             .map((fn) => {
                 const m = fn.match(fileMatcher);
-                return {date: m?.[1] || '', layer: m?.[2] || 'combined', fileName: fn};
+                if (!m) return null;
+                return {periodType: m[1], date: m[2], layer: m[3] || 'combined', fileName: fn};
             })
-            .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch);
+            .filter((x): x is NonNullable<typeof x> => {
+                if (!x) return false;
+                if (x.date.substring(0, fileDateMatch.length) !== fileDateMatch) return false;
+                // Daily layers use day.* files; non-daily layers use month/year files
+                const isDaily = shouldProduceOutput(x.layer as Layer, 'day');
+                return isDaily ? x.periodType === 'day' : x.periodType !== 'day';
+            });
 
         for (const file of files) {
-            const fileDate = new Date(file.date);
-            if (oldest && fileDate < oldest) {
-                continue;
+            if (file.periodType === 'day') {
+                const fileDate = new Date(file.date);
+                if (oldest && fileDate < oldest) continue;
             }
 
-            const layer = file.layer;
+            const dateStr = file.periodType === 'day' ? dateFormat.format(new Date(file.date)).replace(' ', '-') : file.date;
+
             pending.set(
                 file.fileName,
                 new Promise<string>((resolve) => {
                     searchArrowFile(`${station}/${file.fileName}`, h3SplitLong, (row) => {
                         if (row) {
-                            combine(row, dateFormat.format(fileDate).replace(' ', '-'), layer);
+                            combine(row, dateStr, file.layer);
                         }
                         resolve(file.fileName);
                     });
                 })
             );
-        }
-        // Keep the queue size down so we don't run out of files
-        // or memory
-        if (pending.size > 0) {
-            const done = await Promise.race(pending.values());
-            pending.delete(done);
+            // Keep the queue size down so we don't run out of files
+            // or memory
+            if (pending.size > 0) {
+                const done = await Promise.race(pending.values());
+                pending.delete(done);
+            }
         }
     } catch (e) {
         console.log(e);
