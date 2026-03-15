@@ -6,6 +6,7 @@ mod elevation;
 mod h3cache;
 mod ignore_station;
 mod layers;
+mod protocol_stats;
 mod reject_log;
 mod rollup;
 mod station;
@@ -124,9 +125,10 @@ struct AppState {
     storage: Storage,
     elevation: elevation::ElevationService,
     packet_stats: PacketStats,
+    protocol_stats: protocol_stats::ProtocolStats,
     accumulators: RwLock<accumulators::Accumulators>,
-    all_aircraft: Mutex<HashMap<String, AircraftState>>,
-    aircraft_station: Mutex<HashMap<String, u32>>,
+    all_aircraft: Mutex<HashMap<(Layer, u32), AircraftState>>,
+    aircraft_station: Mutex<HashMap<(Layer, u16, u32), u32>>,
     case_insensitive: bool,
     /// Mutex to serialize cache flushes and rollups — rollup acquires this,
     /// does a full flush, then rolls up, ensuring no concurrent DB access.
@@ -170,6 +172,7 @@ async fn main() {
     for dir in &[
         format!("{}stations", *DB_PATH),
         format!("{}stations", *OUTPUT_PATH),
+        format!("{}stats", *OUTPUT_PATH),
     ] {
         if let Err(e) = std::fs::create_dir_all(dir) {
             error!("Error creating directory {}: {}", dir, e);
@@ -199,6 +202,7 @@ async fn main() {
         storage: Storage::new(),
         elevation: elevation::ElevationService::new(),
         packet_stats: PacketStats::default(),
+        protocol_stats: protocol_stats::ProtocolStats::load(),
         accumulators: RwLock::new(acc),
         all_aircraft: Mutex::new(HashMap::new()),
         aircraft_station: Mutex::new(HashMap::new()),
@@ -264,6 +268,7 @@ async fn main() {
         .await;
     drop(_flush_guard);
 
+    state.protocol_stats.save_state();
     state.station_manager.close();
     info!("Shutdown complete");
 }
@@ -303,8 +308,32 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                                 .map(|c| c.starts_with("id") || c.contains(" id"))
                                 .unwrap_or(false)
                         {
+                            // Extract and validate flarm ID (last 6 hex chars of source callsign)
+                            let source = &packet.source_callsign;
+                            if source.len() < 6 {
+                                state.packet_stats.invalid_tracker.fetch_add(1, Ordering::Relaxed);
+                                reject_log::log_reject("invalid_tracker", &raw);
+                                continue;
+                            }
+                            let flarm_hex = &source[source.len() - 6..];
+                            let flarm_num = match u32::from_str_radix(flarm_hex, 16) {
+                                Ok(n) => n,
+                                Err(_) => {
+                                    state.packet_stats.invalid_tracker.fetch_add(1, Ordering::Relaxed);
+                                    reject_log::log_reject("invalid_flarm_hex", &raw);
+                                    continue;
+                                }
+                            };
+
+                            // Record protocol stats before filtering
+                            state.protocol_stats.record_raw(
+                                &packet.dest_callsign,
+                                flarm_num,
+                                packet.latitude.unwrap(),
+                                packet.longitude.unwrap(),
+                            );
                             // Aircraft position report
-                            process_packet(&state, &packet, &raw).await;
+                            process_packet(&state, &packet, &raw, flarm_num).await;
                         } else {
                             // Station beacon or status
                             let station_name =
@@ -371,7 +400,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
 }
 
 /// Process a single aircraft position packet
-async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
+async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_num: u32) {
     // Extract station from last digipeater
     let station_str = packet
         .digipeaters
@@ -418,20 +447,6 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
     // Get or create station
     let mut station_details = state.station_manager.get_or_create(&station_name);
 
-    // Extract flarm ID (last 6 chars of source callsign)
-    let source = &packet.source_callsign;
-    if source.len() < 6 {
-        state
-            .packet_stats
-            .invalid_tracker
-            .fetch_add(1, Ordering::Relaxed);
-        station_details.stats.invalid_tracker += 1;
-        state.station_manager.update(&station_details);
-        reject_log::log_reject("invalid_tracker", raw);
-        return;
-    }
-    let flarm_id = &source[source.len() - 6..];
-
     let timestamp = match packet.timestamp {
         Some(ts) => ts,
         None => {
@@ -471,7 +486,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
     // is always created before stationary filter so seen time is always tracked)
     {
         let mut all_aircraft = state.all_aircraft.lock().await;
-        all_aircraft.entry(flarm_id.to_string()).or_insert_with(|| AircraftState {
+        all_aircraft.entry((layer, flarm_num)).or_insert_with(|| AircraftState {
             h3s: Vec::new(),
             first: timestamp,
             packets: 0,
@@ -492,7 +507,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
             station_details.stats.ignored_stationary += 1;
             // Update aircraft seen time (always succeeds — entry created above)
             let mut all_aircraft = state.all_aircraft.lock().await;
-            if let Some(aircraft) = all_aircraft.get_mut(flarm_id) {
+            if let Some(aircraft) = all_aircraft.get_mut(&(layer, flarm_num)) {
                 aircraft.seen = timestamp;
             }
             state.station_manager.update(&station_details);
@@ -504,20 +519,20 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
     let gap: u8;
     let first: bool;
     {
-        let gs = format!("{}/{}", station_name, flarm_id);
+        let gs_key = (layer, station_details.id.0, flarm_num);
         let mut aircraft_station = state.aircraft_station.lock().await;
         let mut all_aircraft = state.all_aircraft.lock().await;
 
         // Entry guaranteed to exist from above
-        let aircraft = all_aircraft.get_mut(flarm_id).unwrap();
+        let aircraft = all_aircraft.get_mut(&(layer, flarm_num)).unwrap();
 
         let seen = aircraft.seen;
-        let when = aircraft_station.get(&gs).copied();
+        let when = aircraft_station.get(&gs_key).copied();
         // last_seen = when ?? seen ?? timestamp
         let last = when.unwrap_or(if seen > 0 { seen } else { timestamp });
         gap = (timestamp.abs_diff(last)).min(60).max(1) as u8;
 
-        aircraft_station.insert(gs, timestamp);
+        aircraft_station.insert(gs_key, timestamp);
         first = aircraft.seen < timestamp;
         if first {
             aircraft.seen = timestamp;
@@ -612,6 +627,25 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str) {
 
     let gl = elevation_service.get_elevation(lat, lng).await;
     let agl = (altitude as f64 - gl).clamp(0.0, 55000.0).round() as u16;
+
+    // Coarse AGL using max ground elevation in ~10km cell
+    let coarse_gl = elevation_service.get_max_elevation_coarse(lat, lng).await;
+    let coarse_agl = (altitude as f64 - coarse_gl).clamp(0.0, 55000.0).round() as u16;
+
+    // Filter bogus altitude data
+    if (layer == Layer::Adsb && coarse_agl > 4500) || coarse_agl > 10000 {
+        state
+            .packet_stats
+            .ignored_elevation
+            .fetch_add(1, Ordering::Relaxed);
+        if layer != Layer::Adsb {
+            reject_log::log_reject("altitude_too_high", raw);
+        }
+        return;
+    }
+
+    state.protocol_stats.record_accepted(&packet.dest_callsign, coarse_agl);
+    state.protocol_stats.record_hourly(layer.name(), (timestamp / 3600) % 24);
 
     // Get current accumulator bucket
     let current_bucket = state.accumulators.read().await.current.bucket;
@@ -815,5 +849,14 @@ async fn rollup_timer(state: Arc<AppState>) {
         )
         .await;
         drop(flush_guard);
+
+        // Write protocol stats after rollup completes
+        let day_rotation = old_acc.day.bucket != new_acc.day.bucket;
+        let month_rotation = if old_acc.month.bucket != new_acc.month.bucket {
+            Some(old_acc.month.file.as_str())
+        } else {
+            None
+        };
+        state.protocol_stats.write_stats(&old_acc.day.file, day_rotation, month_rotation);
     }
 }

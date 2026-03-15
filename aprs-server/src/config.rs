@@ -32,6 +32,11 @@ pub static DB_PATH: Lazy<String> = Lazy::new(|| fix_trailing_slash(&env_or("DB_P
 pub static OUTPUT_PATH: Lazy<String> = Lazy::new(|| fix_trailing_slash(&env_or("OUTPUT_PATH", "./data")));
 pub static UNCOMPRESSED_ARROW_FILES: Lazy<bool> = Lazy::new(|| env_parse("UNCOMPRESSED_ARROW_FILES", 1) != 0);
 
+/// Arrow output directory for a station: {OUTPUT_PATH}{name}/
+pub fn output_dir(station_name: &str) -> String {
+    format!("{}{}", *OUTPUT_PATH, station_name)
+}
+
 // APRS connection
 pub static APRS_KEEPALIVE_PERIOD_MS: Lazy<u64> =
     Lazy::new(|| env_parse::<u64>("APRS_KEEPALIVE_PERIOD_SECONDS", 45) * 1000);
@@ -84,6 +89,9 @@ pub static H3_CACHE_MAXIMUM_DIRTY_PERIOD_MS: Lazy<u64> =
 pub static MAX_ELEVATION_TILES: Lazy<usize> = Lazy::new(|| env_parse("MAX_ELEVATION_TILES", 32000));
 pub static ELEVATION_TILE_RESOLUTION: Lazy<u32> =
     Lazy::new(|| env_parse("ELEVATION_TILE_RESOLUTION", 11));
+
+// Reject log rotation
+pub static REJECT_LOG_MAX_MB: Lazy<u64> = Lazy::new(|| env_parse("REJECT_LOG_MAX_MB", 50));
 
 // Layer configuration
 pub static ENABLED_LAYERS: Lazy<Option<HashSet<Layer>>> =

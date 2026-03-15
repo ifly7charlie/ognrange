@@ -2,6 +2,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
 
+// when updating this don't forget to update docs/STATISTICS.md
 static IGNORED_STATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         "AKASB", "CV32QG", "SPOT", "SPIDER", "INREACH", "FLYMASTER", "NAVITER", "CAPTURS",

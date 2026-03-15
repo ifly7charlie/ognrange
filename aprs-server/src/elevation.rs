@@ -30,7 +30,31 @@ impl ElevationTile {
         let b = self.data[idx + 2] as f64;
         -10000.0 + (r * 256.0 * 256.0 + g * 256.0 + b) * 0.1
     }
+
+    /// Maximum elevation in a pixel neighborhood around (cx, cy) with given radius.
+    fn max_elevation_around(&self, cx: u32, cy: u32, radius: u32) -> f64 {
+        let x_min = cx.saturating_sub(radius);
+        let y_min = cy.saturating_sub(radius);
+        let x_max = (cx + radius).min(self.width.saturating_sub(1));
+        let y_max = (cy + radius).min(self.height.saturating_sub(1));
+        let mut max = 0.0f64;
+        for y in y_min..=y_max {
+            for x in x_min..=x_max {
+                let e = self.get_elevation(x, y);
+                if e > max {
+                    max = e;
+                }
+            }
+        }
+        max
+    }
 }
+
+/// Zoom level for coarse max-elevation lookups. At zoom 7, each pixel
+/// covers ~1.2km at the equator (~0.9km at 45°N). A ±4 pixel scan
+/// gives approximately 10km coverage.
+const COARSE_ZOOM: u32 = 7;
+const COARSE_RADIUS: u32 = 4;
 
 pub struct ElevationService {
     cache: Arc<Mutex<LruCache<String, Arc<ElevationTile>>>>,
@@ -148,6 +172,52 @@ impl ElevationService {
             }
             Err(e) => {
                 debug!("Failed to fetch elevation tile: {}", e);
+                0.0
+            }
+        }
+    }
+
+    /// Get the maximum terrain elevation within ~10km of the given point.
+    /// Uses a lower-resolution tile (zoom 7, ~1.2km/pixel) and scans a
+    /// small pixel neighborhood rather than the precise per-point lookup.
+    pub async fn get_max_elevation_coarse(&self, lat: f64, lng: f64) -> f64 {
+        if !self.enabled.load(Ordering::Relaxed) {
+            return 0.0;
+        }
+        let access_token = match &self.access_token {
+            Some(t) => t,
+            None => return 0.0,
+        };
+
+        let (tx, ty, _) = point_to_tile_fraction(lng, lat, COARSE_ZOOM);
+        let tile_x = tx.floor() as u32;
+        let tile_y = ty.floor() as u32;
+
+        let url = format!(
+            "https://api.mapbox.com/v4/mapbox.terrain-rgb/{}/{}/{}.pngraw?access_token={}",
+            COARSE_ZOOM, tile_x, tile_y, access_token
+        );
+
+        let px = ((tx - tile_x as f64) * 256.0).floor() as u32;
+        let py = ((ty - tile_y as f64) * 256.0).floor() as u32;
+
+        // Check tile cache (shared with high-res tiles, keyed by URL)
+        {
+            let mut cache = self.cache.lock().await;
+            if let Some(tile) = cache.get(&url) {
+                return tile.max_elevation_around(px, py, COARSE_RADIUS).floor();
+            }
+        }
+
+        match self.fetch_tile(&url).await {
+            Ok(tile) => {
+                let result = tile.max_elevation_around(px, py, COARSE_RADIUS).floor();
+                let mut cache = self.cache.lock().await;
+                cache.put(url, Arc::new(tile));
+                result
+            }
+            Err(e) => {
+                debug!("Failed to fetch coarse elevation tile: {}", e);
                 0.0
             }
         }

@@ -3,6 +3,8 @@
 // If it's a pattern you can also add it to the regexp below
 //
 
+// when updating this don't forget to update docs/STATISTICS.md
+
 const explicitlyIgnoredStations: Record<Uppercase<string>, boolean> = {
     AKASB: true, // junk in error log about AX.25
     CV32QG: true, // Signal strength is wrong and only covering specific circle, probably PAW tracking

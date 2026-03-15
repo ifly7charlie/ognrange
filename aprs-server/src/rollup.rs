@@ -34,7 +34,7 @@ use tracing::{error, info, warn};
 
 use crate::accumulators::{AccumulatorEntry, Accumulators};
 use crate::config::{
-    MAX_SIMULTANEOUS_ROLLUPS, OUTPUT_PATH, ROLLUP_PERIOD_MINUTES, STATION_EXPIRY_TIME_SECS,
+    MAX_SIMULTANEOUS_ROLLUPS, ROLLUP_PERIOD_MINUTES, STATION_EXPIRY_TIME_SECS,
     UNCOMPRESSED_ARROW_FILES,
 };
 use crate::coverage::activity::{update_activity, RollupActivity};
@@ -709,11 +709,7 @@ fn rollup_station_layer(
     }
 
     // Write arrow files and metadata for each destination
-    let output_dir = if station_name == "global" {
-        format!("{}global", *OUTPUT_PATH)
-    } else {
-        format!("{}stations/{}", *OUTPUT_PATH, station_name)
-    };
+    let output_dir = crate::config::output_dir(station_name);
     if let Err(e) = std::fs::create_dir_all(&output_dir) {
         return Err(format!("Failed to create output dir: {}", e));
     }
@@ -1532,11 +1528,7 @@ pub async fn export_arrow(
     accumulator_file: &str,
     _storage: &Storage,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let output_dir = if station_name == "global" {
-        format!("{}global", *OUTPUT_PATH)
-    } else {
-        format!("{}stations/{}", *OUTPUT_PATH, station_name)
-    };
+    let output_dir = crate::config::output_dir(station_name);
     let _output_path = format!("{}/{}.arrow.gz", output_dir, accumulator_file);
 
     // Ensure output directory exists

@@ -460,4 +460,10 @@ APRS_TRAFFIC_FILTER=t/spuoimnwt
 # Server and port to connect to
 APRS_SERVER=aprs.glidernet.org:14580
 
+# Optional reject log for debugging filtered packets. Set to a file path
+# to enable. Each line is: reason<TAB>raw_packet
+# The log rotates when it exceeds REJECT_LOG_MAX_MB, renaming to .1
+#REJECT_LOG=/tmp/ognrange-rejects.log
+REJECT_LOG_MAX_MB=50
+
 ```
