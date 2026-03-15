@@ -53,10 +53,12 @@ mod tests {
 
     #[test]
     fn test_ignored_patterns() {
-        assert!(ignore_station("12345"));
-        assert!(ignore_station("FNBtest"));
-        assert!(ignore_station("OGNstation"));
+        assert!(ignore_station("12345")); // all-digits
+        assert!(ignore_station("XCGtest")); // XCG prefix
+        assert!(ignore_station("RND42")); // RND prefix
         assert!(ignore_station("sta tion")); // space is not allowed
+        assert!(ignore_station("bSkyFoo")); // bSky prefix
+        assert!(ignore_station("N0TEST-1")); // N0TEST- prefix
     }
 
     #[test]

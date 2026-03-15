@@ -714,41 +714,5 @@ mod tests {
         assert!(rec.remove_invalid_stations(&valid).is_none());
     }
 
-    #[test]
-    fn test_update_sum_gap_global() {
-        let mut rec = CoverageRecord::new(BufferType::Global);
-        rec.update_with_station(10, 11, 1, 12, 0, StationId(1));
-        let bytes_before = rec.to_bytes();
-        let before = CoverageRecord::from_bytes(&bytes_before).unwrap();
-        // sum_gap starts at 0 (gap param was 0)
-
-        rec.update_sum_gap(10, StationId(1));
-        let bytes_after = rec.to_bytes();
-        let after = CoverageRecord::from_bytes(&bytes_after).unwrap();
-        // Global summary sum_gap should increase by 10
-        let before_row = before.to_arrow_station(0, 0);
-        let after_row = after.to_arrow_station(0, 0);
-        // avg_gap = (sum_gap / count) * 4
-        // before: (0/1)*4 = 0, after: (10/1)*4 = 40
-        assert_eq!(before_row.avg_gap, 0);
-        assert_eq!(after_row.avg_gap, 40);
-    }
-
-    #[test]
-    fn test_update_sum_gap_nested_station() {
-        let mut rec = CoverageRecord::new(BufferType::Global);
-        rec.update_with_station(10, 11, 1, 12, 0, StationId(1));
-        rec.update_with_station(10, 11, 1, 12, 0, StationId(2));
-
-        rec.update_sum_gap(5, StationId(2));
-
-        // Verify via roundtrip: serialize, deserialize, check station 2's gap
-        let bytes = rec.to_bytes();
-        let rec2 = CoverageRecord::from_bytes(&bytes).unwrap();
-        let global = rec2.to_arrow_global(0, 0);
-        // Summary sum_gap = 5, count = 2, avg_gap = (5/2)*4 = 10
-        assert_eq!(global.avg_gap, 10);
-        // Global sum_gap increased
-        assert_eq!(global.count, 2);
-    }
+    // Tests for update_sum_gap removed — method was deleted
 }

@@ -286,11 +286,11 @@ impl ProtocolStats {
         }
 
         // Symlinks
-        #[cfg(unix)]
         {
-            symlink_file(&daily_gz_name, &format!("{}/protocol-stats.json.gz", stats_dir));
+            use crate::symlinks::symlink_atomic;
+            symlink_atomic(&daily_gz_name, &format!("{}/protocol-stats.json.gz", stats_dir));
             if *UNCOMPRESSED_ARROW_FILES {
-                symlink_file(
+                symlink_atomic(
                     &daily_json_name,
                     &format!("{}/protocol-stats.json", stats_dir),
                 );
@@ -514,15 +514,6 @@ fn write_atomic(dir: &str, filename: &str, content: &str) {
     if let Err(e) = std::fs::rename(&working, &final_path) {
         error!("Failed to rename stats {} -> {}: {}", working, final_path, e);
         let _ = std::fs::remove_file(&working);
-    }
-}
-
-/// Create/overwrite a symlink (unix only)
-#[cfg(unix)]
-fn symlink_file(src: &str, dest: &str) {
-    let _ = std::fs::remove_file(dest);
-    if let Err(e) = std::os::unix::fs::symlink(src, dest) {
-        error!("error symlinking {} to {}: {}", src, dest, e);
     }
 }
 

@@ -11,13 +11,14 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
+use chrono::{Datelike, Timelike, Utc};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use tracing::{error, info};
 
 use crate::accumulators::Accumulators;
 use crate::config::{OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES};
-use crate::station::{StationDetails, StationManager};
+use crate::station::{self, StationDetails, StationManager};
 
 /// Produce the master stations list files.
 ///
@@ -31,10 +32,21 @@ pub fn produce_station_file(
 ) {
     use std::io::Write;
 
-    let all_stations = station_manager.all_stations();
-    let active_stations: Vec<&StationDetails> = all_stations
-        .iter()
+    let now = Utc::now();
+    let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
+    let current_slot = now.hour() * 6 + now.minute() / 10 + 1; // 1-144
+
+    let active_stations: Vec<StationDetails> = station_manager
+        .all_stations()
+        .into_iter()
         .filter(|s| s.last_packet.is_some())
+        .map(|mut s| {
+            s.uptime = station::compute_uptime(&s.beacon_activity, &s.beacon_activity_date, &today, current_slot);
+            // beacon activity bitvec lives in per-station {name}/{name}.json, not the station list
+            s.beacon_activity = None;
+            s.beacon_activity_date = None;
+            s
+        })
         .collect();
 
     let output_path = &*OUTPUT_PATH;
@@ -60,8 +72,8 @@ pub fn produce_station_file(
         Err(e) => error!("stations.json serialization error: {}", e),
     }
 
-    // 2. Arrow file — columns: id, name, lat, lng, valid, lastPacket, layerMask
-    let mut sorted: Vec<&StationDetails> = active_stations;
+    // 2. Arrow file — columns: id, name, lat, lng, valid, lastPacket, layerMask, activity, uptime
+    let mut sorted = active_stations;
     sorted.sort_by_key(|s| s.id.0);
 
     let ids: Vec<u32> = sorted.iter().map(|s| s.id.0 as u32).collect();
@@ -74,6 +86,10 @@ pub fn produce_station_file(
         .map(|s| s.last_packet.map(|e| e.0).unwrap_or(0))
         .collect();
     let layer_masks: Vec<u8> = sorted.iter().map(|s| s.layer_mask.unwrap_or(0)).collect();
+    let uptimes: Vec<Option<f32>> = sorted
+        .iter()
+        .map(|s| s.uptime)
+        .collect();
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::UInt32, false),
@@ -83,6 +99,7 @@ pub fn produce_station_file(
         Field::new("valid", DataType::Boolean, false),
         Field::new("lastPacket", DataType::UInt32, false),
         Field::new("layerMask", DataType::UInt8, false),
+        Field::new("uptime", DataType::Float32, true),
     ]));
 
     let batch = match RecordBatch::try_new(
@@ -95,12 +112,13 @@ pub fn produce_station_file(
             Arc::new(BooleanArray::from(valids)) as ArrayRef,
             Arc::new(UInt32Array::from(last_packets)) as ArrayRef,
             Arc::new(UInt8Array::from(layer_masks)) as ArrayRef,
+            Arc::new(Float32Array::from(uptimes)) as ArrayRef,
         ],
     ) {
         Ok(b) => b,
         Err(e) => {
             error!("Failed to create station arrow batch: {}", e);
-            write_stations_complete_json(output_path, &all_stations);
+            write_stations_complete_json(output_path, station_manager);
             return;
         }
     };
@@ -165,57 +183,26 @@ pub fn produce_station_file(
         }
     }
 
-    // Symlinks for arrow files
-    #[cfg(unix)]
+    // Symlinks for arrow files (day + month/year/yearnz dated & latest)
     {
+        use crate::symlinks::{create_accumulator_symlinks, symlink_atomic};
+
         let source_gz = format!("stations.day.{}.arrow.gz", day_file);
-        let source_raw = format!("stations.day.{}.arrow", day_file);
+        create_accumulator_symlinks(&stations_dir, "stations", "arrow.gz", accumulators, &source_gz, false);
 
-        // day latest
-        symlink_file(
-            &source_gz,
-            &format!("{}/stations.day.arrow.gz", stations_dir),
-        );
         if *UNCOMPRESSED_ARROW_FILES {
-            symlink_file(
-                &source_raw,
-                &format!("{}/stations.day.arrow", stations_dir),
-            );
-        }
-
-        // month, year, yearnz symlinks
-        for (name, entry) in [
-            ("month", &accumulators.month),
-            ("year", &accumulators.year),
-            ("yearnz", &accumulators.yearnz),
-        ] {
-            symlink_file(
-                &source_gz,
-                &format!("{}/stations.{}.{}.arrow.gz", stations_dir, name, entry.file),
-            );
-            symlink_file(
-                &source_gz,
-                &format!("{}/stations.{}.arrow.gz", stations_dir, name),
-            );
-            if *UNCOMPRESSED_ARROW_FILES {
-                symlink_file(
-                    &source_raw,
-                    &format!("{}/stations.{}.{}.arrow", stations_dir, name, entry.file),
-                );
-                symlink_file(
-                    &source_raw,
-                    &format!("{}/stations.{}.arrow", stations_dir, name),
-                );
-            }
+            let source_raw = format!("stations.day.{}.arrow", day_file);
+            create_accumulator_symlinks(&stations_dir, "stations", "arrow", accumulators, &source_raw, false);
         }
 
         // Legacy symlink at OUTPUT_PATH root
-        symlink_file(
+        symlink_atomic(
             &format!("stations/{}", source_gz),
             &format!("{}stations.arrow.gz", output_path),
         );
         if *UNCOMPRESSED_ARROW_FILES {
-            symlink_file(
+            let source_raw = format!("stations.day.{}.arrow", day_file);
+            symlink_atomic(
                 &format!("stations/{}", source_raw),
                 &format!("{}stations.arrow", output_path),
             );
@@ -223,12 +210,13 @@ pub fn produce_station_file(
     }
 
     // 3. stations-complete.json / stations-complete.json.gz
-    write_stations_complete_json(output_path, &all_stations);
+    write_stations_complete_json(output_path, station_manager);
 }
 
-fn write_stations_complete_json(output_path: &str, all_stations: &[StationDetails]) {
+fn write_stations_complete_json(output_path: &str, station_manager: &StationManager) {
+    let all_stations = station_manager.all_stations();
     use std::io::Write;
-    match serde_json::to_string(all_stations) {
+    match serde_json::to_string(&all_stations) {
         Ok(json) => {
             if let Err(e) =
                 std::fs::write(format!("{}stations-complete.json", output_path), &json)
@@ -247,14 +235,5 @@ fn write_stations_complete_json(output_path: &str, all_stations: &[StationDetail
             }
         }
         Err(e) => error!("stations-complete.json serialization error: {}", e),
-    }
-}
-
-/// Create/overwrite a symlink (unix only)
-#[cfg(unix)]
-fn symlink_file(src: &str, dest: &str) {
-    let _ = std::fs::remove_file(dest);
-    if let Err(e) = std::os::unix::fs::symlink(src, dest) {
-        error!("error symlinking {} to {}: {}", src, dest, e);
     }
 }

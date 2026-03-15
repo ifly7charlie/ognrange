@@ -441,6 +441,7 @@ fn rollup_station_all_layers(
 
     let mut total_stats = RollupStats::default();
     let cancelled = || cancel.load(Ordering::Relaxed);
+    let mut combined_day_activity: Option<RollupActivity> = None;
 
     for layer in layers {
         if cancelled() {
@@ -456,11 +457,14 @@ fn rollup_station_all_layers(
             *layer, layer_suffix, valid_stations, is_global, station_meta,
             retired_accumulators, cancel,
         ) {
-            Ok(stats) => {
+            Ok((stats, day_activity)) => {
                 total_stats.records_read += stats.records_read;
                 total_stats.records_written += stats.records_written;
                 total_stats.records_deleted += stats.records_deleted;
                 total_stats.arrow_records += stats.arrow_records;
+                if let Some(act) = day_activity {
+                    combined_day_activity = Some(act);
+                }
                 if let Ok(mut p) = progress.lock() {
                     p.records_read = total_stats.records_read;
                     p.records_written = total_stats.records_written;
@@ -471,6 +475,20 @@ fn rollup_station_all_layers(
             Err(e) => {
                 error!("Rollup failed for {}/{}: {}", station_name, layer.name(), e);
             }
+        }
+    }
+
+    // Write per-station JSON (skip for global)
+    if !is_global && !cancelled() {
+        if let Some(meta) = station_meta {
+            let output_dir = crate::config::output_dir(station_name);
+            write_station_json(
+                &output_dir,
+                station_name,
+                meta,
+                accumulators,
+                combined_day_activity.as_ref(),
+            );
         }
     }
 
@@ -493,6 +511,8 @@ fn rollup_station_all_layers(
 }
 
 /// Per-layer rollup within an already-open DB.
+/// Returns (stats, day_activity) where day_activity is the combined-layer Day RollupActivity
+/// (if this layer is Combined and has a Day accumulator).
 fn rollup_station_layer(
     db: &mut rusty_leveldb::DB,
     _station_path: &str,
@@ -505,7 +525,7 @@ fn rollup_station_layer(
     station_meta: Option<&crate::station::StationDetails>,
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
     cancel: &AtomicBool,
-) -> Result<RollupStats, String> {
+) -> Result<(RollupStats, Option<RollupActivity>), String> {
     let mut stats = RollupStats::default();
 
     // Read all "current" accumulator records for this layer
@@ -518,7 +538,7 @@ fn rollup_station_layer(
     stats.records_read = current_records.len();
 
     if is_shutdown() || cancel.load(Ordering::Relaxed) || current_records.is_empty() {
-        return Ok(stats);
+        return Ok((stats, None));
     }
 
     // Set up rollup destination accumulators
@@ -713,6 +733,15 @@ fn rollup_station_layer(
         return Err(format!("Failed to create output dir: {}", e));
     }
 
+    // Extract the combined-layer day RollupActivity before writing (for per-station JSON)
+    let day_activity = if layer == Layer::Combined {
+        destinations.iter()
+            .find(|d| d.acc_type == AccumulatorType::Day)
+            .map(|d| d.activity.clone())
+    } else {
+        None
+    };
+
     for dest in &destinations {
         if dest.file.is_empty() {
             continue;
@@ -752,7 +781,7 @@ fn rollup_station_layer(
         );
     }
 
-    Ok(stats)
+    Ok((stats, day_activity))
 }
 
 /// Emit the record at dest.pos to arrow output, optionally filtering stations.
@@ -980,13 +1009,10 @@ fn write_arrow_file(
         .map_err(|e| format!("Rename error: {}", e))?;
 
     // Create symlink for latest: station.type.layer.arrow.gz -> station.type.file.layer.arrow.gz
-    let symlink_name = format!("{}/{}.{}{}.arrow.gz", output_dir, station_name, acc_type, layer_suffix);
-    let _ = std::fs::remove_file(&symlink_name);
-    let target = format!("{}.arrow.gz", base_name);
-    #[cfg(unix)]
-    {
-        let _ = std::os::unix::fs::symlink(&target, &symlink_name);
-    }
+    symlink_atomic(
+        &format!("{}.arrow.gz", base_name),
+        &format!("{}/{}.{}{}.arrow.gz", output_dir, station_name, acc_type, layer_suffix),
+    );
 
     // Optionally write uncompressed
     if *UNCOMPRESSED_ARROW_FILES {
@@ -1005,17 +1031,90 @@ fn write_arrow_file(
         std::fs::rename(&raw_working, &raw_final)
             .map_err(|e| format!("Rename error: {}", e))?;
 
-        let raw_symlink = format!("{}/{}.{}{}.arrow", output_dir, station_name, acc_type, layer_suffix);
-        let _ = std::fs::remove_file(&raw_symlink);
-        let raw_target = format!("{}.arrow", base_name);
-        #[cfg(unix)]
-        {
-            let _ = std::os::unix::fs::symlink(&raw_target, &raw_symlink);
-        }
+        symlink_atomic(
+            &format!("{}.arrow", base_name),
+            &format!("{}/{}.{}{}.arrow", output_dir, station_name, acc_type, layer_suffix),
+        );
     }
 
     Ok(())
 }
+
+// NOTE: changes to output fields must be reflected in docs/STATIONS.md and docs/STATION.md
+/// Write per-station JSON containing station details, beacon bitvector, uptime, layers, and activity.
+/// Written once per rollup cycle for non-global stations with traffic.
+fn write_station_json(
+    output_dir: &str,
+    station_name: &str,
+    station_meta: &crate::station::StationDetails,
+    accumulators: &Accumulators,
+    day_activity: Option<&RollupActivity>,
+) {
+    use chrono::{Datelike, Timelike, Utc};
+
+    let now = Utc::now();
+    let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
+    let current_slot = now.hour() * 6 + now.minute() / 10 + 1; // 1-144
+
+    // Compute uptime from beacon activity
+    let uptime = crate::station::compute_uptime(
+        &station_meta.beacon_activity,
+        &station_meta.beacon_activity_date,
+        &today,
+        current_slot,
+    );
+
+    // Compute layers array from layer_mask
+    let layers_list: Vec<&str> = if let Some(mask) = station_meta.layer_mask {
+        crate::layers::ALL_LAYERS
+            .iter()
+            .filter(|l| mask & l.bit_mask() != 0)
+            .map(|l| l.name())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Build the JSON: serialize StationDetails then merge in extra fields
+    let mut json = match serde_json::to_value(station_meta) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to serialize station details for {}: {}", station_name, e);
+            return;
+        }
+    };
+
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert("uptime".to_string(), serde_json::json!(uptime));
+        obj.insert("layers".to_string(), serde_json::json!(layers_list));
+        if let Some(act) = day_activity {
+            obj.insert("activity".to_string(), serde_json::to_value(act).unwrap_or_default());
+        }
+    }
+
+    let json_str = match serde_json::to_string_pretty(&json) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to format station JSON for {}: {}", station_name, e);
+            return;
+        }
+    };
+
+    // Write the dated day file
+    let day_file = &accumulators.day.file;
+    let base_name = format!("{}.day.{}", station_name, day_file);
+    let json_path = format!("{}/{}.json", output_dir, base_name);
+    if let Err(e) = std::fs::write(&json_path, &json_str) {
+        error!("Failed to write station JSON {}: {}", json_path, e);
+        return;
+    }
+
+    // Create symlinks (bare + day + month + year + yearnz)
+    let target = format!("{}.json", base_name);
+    create_accumulator_symlinks(output_dir, station_name, "json", accumulators, &target, true);
+}
+
+use crate::symlinks::{create_accumulator_symlinks, symlink_atomic};
 
 /// Write per-accumulator metadata JSON
 fn write_metadata_json(
@@ -1051,13 +1150,10 @@ fn write_metadata_json(
     }
 
     // Symlink for latest
-    let symlink_name = format!("{}/{}.{}{}.json", output_dir, station_name, acc_type, layer_suffix);
-    let _ = std::fs::remove_file(&symlink_name);
-    let target = format!("{}.json", base_name);
-    #[cfg(unix)]
-    {
-        let _ = std::os::unix::fs::symlink(&target, &symlink_name);
-    }
+    symlink_atomic(
+        &format!("{}.json", base_name),
+        &format!("{}/{}.{}{}.json", output_dir, station_name, acc_type, layer_suffix),
+    );
 }
 
 /// Startup rollup: check for any unflushed accumulators from a previous run.
@@ -1343,7 +1439,7 @@ pub async fn rollup_startup(
                     &[], // no retired accumulators during startup
                     &SHUTDOWN, // use global shutdown for startup rollup
                 ) {
-                    Ok(stats) => {
+                    Ok((stats, _day_activity)) => {
                         info!(
                             "{}: startup rollup complete {} — {} written, {} arrow, {} deleted",
                             station_name, layer.name(),
@@ -1572,7 +1668,7 @@ mod tests {
             yearnz: AccumulatorEntry { bucket: AccumulatorBucket(0x5000), file: "2025nz".into(), effective_start: Epoch(0) },
         };
 
-        let stats = rollup_station_layer(
+        let (stats, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
         ).unwrap();
@@ -1613,7 +1709,7 @@ mod tests {
             rusty_leveldb::DB::open(&station_path, opts).unwrap()
         };
 
-        let stats = rollup_station_layer(
+        let (stats, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
         ).unwrap();

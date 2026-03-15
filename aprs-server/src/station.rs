@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Write as FmtWrite;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::RwLock;
 use tracing::{error, info, warn};
@@ -19,6 +20,61 @@ enum DbWrite {
     Put { key: String, value: Vec<u8> },
     Delete { key: String },
     Shutdown,
+}
+
+/// Encode a 144-bit bitvector as 36 hex chars (little-endian byte order within each u64).
+/// Words 0-1: 8 bytes each, word 2: 2 bytes (only bits 128-143 used).
+fn bitvec_to_hex(bits: &[u64; 3]) -> String {
+    let mut hex = String::with_capacity(36);
+    for i in 0..3 {
+        let byte_count = if i < 2 { 8 } else { 2 };
+        for b in 0..byte_count {
+            let byte = ((bits[i] >> (b * 8)) & 0xFF) as u8;
+            write!(hex, "{:02x}", byte).unwrap();
+        }
+    }
+    hex
+}
+
+/// Count set bits in a 144-bit bitvector (only the low 144 bits).
+fn popcount_144(bits: &[u64; 3]) -> u32 {
+    bits[0].count_ones() + bits[1].count_ones() + (bits[2] & 0xFFFF).count_ones()
+}
+
+/// Compute station uptime as a percentage of active slots relative to elapsed slots today.
+/// Returns `None` if the activity data is missing or stale.
+pub fn compute_uptime(beacon_activity: &Option<String>, beacon_activity_date: &Option<String>, today: &str, current_slot: u32) -> Option<f32> {
+    let hex = beacon_activity.as_deref()?;
+    let date = beacon_activity_date.as_deref()?;
+    if date != today || current_slot == 0 {
+        return None;
+    }
+    let bits = hex_to_bitvec(hex)?;
+    let set = popcount_144(&bits);
+    let elapsed = current_slot.min(144);
+    Some(((set as f32 / elapsed as f32) * 1000.0).round() / 10.0)
+}
+
+/// Decode 36 hex chars back to a 144-bit bitvector.
+fn hex_to_bitvec(hex: &str) -> Option<[u64; 3]> {
+    if hex.len() != 36 {
+        return None;
+    }
+    let bytes: Vec<u8> = (0..18)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let mut bits = [0u64; 3];
+    for j in 0..8 {
+        bits[0] |= (bytes[j] as u64) << (j * 8);
+    }
+    for j in 0..8 {
+        bits[1] |= (bytes[8 + j] as u64) << (j * 8);
+    }
+    for j in 0..2 {
+        bits[2] |= (bytes[16 + j] as u64) << (j * 8);
+    }
+    Some(bits)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,6 +131,16 @@ pub struct StationDetails {
     pub last_output_file: Option<Epoch>,
     #[serde(default)]
     pub stats: StationStats,
+    // NOTE: changes to StationDetails fields must be reflected in docs/STATIONS.md and docs/STATION.md
+    /// Daily beacon activity bitvector: 144 bits (one per 10-min UTC slot), hex-encoded
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_activity: Option<String>,
+    /// UTC date (YYYY-MM-DD) the beacon activity bitvector covers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_activity_date: Option<String>,
+    /// Station uptime today as a percentage (0.0–100.0). Computed at output time, not persisted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime: Option<f32>,
 }
 
 /// Station status manager with thread-safe access.
@@ -237,6 +303,9 @@ impl StationManager {
             output_date: None,
             last_output_file: None,
             stats: StationStats::default(),
+            beacon_activity: None,
+            beacon_activity_date: None,
+            uptime: None,
         };
 
         info!(
@@ -380,6 +449,36 @@ impl StationManager {
         self.update(&details);
     }
 
+    /// Record a station beacon in the daily beacon activity bitvector.
+    /// Sets the bit for the 10-minute UTC slot corresponding to `timestamp`.
+    pub fn record_beacon(&self, name: &StationName, timestamp: u32) {
+        let utc_date = match chrono::DateTime::from_timestamp(timestamp as i64, 0) {
+            Some(dt) => dt.format("%Y-%m-%d").to_string(),
+            None => return,
+        };
+
+        let secs_in_day = (timestamp % 86400) as usize;
+        let hour = secs_in_day / 3600;
+        let minute = (secs_in_day % 3600) / 60;
+        let slot = hour * 6 + minute / 10; // 0–143
+
+        let mut details = self.get_or_create(name);
+
+        // Reset if date changed
+        let mut bits = match (&details.beacon_activity, &details.beacon_activity_date) {
+            (Some(hex), Some(date)) if date == &utc_date => {
+                hex_to_bitvec(hex).unwrap_or([0u64; 3])
+            }
+            _ => [0u64; 3],
+        };
+
+        bits[slot / 64] |= 1u64 << (slot % 64);
+
+        details.beacon_activity = Some(bitvec_to_hex(&bits));
+        details.beacon_activity_date = Some(utc_date);
+        self.update(&details);
+    }
+
     /// Close the database, persisting final state via the writer thread
     pub fn close(&self) {
         let all_stations: Vec<StationDetails> =
@@ -418,6 +517,9 @@ impl StationManager {
             output_date: None,
             last_output_file: None,
             stats: StationStats::default(),
+            beacon_activity: None,
+            beacon_activity_date: None,
+            uptime: None,
         }];
         result.extend(
             self.stations.read().unwrap().values()
@@ -437,4 +539,132 @@ fn great_circle_distance(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
         + lat1.to_radians().cos() * lat2.to_radians().cos() * (d_lng / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().asin();
     r * c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bitvec_roundtrip_zeros() {
+        let bits = [0u64; 3];
+        let hex = bitvec_to_hex(&bits);
+        assert_eq!(hex, "000000000000000000000000000000000000");
+        assert_eq!(hex.len(), 36);
+        assert_eq!(hex_to_bitvec(&hex), Some(bits));
+    }
+
+    #[test]
+    fn test_bitvec_roundtrip_values() {
+        let bits = [0xFF, 0x00, 0x00];
+        let hex = bitvec_to_hex(&bits);
+        assert_eq!(&hex[..16], "ff00000000000000"); // word 0 LE
+        let decoded = hex_to_bitvec(&hex).unwrap();
+        assert_eq!(decoded, bits);
+    }
+
+    #[test]
+    fn test_bitvec_roundtrip_all_words() {
+        let bits = [0x0123456789ABCDEFu64, 0xFEDCBA9876543210, 0xBEEF];
+        let hex = bitvec_to_hex(&bits);
+        let decoded = hex_to_bitvec(&hex).unwrap();
+        assert_eq!(decoded, bits);
+    }
+
+    #[test]
+    fn test_bitvec_slot_boundaries() {
+        // Slot 0 → word 0, bit 0
+        let mut bits = [0u64; 3];
+        bits[0] |= 1u64 << 0;
+        let hex = bitvec_to_hex(&bits);
+        let decoded = hex_to_bitvec(&hex).unwrap();
+        assert_ne!(decoded[0] & 1, 0);
+
+        // Slot 63 → word 0, bit 63
+        let mut bits = [0u64; 3];
+        bits[0] |= 1u64 << 63;
+        let hex = bitvec_to_hex(&bits);
+        let decoded = hex_to_bitvec(&hex).unwrap();
+        assert_ne!(decoded[0] & (1u64 << 63), 0);
+
+        // Slot 64 → word 1, bit 0
+        let mut bits = [0u64; 3];
+        bits[1] |= 1u64 << 0;
+        let hex = bitvec_to_hex(&bits);
+        let decoded = hex_to_bitvec(&hex).unwrap();
+        assert_ne!(decoded[1] & 1, 0);
+
+        // Slot 143 → word 2, bit 15
+        let mut bits = [0u64; 3];
+        bits[2] |= 1u64 << 15;
+        let hex = bitvec_to_hex(&bits);
+        let decoded = hex_to_bitvec(&hex).unwrap();
+        assert_ne!(decoded[2] & (1u64 << 15), 0);
+    }
+
+    #[test]
+    fn test_hex_to_bitvec_bad_input() {
+        assert_eq!(hex_to_bitvec(""), None);
+        assert_eq!(hex_to_bitvec("too_short"), None);
+        assert_eq!(hex_to_bitvec("zz0000000000000000000000000000000000"), None);
+    }
+
+    #[test]
+    fn test_slot_calculation() {
+        // 00:00 UTC → slot 0
+        let ts = 1710460800u32; // 2024-03-15 00:00:00 UTC
+        let secs_in_day = (ts % 86400) as usize;
+        assert_eq!(secs_in_day / 3600 * 6 + (secs_in_day % 3600) / 60 / 10, 0);
+
+        // 12:30 UTC → slot 75 (12*6 + 3)
+        let ts2 = ts + 12 * 3600 + 30 * 60;
+        let secs2 = (ts2 % 86400) as usize;
+        assert_eq!(secs2 / 3600 * 6 + (secs2 % 3600) / 60 / 10, 75);
+
+        // 23:50 UTC → slot 143 (23*6 + 5)
+        let ts3 = ts + 23 * 3600 + 50 * 60;
+        let secs3 = (ts3 % 86400) as usize;
+        assert_eq!(secs3 / 3600 * 6 + (secs3 % 3600) / 60 / 10, 143);
+    }
+
+    #[test]
+    fn test_activity_serde_roundtrip() {
+        let mut details = StationDetails {
+            id: StationId(1),
+            station: StationName("TEST".to_string()),
+            lat: None,
+            lng: None,
+            primary_location: None,
+            previous_location: None,
+            last_packet: None,
+            last_location: None,
+            last_beacon: None,
+            status: None,
+            notice: None,
+            moved: false,
+            bouncing: false,
+            valid: false,
+            layer_mask: None,
+            output_epoch: None,
+            output_date: None,
+            last_output_file: None,
+            stats: StationStats::default(),
+            beacon_activity: None,
+            beacon_activity_date: None,
+            uptime: None,
+        };
+
+        // Without beacon activity
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(!json.contains("beaconActivity"));
+
+        // With beacon activity
+        let bits = [0x01u64, 0x00, 0x00];
+        details.beacon_activity = Some(bitvec_to_hex(&bits));
+        details.beacon_activity_date = Some("2026-03-15".to_string());
+        let json = serde_json::to_string(&details).unwrap();
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.beacon_activity, details.beacon_activity);
+        assert_eq!(restored.beacon_activity_date, details.beacon_activity_date);
+    }
 }

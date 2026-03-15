@@ -11,6 +11,7 @@ mod reject_log;
 mod rollup;
 mod station;
 mod stationfile;
+mod symlinks;
 mod db;
 mod types;
 
@@ -343,6 +344,11 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                                 || raw.contains("qAC");
 
                             if is_station && !ignore_station::ignore_station(sn.as_str()) {
+                                if let Some(ts) = packet.timestamp {
+                                    state
+                                        .station_manager
+                                        .record_beacon(&sn, ts);
+                                }
                                 match packet.packet_type {
                                     PacketType::Location => {
                                         if let (Some(lat), Some(lng), Some(ts)) =
