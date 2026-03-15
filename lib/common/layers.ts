@@ -81,25 +81,25 @@ export function getWriteLayers(layer: Layer): Layer[] {
 // Bit position for each layer in the layerMask coverage bitmask (Uint8, max 8 bits)
 export const LAYER_BIT: Record<Layer, number> = {
     [Layer.COMBINED]: 0,
-    [Layer.FLARM]:    1,
-    [Layer.ADSB]:     2,
-    [Layer.ADSL]:     3,
-    [Layer.FANET]:    4,
-    [Layer.PAW]:      5,
-    [Layer.OGNTRK]:   6,
-    [Layer.SAFESKY]:  7
+    [Layer.FLARM]: 1,
+    [Layer.ADSB]: 2,
+    [Layer.ADSL]: 3,
+    [Layer.FANET]: 4,
+    [Layer.PAW]: 5,
+    [Layer.OGNTRK]: 6,
+    [Layer.SAFESKY]: 7
 };
 
 // Display color per layer for the layerCoverage visualisation [R, G, B]
 export const LAYER_COLOR: Record<Layer, [number, number, number]> = {
-    [Layer.COMBINED]: [155,  89, 182], // purple
-    [Layer.FLARM]:    [230, 126,  34], // orange
-    [Layer.ADSB]:     [ 26, 188, 156], // emerald
-    [Layer.ADSL]:     [ 52, 152, 219], // blue
-    [Layer.FANET]:    [ 46, 204, 113], // green
-    [Layer.PAW]:      [241, 196,  15], // yellow
-    [Layer.OGNTRK]:   [231,  76,  60], // red
-    [Layer.SAFESKY]:  [236, 100, 206]  // pink
+    [Layer.COMBINED]: [155, 89, 182], // purple
+    [Layer.FLARM]: [230, 126, 34], // orange
+    [Layer.ADSB]: [26, 188, 156], // emerald
+    [Layer.ADSL]: [52, 152, 219], // blue
+    [Layer.FANET]: [46, 204, 113], // green
+    [Layer.PAW]: [241, 196, 15], // yellow
+    [Layer.OGNTRK]: [231, 76, 60], // red
+    [Layer.SAFESKY]: [236, 100, 206] // pink
 };
 
 // Bitmask with all layer bits set
@@ -139,6 +139,7 @@ export function layerBitFromUrl(url: string): number {
 
 /** Whether a specific accumulator type should be produced for a layer.
  *  ADSB daily output suppressed to reduce data volume. */
+// if this is changed don't forget to update the backend should_produce in layers.rs
 export function shouldProduceOutput(layer: Layer, accType: string): boolean {
     return !(layer === Layer.ADSB && accType === 'day');
 }

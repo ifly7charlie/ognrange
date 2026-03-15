@@ -103,6 +103,7 @@ pub const ALL_LAYERS: &[Layer] = &[
 
 /// Whether a specific accumulator type should be produced for this layer.
 /// ADSB daily output is suppressed to reduce data volume (presence-only, high volume).
+/// if this is changed don't forget to update the frontend shouldProduceOutput in lib/common/layers.ts
 pub fn should_produce(layer: Layer, acc_type: AccumulatorType) -> bool {
     !matches!((layer, acc_type), (Layer::Adsb, AccumulatorType::Day))
 }

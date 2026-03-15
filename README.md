@@ -69,6 +69,10 @@ yarn aprs
 
 ## Learn More
 
+- [Protocol Statistics](docs/STATISTICS.md) — per-protocol packet counts, regions, altitude bands, hourly activity
+- [Station Files](docs/STATIONS.md) — station list JSON and Arrow format, fields, move detection
+- [Per-Station JSON](docs/STATION.md) — individual station detail files with beacon activity and rollup history
+
 ## Overview
 
 The most important thing to note is that no information about specific
@@ -81,7 +85,10 @@ information from that to record information about signal strength
 globally.
 
 It aggregates information into multiple buckets, yearly, monthly and
-daily.
+daily, across multiple protocol layers (FLARM, ADS-B, ADS-L, FANET,
+OGN Tracker, PilotAware, SafeSky, and a combined view). Layers are
+configurable via `ENABLED_LAYERS` in `.env.local`; see
+`lib/common/layers.ts` for definitions.
 
 For each aggregation static output files are produced that can be
 displayed by a Next.JS (and deck.gl) front end. These files compress
@@ -164,20 +171,19 @@ APRS packets are NOT recorded in the following situations:
 -   not having both latitude & longitude values,
 -   not having a comment that stats with 'id'
 
-2. they are from PAW devices (sourceCallsign starts with PAW). These devices have a hard coded the received signal strength to a large number destroying the coverage map)
-3. Their station name is excluded by the file [https://github.com/ifly7charlie/ognrange/blob/d0862f6dddbb7d748d3108e3526b2904197b78e1/lib/common/ignorestation.ts ignorestation.ts] this includes (for example)
+2. Their station name is excluded by the file [`ignorestation.ts`](lib/common/ignorestation.ts) this includes (for example)
 
 -   ones that start with FNB, XCG, XCC, OGN, RELAY, RND, FLR, bSky, AIRS, N0TEST-
 -   a list of ones matching TEST, UNKNOWN, GLOBAL, STATIONS, and others etc
 -   numeric only station names
 -   any station that has a non ANSI alphanumeric character (eg not A-Z & 0-9)
 
-4. Have an source callsign length < 6 characters
-5. Have no timestamp
-6. have a dest callsign of OGNTRK, or their first Digipeaters entry is not qA
-7. Are stationary or nearly stationary (more specifically bouncing between a small number of locations)
-8. Have no signal strength
-9. Have invalid coordinates
+3. Have a source callsign length < 6 characters or the last 6 characters are not valid hex
+4. Have no timestamp
+5. Their first Digipeaters entry is not qA (relayed packets)
+6. Are stationary or nearly stationary (more specifically bouncing between a small number of locations)
+7. Have no signal strength
+8. Have invalid coordinates
 
 If you wish to update the list of stations that are excluded please raise a pull request to change the file `ignorestation.ts`. For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in `bin/aprs.ts`
 
@@ -190,7 +196,7 @@ invalidTimestamp: packet doesn't have a reasonable timestamp
 ignoredSignal0: means there is no signal strength in the received packet
 ignoredStationary: means that a device isn't moving, repeated packets are ignored
 ignoredH3stationary: means that a device is moving but only between a very small number of locations (eg due to poor GPS reception - indoors etc)
-ignoredPAW: Means PAW tracker that is ignored (source callsign begins PAW)
+ignoredPAW: Unused
 ignoredElevation: Unable to do elevation lookup of packet - probably means lat/lng is not valid
 count: total number of packets
 ```
@@ -338,7 +344,7 @@ and global uses a lower resolution H3.
 config file is .env.local for aprs collector, for the front end it
 follows nextjs naming convention NEXT_PUBLIC_XX goes to browser!
 
-See `lib/common/config.js` for the latest values and documentation of
+See `lib/common/config.ts` for the latest values and documentation of
 configuration variables
 
 ```

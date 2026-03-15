@@ -40,6 +40,11 @@ export function useStationListMeta() {
     return useContext(StationMetaContext)?.filteredList;
 }
 
+/** Returns the unfiltered station list — use for ID lookups where any station may be referenced */
+export function useStationListMetaUnfiltered() {
+    return useContext(StationMetaContext)?.unfilteredList;
+}
+
 /** Look up a single station by name from the unfiltered data */
 export function useStationMeta(stationName: string): SingleStationMeta | null {
     const ctx = useContext(StationMetaContext);

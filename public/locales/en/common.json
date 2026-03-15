@@ -31,7 +31,8 @@
         "current_month": "Current Month  ({{value}})",
         "current_day": "Current Day  ({{value}})",
         "partial_option_title": "Some selected layers are missing data for this date",
-        "partial_warning": "Some dates in this range are missing data for: {{layers}}"
+        "partial_warning": "Some dates in this range are missing data for: {{layers}}",
+        "unsupported_period": "{{layers}} does not support the {{period}} view"
     },
     "available": {
         "year": "Years available (Northern Hemisphere)",
@@ -125,6 +126,7 @@
         },
         "statistics": {
             "title": "Statistics at {{when}}",
+            "title_range": "Statistics (aggregated)",
             "count": "Total Packet Count",
             "ignoredTracker": "Ignored (Relayed)",
             "invalidTracker": "Invalid (Short Tracker ID)",
@@ -135,10 +137,20 @@
             "ignoredH3stationary": "Ignored (Mostly Stationary)",
             "ignoredElevation": "Ignored (Corrupt elevation)"
         },
+        "beacon": {
+            "title": "Beacon Activity",
+            "title_range": "Beacon Activity (date range)",
+            "hour_label": "{{hour}}:00"
+        },
+        "uptime": {
+            "title": "Uptime",
+            "percent": "{{percent}}%"
+        },
         "times": {
             "title": "Times",
             "location": "Location",
             "packet": "Packet",
+            "beacon": "Beacon",
             "output": "File output"
         },
         "cells": {

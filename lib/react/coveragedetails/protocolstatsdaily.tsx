@@ -31,7 +31,7 @@ export function AcceptedByDayChart({dailyDevices, selectedTab, color}: {dailyDev
         <>
             <b style={{fontSize: 'small'}}>{t('accepted_by_day')}</b>
             <ResponsiveContainer width="100%" height={150}>
-                <BarChart data={acceptedData} margin={{top: 5, right: 5, left: -10, bottom: 5}}>
+                <BarChart data={acceptedData} margin={{top: 5, right: 5, left: -10, bottom: 5}} maxBarSize={50}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="date" style={{fontSize: '0.7rem'}} />
                     <YAxis style={{fontSize: '0.7rem'}} />
@@ -70,7 +70,7 @@ export function DevicesByDayChart({dailyDevices, selectedTab, color}: {dailyDevi
         <>
             <b style={{fontSize: 'small'}}>{t('devices_by_day')}</b>
             <ResponsiveContainer width="100%" height={150}>
-                <BarChart data={devicesData} margin={{top: 5, right: 5, left: -10, bottom: 5}}>
+                <BarChart data={devicesData} margin={{top: 5, right: 5, left: -10, bottom: 5}} maxBarSize={50}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="date" style={{fontSize: '0.7rem'}} />
                     <YAxis style={{fontSize: '0.7rem'}} />

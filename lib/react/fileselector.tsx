@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import {useTranslation} from 'next-i18next';
 import Select, {SingleValue} from 'react-select';
 import {DayPicker, MonthPicker} from './datepicker';
+import {shouldProduceOutput, Layer} from '../common/layers';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -115,12 +116,24 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
                 }
             }
 
+            // Dates are only "partial" if they have unexpectedly missing layers
+            // (e.g. ADS-B not producing daily output is expected, not a warning)
+            const unexpectedPartialSet = new Set<string>();
+            for (const d of partialSet) {
+                for (const layer of layersToCheck) {
+                    if (!layerDateSets[layer].has(d) && shouldProduceOutput(layer as Layer, type)) {
+                        unexpectedPartialSet.add(d);
+                        break;
+                    }
+                }
+            }
+
             const sortedUnion = [...unionSet].sort();
             if (!sortedUnion.length) continue;
 
             availableTypes.push(type);
             datesByType[type] = sortedUnion;
-            partialDatesByType[type] = partialSet;
+            partialDatesByType[type] = unexpectedPartialSet;
             missingLayersByType[type] = missingLayers;
         }
 
@@ -237,6 +250,16 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
 
     const missingLayersInRange = missingLayersByType[currentType];
 
+    // Separate expected-missing (e.g. ADS-B doesn't produce daily) from unexpected-missing
+    const unexpectedMissing = useMemo(() => {
+        if (!missingLayersInRange?.size) return new Set<string>();
+        return new Set([...missingLayersInRange].filter((l) => shouldProduceOutput(l as Layer, currentType)));
+    }, [missingLayersInRange, currentType]);
+    const expectedMissing = useMemo(() => {
+        if (!missingLayersInRange?.size) return new Set<string>();
+        return new Set([...missingLayersInRange].filter((l) => !shouldProduceOutput(l as Layer, currentType)));
+    }, [missingLayersInRange, currentType]);
+
     const btnStyle = (active: boolean): React.CSSProperties => ({
         flexShrink: 0,
         cursor: 'pointer',
@@ -291,9 +314,14 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
                 )}
             </div>
             {/* Warning banner: partial coverage in selected range */}
-            {hasPartialInRange && missingLayersInRange?.size ? (
+            {hasPartialInRange && unexpectedMissing.size ? (
                 <div style={{marginTop: '4px', padding: '4px 8px', background: '#fff3cd', border: '1px solid #f0c040', borderRadius: '4px', fontSize: '0.85em'}}>
-                    ⚠ {t('partial_warning', {layers: [...missingLayersInRange].map((l) => tLayer(l, l)).join(', ')})}
+                    ⚠ {t('partial_warning', {layers: [...unexpectedMissing].map((l) => tLayer(l, l)).join(', ')})}
+                </div>
+            ) : null}
+            {expectedMissing.size ? (
+                <div style={{marginTop: '4px', padding: '4px 8px', background: '#f0f0f0', border: '1px solid #ccc', borderRadius: '4px', fontSize: '0.85em'}}>
+                    {t('unsupported_period', {layers: [...expectedMissing].map((l) => tLayer(l, l)).join(', '), period: t(currentType)})}
                 </div>
             ) : null}
         </>

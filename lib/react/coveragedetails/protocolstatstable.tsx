@@ -73,17 +73,25 @@ export function ProtocolTable({
                                                 flexShrink: 0
                                             }}
                                         />
-                                        <span>{tProto(row.tocall, row.tocall)}</span>
                                         <span
                                             style={{
                                                 display: 'inline-block',
-                                                height: '6px',
-                                                backgroundColor: layerColorForTocall(row.tocall),
-                                                opacity: 0.3,
-                                                width: `${Math.max(1, (row.accepted / maxAccepted) * 60)}px`,
+                                                width: '60px',
                                                 flexShrink: 0
                                             }}
-                                        />
+                                        >
+                                            <span
+                                                style={{
+                                                    display: 'block',
+                                                    height: '6px',
+                                                    backgroundColor: layerColorForTocall(row.tocall),
+                                                    opacity: 0.3,
+                                                    width: `${Math.max(1, (row.accepted / maxAccepted) * 100)}%`,
+                                                    borderRadius: '2px'
+                                                }}
+                                            />
+                                        </span>
+                                        <span>{tProto(row.tocall, row.tocall)}</span>
                                     </td>
                                     <td style={{textAlign: 'right'}}>{row.accepted.toLocaleString()}</td>
                                     <td style={{textAlign: 'right'}}>{row.devices.toLocaleString()}</td>

@@ -25,9 +25,10 @@ import {SignalDetails} from './coveragedetails/signaldetails';
 import {LowestPointDetails} from './coveragedetails/lowestpointdetails';
 import {AvailableFiles} from './coveragedetails/availablefiles';
 import {ActivityDetails} from './coveragedetails/activitydetails';
+import {UptimeBar} from './coveragedetails/uptimebar';
+import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 
-import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 import {formatEpoch} from './formatdate';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
@@ -180,23 +181,18 @@ export function CoverageDetails({
 
     const stationMeta = useStationMeta(station ?? '');
 
-    const {data: stationDataDate, error} = useSWR(
-        !h3 && station //
-            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.${file}.json`
-            : null,
-        fetcher
-    );
+    const isRange = dateRange && dateRange.start !== dateRange.end;
 
-    //
-    const {data: stationDataLatest} = useSWR(
-        !h3 && station && (error || !stationDataDate?.lastOutputEpoch) //
-            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.json`
-            : null,
-        fetcher
-    );
+    // Always use the API for station details
+    const stationDetailsUrl = !h3 && station
+        ? isRange
+            ? `/api/station/${station}/details?dateStart=${dateRange.start}&dateEnd=${dateRange.end}`
+            : `/api/station/${station}/details?file=${file}`
+        : null;
 
-    // Find the one that actually has some content
-    const stationData = stationDataDate && stationDataDate.lastOutputEpoch ? stationDataDate : stationDataLatest;
+    const {data: stationDataRaw} = useSWR(stationDetailsUrl, fetcher);
+
+    const stationData = stationDataRaw && Object.keys(stationDataRaw).length > 0 ? stationDataRaw : null;
 
     const clearSelectedH3 = useCallback(() => setSelectedDetails({type: 'none'}), [false]);
 
@@ -281,10 +277,12 @@ export function CoverageDetails({
                 <AvailableFiles station={station} setFile={setFile} displayType="year" />
 
                 <ActivityDetails activity={stationData?.activity} />
+                <UptimeBar uptime={stationData?.uptime} />
+                <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} />
 
                 {stationData?.stats ? (
                     <>
-                        <b>{t('statistics.title', {when: formatEpoch(stationData.outputEpoch)})}</b>
+                        <b>{isRange ? t('statistics.title_range') : t('statistics.title', {when: formatEpoch(stationData.outputEpoch)})}</b>
                         <table>
                             <tbody>
                                 {Object.keys(stationData.stats).map((key) => (
@@ -305,32 +303,40 @@ export function CoverageDetails({
                         {stationData.notice}
                     </>
                 ) : null}
-                <>
-                    <br />
-                    <b>{t('times.title')}</b>
-                    <table>
-                        <tbody>
-                            {stationData?.lastLocation ? (
-                                <tr key="location">
-                                    <td>{t('times.location')}</td>
-                                    <td>{formatEpoch(stationData.lastLocation)}</td>
-                                </tr>
-                            ) : null}
-                            {stationData?.lastPacket ? (
-                                <tr key="packet">
-                                    <td>{t('times.packet')}</td>
-                                    <td>{formatEpoch(stationData.lastPacket)}</td>
-                                </tr>
-                            ) : null}
-                            {stationData?.outputDate ? (
-                                <tr key="output">
-                                    <td>{t('times.output')}</td>
-                                    <td>{formatEpoch(stationData.outputEpoch)}</td>
-                                </tr>
-                            ) : null}
-                        </tbody>
-                    </table>
-                </>
+                {stationData?.lastLocation || stationData?.lastPacket || stationData?.lastBeacon || stationData?.outputDate ? (
+                    <>
+                        <br />
+                        <b>{t('times.title')}</b>
+                        <table>
+                            <tbody>
+                                {stationData.lastLocation ? (
+                                    <tr key="location">
+                                        <td>{t('times.location')}</td>
+                                        <td>{formatEpoch(stationData.lastLocation)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.lastPacket ? (
+                                    <tr key="packet">
+                                        <td>{t('times.packet')}</td>
+                                        <td>{formatEpoch(stationData.lastPacket)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.lastBeacon ? (
+                                    <tr key="beacon">
+                                        <td>{t('times.beacon')}</td>
+                                        <td>{formatEpoch(stationData.lastBeacon)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.outputDate ? (
+                                    <tr key="output">
+                                        <td>{t('times.output')}</td>
+                                        <td>{formatEpoch(stationData.outputEpoch)}</td>
+                                    </tr>
+                                ) : null}
+                            </tbody>
+                        </table>
+                    </>
+                ) : null}
                 {stationData?.status ? (
                     <>
                         <br />
