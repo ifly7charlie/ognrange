@@ -63,6 +63,7 @@ pub struct RollupStats {
 struct RollupProgress {
     layer: String,
     phase: String,
+    detail: String,
     records_read: usize,
     records_written: usize,
     records_deleted: usize,
@@ -76,7 +77,11 @@ impl std::fmt::Display for RollupProgress {
             "layer={}, phase={}, read={}, written={}, deleted={}, arrow={}",
             self.layer, self.phase, self.records_read, self.records_written,
             self.records_deleted, self.arrow_records
-        )
+        )?;
+        if !self.detail.is_empty() {
+            write!(f, ", detail={}", self.detail)?;
+        }
+        Ok(())
     }
 }
 
@@ -458,7 +463,7 @@ fn rollup_station_all_layers(
         match rollup_station_layer(
             &mut db, station_path, station_name, accumulators,
             *layer, layer_suffix, valid_stations, is_global, station_meta,
-            retired_accumulators, cancel,
+            retired_accumulators, cancel, progress,
         ) {
             Ok((stats, day_activity)) => {
                 let layer_elapsed = layer_start.elapsed();
@@ -551,11 +556,21 @@ fn rollup_station_layer(
     station_meta: Option<&crate::station::StationDetails>,
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
     cancel: &AtomicBool,
+    progress: &std::sync::Mutex<RollupProgress>,
 ) -> Result<(RollupStats, Option<RollupActivity>), String> {
     let mut stats = RollupStats::default();
     let layer_t0 = std::time::Instant::now();
 
+    // Helper to update progress phase + detail
+    let set_phase = |phase: &str, detail: &str| {
+        if let Ok(mut p) = progress.lock() {
+            p.phase = phase.to_string();
+            p.detail = detail.to_string();
+        }
+    };
+
     // Read all "current" accumulator records for this layer
+    set_phase("read_current", "");
     let (current_start, current_end) = CoverageHeader::db_search_range(
         AccumulatorType::Current,
         accumulators.current.bucket,
@@ -584,6 +599,7 @@ fn rollup_station_layer(
     let mut dest_record_counts: Vec<(&str, usize)> = Vec::new();
     let mut destinations: Vec<RollupAccumulator> = Vec::with_capacity(dest_entries.len());
     for (acc_type, entry) in &dest_entries {
+        set_phase("read_dest", acc_type.name());
         let (start, end) = CoverageHeader::db_search_range(*acc_type, entry.bucket, layer);
         let records = db::read_range(db, &start, &end, Some(cancel));
         dest_record_counts.push((acc_type.name(), records.len()));
@@ -609,6 +625,8 @@ fn rollup_station_layer(
     let mut deletes: Vec<String> = Vec::new();
 
     // Walk the current accumulator and merge into each destination
+    let dest_total: usize = dest_record_counts.iter().map(|(_, n)| n).sum();
+    set_phase("merge", &format!("{}cur+{}dest", current_records.len(), dest_total));
     let t_merge_start = std::time::Instant::now();
     for (current_key, current_value) in &current_records {
         if cancel.load(Ordering::Relaxed) {
@@ -756,12 +774,14 @@ fn rollup_station_layer(
     ).db_key();
     batch.delete(current_meta_key.as_bytes());
 
+    set_phase("write_batch", &format!("{}puts/{}dels", puts.len(), deletes.len() + current_records.len()));
     let t_write_start = std::time::Instant::now();
     db.write(batch, true).map_err(|e| format!("write batch failed for {}: {}", station_name, e))?;
     let t_write = t_write_start.elapsed();
 
     // Purge retired accumulators (matching TypeScript rollupdatabase.ts:407-416).
     // When a bucket changes (e.g. day rolls over), purge old bucket's data and meta.
+    set_phase("purge", &format!("{} retired", retired_accumulators.len()));
     let t_purge_start = std::time::Instant::now();
     for (acc_type, old_bucket) in retired_accumulators {
         let (start, end) = CoverageHeader::db_search_range_with_meta(*acc_type, *old_bucket, layer);
@@ -770,6 +790,7 @@ fn rollup_station_layer(
     let t_purge = t_purge_start.elapsed();
 
     // Write arrow files and metadata for each destination
+    set_phase("arrow", "");
     let t_arrow_start = std::time::Instant::now();
     let output_dir = crate::config::output_dir(station_name);
     if let Err(e) = std::fs::create_dir_all(&output_dir) {
@@ -1484,6 +1505,7 @@ pub async fn rollup_startup(
                 );
 
                 let layer_suffix = layer.file_suffix();
+                let startup_progress = std::sync::Mutex::new(RollupProgress::default());
                 match rollup_station_layer(
                     &mut db,
                     &station_path,
@@ -1496,6 +1518,7 @@ pub async fn rollup_startup(
                     station_meta,
                     &[], // no retired accumulators during startup
                     &SHUTDOWN, // use global shutdown for startup rollup
+                    &startup_progress,
                 ) {
                     Ok((stats, _day_activity)) => {
                         info!(
