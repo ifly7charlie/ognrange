@@ -53,7 +53,7 @@ let aircraftStation = new Map();
 let allAircraft = new Map();
 
 // shortcuts so regexp compiled once
-const reExtractDb = / ([0-9.]+)dB /;
+const reExtractDb = / (-?[0-9.]+)dB( |$)/;
 const reExtractCrc = / ([0-9])e /;
 const reExtractRot = / [+-]([0-9.]+)rot /;
 const reExtractVC = / [+-]([0-9]+)fpm /;
@@ -494,12 +494,12 @@ async function processPacket(packet: AprsLocationPacket) {
         return;
     }
 
-    let altitude = Math.floor(packet?.altitude || 0);
+    let altitude = Math.min(Math.max(Math.floor(packet?.altitude || 0), 0), 55000);
 
     // Proxy for the plane
     let aircraft = allAircraft.get(flarmId);
     if (!aircraft) {
-        allAircraft.set(flarmId, (aircraft = {h3s: new Set(), first: packet.timestamp, packets: 0, seen: 0}));
+        allAircraft.set(flarmId, (aircraft = {h3s: new Set(), packets: 0, seen: 0}));
     }
 
     // Make sure they are moving... we can get this from the packet without any
@@ -529,7 +529,7 @@ async function processPacket(packet: AprsLocationPacket) {
         const gs = station + '/' + flarmId;
         const seen = aircraft.seen;
         const when = aircraftStation.get(gs);
-        gap = when ? Math.min(60, packet.timestamp - when) : Math.min(60, Math.max(1, packet.timestamp - (seen || packet.timestamp)));
+        gap = Math.min(60, Math.max(1, Math.abs(packet.timestamp - ((when ?? seen) || packet.timestamp))));
         aircraftStation.set(gs, packet.timestamp);
         if (aircraft.seen < packet.timestamp) {
             aircraft.seen = packet.timestamp;
@@ -590,16 +590,19 @@ async function processPacket(packet: AprsLocationPacket) {
         signal = PRESENCE_SIGNAL;
         crc = 0;
     } else {
-        // Look for signal strength and checksum - we will ignore any packet without a signal strength
-        // sometimes this happens to be missing and other times it happens because it is reported as 0.0
-        const rawSignalStrength = (packet.comment.match(reExtractDb) || [0, '0'])[1];
-        signal = Math.min(Math.round(parseFloat(rawSignalStrength) * 4), 255);
-
         // crc may be absent, if it is then it's a 0
         crc = parseInt((packet.comment.match(reExtractCrc) || [0, '0'])[1]);
 
+        // Extract signal strength - reject only if no dB value present in comment
+        const dbMatch = packet.comment.match(reExtractDb);
+        if (dbMatch) {
+            signal = Math.min(Math.max(Math.round(Math.max(parseFloat(dbMatch[1]), 0) * 4), 1), 63);
+        } else {
+            signal = 0;
+        }
+
         // If we have no signal strength then we'll ignore the packet
-        if (signal <= 0) {
+        if (signal === 0) {
             packetStats.ignoredSignal0++;
             stationDetails.stats.ignoredSignal0++;
             return;
@@ -618,7 +621,7 @@ async function processPacket(packet: AprsLocationPacket) {
     // Enrich with elevation and send to everybody, this is async
     // and we don't need it's results to say we logged the packet
     getElevationOffset(packet.latitude, packet.longitude, async (gl: number) => {
-        const agl = Math.round(Math.max(altitude - gl, 0));
+        const agl = Math.round(Math.min(Math.max(altitude - gl, 0), 55000));
 
         // Packet for station marks it for dumping next time round
         stationDetails.lastPacket = Math.max(packet.timestamp, stationDetails.lastPacket ?? 0) as Epoch;
