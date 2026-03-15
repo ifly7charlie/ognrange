@@ -14,6 +14,7 @@ export enum Layer {
 // APRS TOCALL (destCallsign) → Layer mapping
 const TOCALL_TO_LAYER: Record<string, Layer> = {
     OGFLR: Layer.FLARM,
+    OGFLR6: Layer.FLARM,
     OGFLR7: Layer.FLARM,
     APRS: Layer.FLARM,
     OGADSB: Layer.ADSB,

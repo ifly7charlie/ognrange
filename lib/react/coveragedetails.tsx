@@ -16,6 +16,7 @@ import {debounce as _debounce} from 'lodash';
 import VisibilitySensor from 'react-visibility-sensor';
 
 import {StationList} from './stationlist';
+import {LayerTabs} from './layertabs';
 
 import {GapDetails} from './coveragedetails/gapdetails';
 import {OtherStationsDetails} from './coveragedetails/otherstationdetails';
@@ -24,6 +25,7 @@ import {SignalDetails} from './coveragedetails/signaldetails';
 import {LowestPointDetails} from './coveragedetails/lowestpointdetails';
 import {AvailableFiles} from './coveragedetails/availablefiles';
 import {ActivityDetails} from './coveragedetails/activitydetails';
+import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 
 import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 import {formatEpoch} from './formatdate';
@@ -112,6 +114,8 @@ export function CoverageDetails({
     file,
     setFile,
     layers,
+    setLayers,
+    dateRange,
     env
 }: //
 {
@@ -123,6 +127,8 @@ export function CoverageDetails({
     file: string;
     setFile: (s: string) => void;
     layers?: string[];
+    setLayers?: (l: string[]) => void;
+    dateRange?: {start: string; end: string};
     env: any;
 }) {
     // Tidy up code later by simplifying typescript types
@@ -225,20 +231,12 @@ export function CoverageDetails({
                 <br style={{clear: 'both'}} />
                 <hr />
                 {showTabs ? (
-                    <div>
-                        {tabKeys.map((l) => {
-                            const hasData = !!byDay?.layers?.[l];
-                            return (
-                                <button
-                                    key={l}
-                                    onClick={() => setSelectedLayer(l)}
-                                    style={{fontWeight: selectedLayer === l ? 'bold' : 'normal', color: hasData ? undefined : 'gray'}}
-                                >
-                                    {tLayer(l, l)}
-                                </button>
-                            );
-                        })}
-                    </div>
+                    <LayerTabs
+                        tabs={tabKeys}
+                        selectedTab={selectedLayer}
+                        setSelectedTab={setSelectedLayer}
+                        hasData={(tab) => !!byDay?.layers?.[tab]}
+                    />
                 ) : null}
                 <AvailableFiles station={station || 'global'} setFile={setFile} displayType={displayType} layer={selectedLayer} />
                 {showTabs && byDay && !activeByDay?.length ? (
@@ -356,14 +354,22 @@ export function CoverageDetails({
     }
 
     return (
-        <Trans t={t} i18nKey="help">
-            Hover over somewhere on the map to see details.
-            <br />
-            Click to lock the sidebar display to that location.
-            <br />
-            Click on a station marker to show coverage records only for that station.
-            <br />
-            You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information
-        </Trans>
+        <>
+            <Trans t={t} i18nKey="help">
+                Hover over somewhere on the map to see details.
+                <br />
+                Click to lock the sidebar display to that location.
+                <br />
+                Click on a station marker to show coverage records only for that station.
+                <br />
+                You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information
+            </Trans>
+            {!station && (
+                <>
+                    <hr />
+                    <ProtocolStatsDashboard layers={layers ?? ['combined']} setLayers={setLayers ?? (() => {})} dateRange={dateRange} />
+                </>
+            )}
+        </>
     );
 }

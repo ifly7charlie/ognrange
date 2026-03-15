@@ -62,6 +62,8 @@ export function Dock(props: {
                         file={file}
                         setFile={setFile}
                         layers={props.layers}
+                        setLayers={props.setLayers}
+                        dateRange={props.dateRange}
                         env={props.env}
                     />
                 ) : null}

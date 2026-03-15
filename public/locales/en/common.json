@@ -213,5 +213,23 @@
         "low": "Below 3000m",
         "mid": "3000–4500m",
         "high": "Above 4500m"
+    },
+    "stats": {
+        "title": "Protocol Statistics",
+        "generated": "Updated {{time}}",
+        "traffic_by_hour": "Traffic by hour (UTC)",
+        "today": "Today",
+        "days_ago": "{{count}}d ago",
+        "devices_by_day": "Unique devices by day",
+        "partial": "partial",
+        "partial_restart": "partial (restart)",
+        "regions": "Region distribution",
+        "protocol_table": "Protocols",
+        "raw": "Raw",
+        "accepted": "Accepted",
+        "devices": "Devices",
+        "accepted_by_day": "Accepted packets by day",
+        "no_data": "No protocol statistics available",
+        "click_to_filter": "Click to filter map"
     }
 }

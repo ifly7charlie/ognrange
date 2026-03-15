@@ -5,7 +5,7 @@ import {useTranslation} from 'next-i18next';
 
 import Select, {type StylesConfig} from 'react-select';
 
-import {ALL_LAYERS, COMBINED_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
+import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
 
 interface LayerOption {
     value: string;
@@ -58,12 +58,9 @@ function formatOptionLabel(option: LayerOption) {
 export function LayerSelector({layers, setLayers, stationLayerMask}: {layers: string[]; setLayers: (l: string[]) => void; stationLayerMask?: number}) {
     const {t} = useTranslation('common');
 
-    const hasCombined = layers.includes('combined');
-
     const options = useMemo(
         () =>
             ALL_LAYERS.filter((layer) => {
-                if (hasCombined && COMBINED_LAYERS.has(layer)) return false;
                 if (stationLayerMask) return stationLayerMask & (1 << LAYER_BIT[layer]);
                 return true;
             }).map((layer) => ({
@@ -71,7 +68,7 @@ export function LayerSelector({layers, setLayers, stationLayerMask}: {layers: st
                 label: t(`layers.${layer}`),
                 color: LAYER_COLOR[layer]
             })),
-        [t, hasCombined, stationLayerMask]
+        [t, stationLayerMask]
     );
 
     const selectedOptions = useMemo(() => options.filter((o) => layers.includes(o.value)), [options, layers]);
