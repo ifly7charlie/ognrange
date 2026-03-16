@@ -131,7 +131,7 @@ pub async fn rollup_all(
         let confirmed_move = if station.bouncing {
             let prev_age = station.last_seen_at_previous
                 .map(|e| now_epoch.saturating_sub(e.0))
-                .unwrap_or(u32::MAX); // no timestamp → treat as very old
+                .unwrap_or(0); // no timestamp → treat as recent (legacy data)
             if prev_age >= move_confirm_secs {
                 info!(
                     "station {} confirming move — previous location last seen {} days ago",
