@@ -74,8 +74,12 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `lastBeacon` | `u32?` | Unix timestamp of the last Status beacon |
 | `status` | `string?` | Body text from the most recent Status beacon |
 | `notice` | `string?` | Human-readable move/bounce notice (empty string if no significant movement) |
-| `moved` | `bool` | Station moved beyond the threshold since `primary_location` was set |
-| `bouncing` | `bool` | Station is bouncing between two locations (histories merged) |
+| `moved` | `bool` | Station move confirmed after `STATION_MOVE_CONFIRM_DAYS` at new location (triggers data purge) |
+| `bouncing` | `bool` | Station is oscillating between two locations, or a move is pending confirmation |
+| `mobile` | `bool` | Station appears to be on a moving vehicle (3+ consecutive new locations) |
+| `newLocationCount` | `u16` | Consecutive packets at locations matching neither primary nor previous |
+| `lastSeenAtPrimary` | `u32?` | Unix timestamp of the last packet received near `primary_location` |
+| `lastSeenAtPrevious` | `u32?` | Unix timestamp of the last packet received near `previous_location` |
 | `valid` | `bool` | Station is actively contributing to coverage data |
 | `layerMask` | `u8?` | Bitmask of protocol layers this station has received data for (see [Layer mask](#layer-mask)) |
 | `outputEpoch` | `u32?` | Unix timestamp of the last rollup that included this station |
@@ -164,11 +168,19 @@ Stations are sorted by `id` ascending in the Arrow output.
 
 ## Move Detection
 
-Station location is tracked from Location beacons. When a station reports a position more than 2km (configurable via `STATION_MOVE_THRESHOLD_KM`) from its `primary_location`:
+Station location is tracked from Location beacons. The system maintains two known locations (`primary_location` and `previous_location`) with paired `lastSeenAtPrimary` and `lastSeenAtPrevious` timestamps. When locations are rotated, the corresponding timestamp always moves with its coordinates.
 
-- **Large move** (both primary and previous distance exceed threshold): `moved = true`, history is reset, `primary_location` updated
-- **Bouncing** (new position is close to `previous_location`): `bouncing = true`, locations are merged
-- **Small move** (< threshold): location is updated, history is preserved
+Each incoming packet is compared against both known locations using a distance threshold (default 200m, configurable via `STATION_MOVE_THRESHOLD_KM`):
+
+1. **At primary location** (within threshold): `lastSeenAtPrimary` is updated. If the station was mobile, it settles: `mobile` and `bouncing` are cleared, `previous_location` is set to match `primary_location`.
+2. **At previous location** (within threshold): `lastSeenAtPrevious` is updated, `bouncing = true`. If the station was mobile, `mobile` is cleared.
+3. **At neither location** (new location): `newLocationCount` increments. Locations rotate: the new position becomes `primary_location`, the old primary becomes `previous_location`, and timestamps follow their coordinates. `bouncing = true`.
+
+Three scenarios emerge from this model:
+
+- **Bouncing** (two stations sharing a callsign): packets alternate between primary and previous. Both `lastSeenAt*` timestamps stay fresh. Neither decays, so no purge occurs.
+- **Moved** (test→production relocation): packets arrive only at the new primary. `lastSeenAtPrevious` ages. After `STATION_MOVE_CONFIRM_DAYS` (default 30) without activity at the previous location, rollup confirms the move: `moved = true`, data is purged.
+- **Mobile** (receiver on a vehicle): every packet is at a new location. After 3 consecutive new locations, `mobile = true`. `lastSeenAtPrevious` is always recent (refreshed on each rotation) so no confirmed move occurs. When the station stops moving and sends a packet at its current primary location, `mobile` is cleared and the station settles.
 
 Moved stations are marked `valid = false` during rollup and excluded from coverage processing until their data is re-established at the new location.
 

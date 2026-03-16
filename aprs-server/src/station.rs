@@ -120,6 +120,17 @@ pub struct StationDetails {
     #[serde(default)]
     pub bouncing: bool,
     #[serde(default)]
+    pub mobile: bool,
+    /// Consecutive packets at locations matching neither primary nor previous
+    #[serde(default)]
+    pub new_location_count: u16,
+    /// Last time a packet was received near `primary_location`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_primary: Option<Epoch>,
+    /// Last time a packet was received near `previous_location`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_previous: Option<Epoch>,
+    #[serde(default)]
     pub valid: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layer_mask: Option<u8>,
@@ -297,6 +308,10 @@ impl StationManager {
             notice: None,
             moved: false,
             bouncing: false,
+            mobile: false,
+            new_location_count: 0,
+            last_seen_at_primary: None,
+            last_seen_at_previous: None,
             valid: false,
             layer_mask: None,
             output_epoch: None,
@@ -362,7 +377,26 @@ impl StationManager {
         self.station_ids.read().unwrap().get(&id).cloned()
     }
 
-    /// Check if a station has moved and update its location
+    /// Create a StationManager for tests (no database, no writer thread)
+    #[cfg(test)]
+    fn new_for_test() -> Self {
+        let (write_tx, _write_rx) = std::sync::mpsc::channel::<DbWrite>();
+        StationManager {
+            stations: RwLock::new(HashMap::new()),
+            station_ids: RwLock::new(HashMap::new()),
+            next_id: AtomicU16::new(1),
+            db_path: String::new(),
+            write_tx,
+            case_insensitive: false,
+        }
+    }
+
+    /// Check if a station has moved and update its location.
+    ///
+    /// Unified model for three scenarios:
+    /// - **Bouncing**: two stations sharing a callsign — both locations stay fresh
+    /// - **Moved**: test→production relocation — old location decays (handled in rollup)
+    /// - **Mobile**: receiver on a vehicle — consecutive new locations exceed threshold
     pub fn check_station_moved(
         &self,
         name: &StationName,
@@ -385,54 +419,59 @@ impl StationManager {
         }
 
         let primary = details.primary_location.unwrap_or([lat, lng]);
-        let distance = great_circle_distance(primary[0], primary[1], lat, lng);
+        let previous = details.previous_location.unwrap_or(primary);
+        let dist_primary = great_circle_distance(primary[0], primary[1], lat, lng);
+        let dist_previous = great_circle_distance(previous[0], previous[1], lat, lng);
         let threshold = *STATION_MOVE_THRESHOLD_KM;
 
-        if distance > threshold {
-            let previous = details.previous_location.unwrap_or(primary);
-            let prev_distance = great_circle_distance(previous[0], previous[1], lat, lng);
+        // 1. At primary location — station is where we expect it
+        if dist_primary <= threshold {
+            details.last_seen_at_primary = Some(timestamp);
+            details.new_location_count = 0;
+            if details.mobile {
+                info!("{} appears to have stopped moving", name);
+                details.mobile = false;
+                details.bouncing = false;
+                // Settle: previous = primary, with matching timestamp
+                details.previous_location = details.primary_location;
+                details.last_seen_at_previous = details.last_seen_at_primary;
+            }
+        }
+        // 2. At previous location — bouncing between two known locations
+        else if dist_previous <= threshold {
+            details.last_seen_at_previous = Some(timestamp);
+            details.bouncing = true;
+            details.new_location_count = 0;
+            if details.mobile {
+                info!("{} appears to have stopped moving", name);
+                details.mobile = false;
+            }
+        }
+        // 3. Neither location — new location
+        else {
+            details.new_location_count += 1;
 
-            if prev_distance > threshold {
-                details.notice = Some(format!(
-                    "{:.0}km move detected {} resetting history",
-                    distance,
-                    chrono::DateTime::from_timestamp(timestamp.0 as i64, 0)
-                        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-                        .unwrap_or_default()
-                ));
+            if details.new_location_count >= 3 {
+                if !details.mobile {
+                    info!("{} appears to be mobile ({:.1}km from primary)", name, dist_primary);
+                }
+                details.mobile = true;
+            } else if details.new_location_count == 1 {
+                // First new location: log once
                 warn!("{}", raw_packet);
                 warn!(
-                    "Station {} moved to {},{} ({:.1}km)",
-                    name, lat, lng, distance
+                    "Station {} at {},{} ({:.1}km from primary) — pending confirmation",
+                    name, lat, lng, dist_primary
                 );
-                details.moved = true;
-                details.previous_location = details.primary_location;
-                details.bouncing = false;
-                details.primary_location = Some([lat, lng]);
-            } else if prev_distance > 0.1 {
-                details.notice = Some("station appears to be in motion, resetting history".into());
-                info!("{} {}", name, details.notice.as_ref().unwrap());
-                details.moved = true;
-                details.bouncing = false;
-                details.primary_location = Some([lat, lng]);
-            } else {
-                info!("{} bouncing between two locations (merging)", name);
-                details.notice =
-                    Some("station appears to be bouncing between two locations, merging data".into());
-                details.moved = false;
-                details.bouncing = true;
-                details.primary_location = Some([lat, lng]);
             }
-        } else {
-            if distance > 0.1 {
-                details.notice = Some(format!(
-                    "small {:.1}km move detected, keeping history",
-                    distance
-                ));
-            } else {
-                details.notice = Some(String::new());
-            }
-            details.bouncing = false;
+
+            // Rotate: new → primary, old primary → previous
+            // Timestamps follow their coordinates
+            details.previous_location = details.primary_location;
+            details.last_seen_at_previous = details.last_seen_at_primary;
+            details.primary_location = Some([lat, lng]);
+            details.last_seen_at_primary = Some(timestamp);
+            details.bouncing = true;
         }
 
         details.lat = Some(lat);
@@ -511,6 +550,10 @@ impl StationManager {
             notice: None,
             moved: false,
             bouncing: false,
+            mobile: false,
+            new_location_count: 0,
+            last_seen_at_primary: None,
+            last_seen_at_previous: None,
             valid: false,
             layer_mask: None,
             output_epoch: None,
@@ -627,9 +670,8 @@ mod tests {
         assert_eq!(secs3 / 3600 * 6 + (secs3 % 3600) / 60 / 10, 143);
     }
 
-    #[test]
-    fn test_activity_serde_roundtrip() {
-        let mut details = StationDetails {
+    fn make_test_details() -> StationDetails {
+        StationDetails {
             id: StationId(1),
             station: StationName("TEST".to_string()),
             lat: None,
@@ -643,6 +685,10 @@ mod tests {
             notice: None,
             moved: false,
             bouncing: false,
+            mobile: false,
+            new_location_count: 0,
+            last_seen_at_primary: None,
+            last_seen_at_previous: None,
             valid: false,
             layer_mask: None,
             output_epoch: None,
@@ -652,7 +698,291 @@ mod tests {
             beacon_activity: None,
             beacon_activity_date: None,
             uptime: None,
-        };
+        }
+    }
+
+    #[test]
+    fn test_last_seen_timestamps_serde() {
+        let mut details = make_test_details();
+
+        // Without timestamps
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(!json.contains("lastSeenAtPrimary"));
+        assert!(!json.contains("lastSeenAtPrevious"));
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.last_seen_at_primary, None);
+        assert_eq!(restored.last_seen_at_previous, None);
+
+        // With timestamps
+        details.last_seen_at_primary = Some(Epoch(1000000));
+        details.last_seen_at_previous = Some(Epoch(900000));
+        let json = serde_json::to_string(&details).unwrap();
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.last_seen_at_primary, Some(Epoch(1000000)));
+        assert_eq!(restored.last_seen_at_previous, Some(Epoch(900000)));
+    }
+
+    // Locations for movement tests
+    // Victoria, Australia (-37.308, 142.988)
+    const LOC_A: (f64, f64) = (-37.308, 142.988);
+    // Sydney, Australia (-33.918, 151.099) — ~824km from LOC_A
+    const LOC_B: (f64, f64) = (-33.918, 151.099);
+    // Perth, Australia (-31.95, 115.86) — far from both A and B
+    const LOC_C: (f64, f64) = (-31.95, 115.86);
+    // 500m north of LOC_A
+    const LOC_D: (f64, f64) = (-37.3035, 142.988);
+
+    fn get_station(mgr: &StationManager, name: &str) -> StationDetails {
+        mgr.get_or_create(&StationName(name.to_string()))
+    }
+
+    #[test]
+    fn test_stationary_station() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+
+        // Repeated packets at same location
+        for i in 0..5 {
+            mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000 + i * 1000), "raw");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert!(!s.moved);
+        assert!(!s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.new_location_count, 0);
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(5000)));
+    }
+
+    #[test]
+    fn test_bouncing_two_locations() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+
+        // Establish at LOC_A
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+
+        // Packet from LOC_B — new location, bouncing starts
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw2");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.previous_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(2000)));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
+
+        // Back to LOC_A — hits "at previous" branch, both timestamps fresh
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(3000), "raw3");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(3000)));
+        assert_eq!(s.new_location_count, 0);
+
+        // Many more alternating packets — all silently accepted
+        for i in 0..10 {
+            let (loc, ts) = if i % 2 == 0 {
+                (LOC_B, 4000 + i * 100)
+            } else {
+                (LOC_A, 4000 + i * 100)
+            };
+            mgr.check_station_moved(&name, loc.0, loc.1, Epoch(ts), "raw_repeat");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert!(!s.moved);
+        assert!(!s.mobile);
+    }
+
+    #[test]
+    fn test_relocation() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+
+        // Establish at LOC_A
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+
+        // Move to LOC_B
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw2");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
+
+        // Only packets from LOC_B — last_seen_at_previous stays stale
+        for i in 1..5 {
+            mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000 + i * 1000), "raw_b");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(6000)));
+    }
+
+    #[test]
+    fn test_mobile_fast() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+
+        // Establish at LOC_A
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+
+        // Consecutive packets at new locations: B, C, D — all far from each other
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw2");
+        let s = get_station(&mgr, "TEST");
+        assert!(!s.mobile);
+        assert_eq!(s.new_location_count, 1);
+
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(3000), "raw3");
+        let s = get_station(&mgr, "TEST");
+        assert!(!s.mobile);
+        assert_eq!(s.new_location_count, 2);
+
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(4000), "raw4");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+        assert_eq!(s.new_location_count, 3);
+
+        // Further new locations keep mobile=true
+        mgr.check_station_moved(&name, LOC_A.0 + 1.0, LOC_A.1 + 1.0, Epoch(5000), "raw5");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+    }
+
+    #[test]
+    fn test_mobile_slow() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+
+        // Establish at origin
+        let base_lat = -37.0;
+        let base_lng = 143.0;
+        mgr.check_station_moved(&name, base_lat, base_lng, Epoch(1000), "raw");
+
+        // Drift 300m per step (well above 200m threshold)
+        // ~0.003 degrees latitude ≈ 333m
+        for i in 1..=4 {
+            let lat = base_lat + (i as f64) * 0.003;
+            mgr.check_station_moved(&name, lat, base_lng, Epoch(1000 + i * 1000), "raw");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+        assert!(s.new_location_count >= 3);
+    }
+
+    #[test]
+    fn test_mobile_stops() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+
+        // Establish, then become mobile
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(4000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+
+        // Now the primary is LOC_D. Send 2 packets from LOC_D — station stops
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(5000), "raw");
+        let s = get_station(&mgr, "TEST");
+        // First packet at primary clears mobile
+        assert!(!s.mobile);
+        assert!(!s.bouncing);
+        // previous = primary (settled)
+        assert_eq!(s.previous_location, s.primary_location);
+        assert_eq!(s.last_seen_at_previous, s.last_seen_at_primary);
+        assert_eq!(s.new_location_count, 0);
+    }
+
+    #[test]
+    fn test_mobile_stops_at_previous() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+
+        // Establish at LOC_A, move around, become mobile
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(4000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+
+        // After LOC_D as primary, previous is LOC_C
+        // Now send a packet from LOC_C (previous location)
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(5000), "raw");
+        let s = get_station(&mgr, "TEST");
+        // Stops mobile, but bouncing=true because two locations remain
+        assert!(!s.mobile);
+        assert!(s.bouncing);
+        assert_eq!(s.new_location_count, 0);
+    }
+
+    #[test]
+    fn test_mobile_serde() {
+        let mut details = make_test_details();
+        details.mobile = true;
+        details.new_location_count = 5;
+
+        let json = serde_json::to_string(&details).unwrap();
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert!(restored.mobile);
+        assert_eq!(restored.new_location_count, 5);
+
+        // Default deserialization (missing fields)
+        let minimal = r#"{"id":1,"station":"X","moved":false,"bouncing":false,"valid":false,"stats":{}}"#;
+        let restored: StationDetails = serde_json::from_str(minimal).unwrap();
+        assert!(!restored.mobile);
+        assert_eq!(restored.new_location_count, 0);
+    }
+
+    #[test]
+    fn test_timestamp_follows_coordinates() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+
+        // Establish at LOC_A with timestamp 1000
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(1000)));
+
+        // Move to LOC_B with timestamp 2000
+        // Old primary (LOC_A, ts=1000) becomes previous
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(2000)));
+        assert_eq!(s.previous_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
+
+        // Move to LOC_C with timestamp 3000
+        // Old primary (LOC_B, ts=2000) becomes previous
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(3000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_C.0, LOC_C.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(3000)));
+        assert_eq!(s.previous_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(2000)));
+    }
+
+    #[test]
+    fn test_first_packet_sets_primary_and_last_seen() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert!(!s.moved);
+        assert!(!s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(1000)));
+    }
+
+    #[test]
+    fn test_activity_serde_roundtrip() {
+        let mut details = make_test_details();
 
         // Without beacon activity
         let json = serde_json::to_string(&details).unwrap();

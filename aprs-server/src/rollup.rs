@@ -114,6 +114,9 @@ pub async fn rollup_all(
     let mut invalid_count = 0usize;
     let mut moved_count = 0usize;
     let mut need_purge = false;
+    let mut confirmed_moves: HashSet<StationId> = HashSet::new();
+
+    let move_confirm_secs = *crate::config::STATION_MOVE_CONFIRM_SECS as u32;
 
     for station in &all_station_details {
         let was_valid = station.valid;
@@ -123,7 +126,32 @@ pub async fn rollup_all(
             .map(|e| e.0)
             .unwrap_or(now_epoch); // no timestamp yet → assume valid
 
-        if station.moved {
+        // Confirm moves: station is bouncing and the previous (original) location
+        // hasn't been seen for STATION_MOVE_CONFIRM_DAYS
+        let confirmed_move = if station.bouncing {
+            let prev_age = station.last_seen_at_previous
+                .map(|e| now_epoch.saturating_sub(e.0))
+                .unwrap_or(u32::MAX); // no timestamp → treat as very old
+            if prev_age >= move_confirm_secs {
+                info!(
+                    "station {} confirming move — previous location last seen {} days ago",
+                    station.station,
+                    prev_age / 86400
+                );
+                let mut updated = station.clone();
+                updated.moved = true;
+                updated.bouncing = false;
+                station_manager.update(&updated);
+                confirmed_moves.insert(station.id);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if station.moved || confirmed_move {
             moved_count += 1;
             // moved flag is reset below after purge
         } else if validity_ts > expiry_epoch {
@@ -166,9 +194,15 @@ pub async fn rollup_all(
     // Update station validity in the station manager
     for station in &all_station_details {
         let is_valid = valid_stations.contains(&station.id);
-        let was_moved = station.moved;
+        let was_moved = station.moved || confirmed_moves.contains(&station.id);
         if station.valid != is_valid || was_moved {
-            let mut updated = station.clone();
+            // For confirmed moves, re-read from station manager to avoid
+            // overwriting the updated state with the stale snapshot
+            let mut updated = if confirmed_moves.contains(&station.id) {
+                station_manager.get_or_create(&station.station)
+            } else {
+                station.clone()
+            };
             updated.valid = is_valid;
             if was_moved {
                 updated.moved = false;
@@ -256,7 +290,8 @@ pub async fn rollup_all(
                 .as_ref()
                 .map(|s| !valid_stations.contains(&s.id))
                 .unwrap_or(false);
-            let was_moved = station_meta.as_ref().map(|s| s.moved).unwrap_or(false);
+            let was_moved = station_meta.as_ref().map(|s| s.moved).unwrap_or(false)
+                || station_meta.as_ref().map(|s| confirmed_moves.contains(&s.id)).unwrap_or(false);
             if is_invalid || was_moved {
                 let reason = if was_moved {
                     "moved".to_string()
@@ -1752,6 +1787,7 @@ mod tests {
         let (stats, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
+            &std::sync::Mutex::new(RollupProgress::default()),
         ).unwrap();
 
         assert_eq!(stats.records_written, 0);
@@ -1793,6 +1829,7 @@ mod tests {
         let (stats, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
+            &std::sync::Mutex::new(RollupProgress::default()),
         ).unwrap();
 
         // Should have merged into 4 destinations (day, month, year, yearnz)
