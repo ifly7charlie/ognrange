@@ -221,7 +221,7 @@ async fn main() {
     // Probe elevation API before starting
     state.elevation.probe().await;
 
-    // Startup rollup
+    // Startup rollup — migrate legacy keys and process hanging current accumulators
     info!("Performing startup rollup...");
     {
         let acc = state.accumulators.read().await;
