@@ -152,23 +152,29 @@ pub async fn rollup_all(
         };
 
         if station.moved || confirmed_move {
-            moved_count += 1;
-            // moved flag is reset below after purge
+            if was_valid {
+                moved_count += 1;
+            } else {
+                // stale moved flag from before station was already purged
+                let mut updated = station.clone();
+                updated.moved = false;
+                station_manager.update(&updated);
+            }
         } else if validity_ts > expiry_epoch {
             valid_stations.insert(station.id);
-        } else {
-            // expired
-            if was_valid {
-                invalid_count += 1;
-                info!(
-                    "station {} now invalid: expired, last activity {}",
-                    station.station,
-                    chrono::DateTime::from_timestamp(validity_ts as i64, 0)
-                        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-                        .unwrap_or_else(|| validity_ts.to_string())
-                );
-            }
+        } else if was_valid {
+            invalid_count += 1;
+            info!(
+                "station {} now invalid: expired, last activity {}",
+                station.station,
+                chrono::DateTime::from_timestamp(validity_ts as i64, 0)
+                    .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                    .unwrap_or_else(|| validity_ts.to_string())
+            );
         }
+        // already-invalid stations are left out of valid_stations (correct for
+        // global rollup filtering) and need_purge only fires on valid->invalid
+        // transitions, so they won't be re-purged
     }
 
     // Safety: if >2% of stations became invalid, don't purge (something is wrong)
@@ -200,6 +206,7 @@ pub async fn rollup_all(
             // overwriting the updated state with the stale snapshot
             let mut updated = if confirmed_moves.contains(&station.id) {
                 station_manager.get_or_create(&station.station)
+                    .expect("station must exist during rollup")
             } else {
                 station.clone()
             };
@@ -306,7 +313,7 @@ pub async fn rollup_all(
                         .and_then(|s| s.last_packet.or(s.last_beacon));
                     match last {
                         Some(e) => {
-                            let dt = chrono::DateTime::from_timestamp_millis(e.0 as i64)
+                            let dt = chrono::DateTime::from_timestamp(e.0 as i64, 0)
                                 .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
                                 .unwrap_or_else(|| "invalid".to_string());
                             format!("expired, last activity {} ({})", dt, e.0)
@@ -391,7 +398,8 @@ pub async fn rollup_all(
     let station_timeout = std::time::Duration::from_secs(300); // 5 minutes per station
 
     for (station_name, station_path, progress, cancel, handle) in tasks {
-        match tokio::time::timeout(station_timeout, handle).await {
+        tokio::pin!(handle);
+        match tokio::time::timeout(station_timeout, &mut handle).await {
             Ok(Ok(stats)) => {
                 total_stats.records_read += stats.records_read;
                 total_stats.records_written += stats.records_written;
@@ -420,6 +428,23 @@ pub async fn rollup_all(
                 let prog = progress.lock().map(|p| p.to_string()).unwrap_or_default();
                 error!("Rollup task timed out after {}s for {} ({}) — progress: {}",
                     station_timeout.as_secs(), station_name, station_path, prog);
+                // Wait for the task to actually finish so it releases its DB lock.
+                // The cancel flag should cause it to exit promptly, but give it a
+                // generous grace period to flush/close. If it still doesn't finish,
+                // abort it to prevent the lock from being held into the next cycle.
+                let grace = std::time::Duration::from_secs(30);
+                match tokio::time::timeout(grace, handle).await {
+                    Ok(_) => {
+                        info!("Timed-out task for {} finished after cancel", station_name);
+                    }
+                    Err(_) => {
+                        error!("Timed-out task for {} did not finish within {}s grace period — aborting",
+                            station_name, grace.as_secs());
+                        // handle is dropped here, but spawn_blocking tasks cannot be
+                        // aborted — they'll finish eventually. The lock will be held
+                        // until then, but at least we've warned about it.
+                    }
+                }
                 total_stats.stations_skipped += 1;
             }
         }
