@@ -1,7 +1,9 @@
-import {useState, useCallback, useEffect} from 'react';
+import {useState, useCallback, useEffect, useMemo} from 'react';
 import useSWR from 'swr';
 
 import {useTranslation, Trans} from 'next-i18next';
+
+import type {ProtocolStatsApiResponse, GlobalUptimeHistoryEntry} from '../common/protocolstats';
 
 import {useStationMeta} from './stationmeta';
 import type {PickableDetails} from './pickabledetails';
@@ -29,6 +31,7 @@ import {UptimeBar} from './coveragedetails/uptimebar';
 import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {StationPosition} from './coveragedetails/stationposition';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
+import {GlobalUptimeCard} from './coveragedetails/globaluptime';
 
 import {formatEpoch} from './formatdate';
 
@@ -195,6 +198,38 @@ export function CoverageDetails({
 
     const stationData = stationDataRaw && Object.keys(stationDataRaw).length > 0 ? stationDataRaw : null;
 
+    // Fetch server uptime data for station view overlay
+    const statsUrl = useMemo(() => {
+        if (h3 || !station) return null;
+        const params = new URLSearchParams();
+        if (dateRange?.start) params.set('dateStart', dateRange.start);
+        if (dateRange?.end) params.set('dateEnd', dateRange.end);
+        else if (file) params.set('dateStart', file);
+        const qs = params.toString();
+        return qs ? `/api/stats?${qs}` : '/api/stats';
+    }, [h3, station, dateRange?.start, dateRange?.end, file]);
+
+    const {data: statsData} = useSWR<ProtocolStatsApiResponse>(statsUrl, fetcher);
+
+    const serverUptime = useMemo((): GlobalUptimeHistoryEntry[] | null => {
+        if (!statsData) return null;
+        const entries: GlobalUptimeHistoryEntry[] = [...(statsData.globalUptimeHistory ?? [])];
+        // Include today's live data if available
+        if (statsData.globalUptime) {
+            const liveDate = statsData.globalUptime.date;
+            if (!entries.some((e) => e.date === liveDate)) {
+                entries.push({date: liveDate, activity: statsData.globalUptime.activity, uptime: statsData.globalUptime.uptime});
+            }
+        }
+        return entries.length > 0 ? entries : null;
+    }, [statsData]);
+
+    const serverUptimePercent = useMemo(() => {
+        if (!serverUptime) return null;
+        const total = serverUptime.reduce((sum, e) => sum + e.uptime, 0);
+        return total / serverUptime.length;
+    }, [serverUptime]);
+
     const clearSelectedH3 = useCallback(() => setSelectedDetails({type: 'none'}), [false]);
 
     delayedUpdateFrom(key);
@@ -290,7 +325,10 @@ export function CoverageDetails({
                 ) : null}
                 <ActivityDetails activity={stationData?.activity} />
                 <UptimeBar uptime={stationData?.uptime} />
-                <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} />
+                {serverUptimePercent != null && serverUptimePercent < 100 && (
+                    <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
+                )}
+                <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} />
                 <br />
                 {stationData?.stats ? (
                     <>
@@ -390,6 +428,7 @@ export function CoverageDetails({
                 <>
                     <hr />
                     <ProtocolStatsDashboard layers={layers ?? ['combined']} setLayers={setLayers ?? (() => {})} dateRange={dateRange} />
+                    <GlobalUptimeCard dateRange={dateRange} />
                 </>
             )}
         </>

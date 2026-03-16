@@ -140,11 +140,17 @@
         "beacon": {
             "title": "Beacon Activity",
             "title_range": "Beacon Activity (date range)",
-            "hour_label": "{{hour}}:00"
+            "hour_label": "{{hour}}:00",
+            "legend_active": "Station active",
+            "legend_inactive": "Station inactive",
+            "legend_server_down": "Server down"
         },
         "uptime": {
             "title": "Uptime",
             "percent": "{{percent}}%"
+        },
+        "server": {
+            "uptime_title": "Server Uptime"
         },
         "times": {
             "title": "Times",
@@ -240,6 +246,12 @@
         "low": "Below 3000m",
         "mid": "3000–4500m",
         "high": "Above 4500m"
+    },
+    "serverUptime": {
+        "title": "Server Connection",
+        "uptime": "Uptime: {{percent}}%",
+        "server": "Server: {{server}}",
+        "software": "{{software}}"
     },
     "stats": {
         "title": "Protocol Statistics",

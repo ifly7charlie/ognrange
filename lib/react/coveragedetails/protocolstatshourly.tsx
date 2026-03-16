@@ -4,7 +4,7 @@ import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContain
 import type {ProtocolStatsApiResponse} from '../../common/protocolstats';
 import {INDIVIDUAL_LAYERS} from './protocolstatsutil';
 
-const HISTORY_COLORS = ['#aaa', '#ccc', '#ddd'];
+const HISTORY_COLORS = ['#999', '#aaa', '#bbb', '#ccc'];
 
 export function HourlyTrafficChart({data, selectedTab, color}: {data: ProtocolStatsApiResponse; selectedTab: string; color: string}) {
     const {t} = useTranslation('common', {keyPrefix: 'stats'});

@@ -116,6 +116,51 @@ Note: ADS-B packets above 4500m AGL and all packets above 10,000m AGL are filter
 3. **Month rotation**: Writes a monthly final file with the completed month's totals, then resets all counters, device sets, and hourly data.
 4. **Shutdown**: Writes the state file for persistence across restarts.
 
+## Global Uptime
+
+The server tracks its own connectivity to the upstream APRS-IS server using the same 144-bit bitvector format as [station beacon activity](STATIONS.md#beacon-activity). Each keepalive received from the upstream aprsc server sets a bit for the current 10-minute UTC slot.
+
+### Output Files
+
+All files are written to `{OUTPUT_PATH}/stats/`:
+
+| File | Description |
+|------|-------------|
+| `global-uptime.json` | Symlink to the latest dated file (updated each rollup). Between rollups, written directly on each keepalive (~every 45 seconds) |
+| `global-uptime.2026-03-16.json` | Dated daily snapshot (written each rollup) |
+
+On startup, today's state is restored from the live file if the date matches.
+
+### JSON Format
+
+```json
+{
+  "generated": "2026-03-16T10:31:00Z",
+  "date": "2026-03-16",
+  "server": "GLIDERN5",
+  "serverSoftware": "aprsc 2.1.19-g730c5c0",
+  "serverAddress": "148.251.228.229:14580",
+  "activity": "ff7f00e0ff1f00000000000000000000000000",
+  "uptime": 85.5,
+  "slot": 64
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `generated` | ISO 8601 timestamp when this file was written |
+| `date` | UTC date (`YYYY-MM-DD`) the bitvector covers |
+| `server` | Alias of the upstream APRS-IS server (e.g. `GLIDERN5`) |
+| `serverSoftware` | Server software and version (e.g. `aprsc 2.1.19-g730c5c0`) |
+| `serverAddress` | IP address and port of the upstream server |
+| `activity` | 144-bit bitvector as 36 hex chars (same encoding as station [beacon activity](STATIONS.md#beacon-activity)) |
+| `uptime` | Percentage (0.0-100.0) of active slots relative to elapsed slots today |
+| `slot` | Number of elapsed 10-minute slots today (1-144, 1-based) |
+
+The bitvector resets at UTC midnight. A set bit means the system had an active APRS-IS connection during that 10-minute window. Only keepalives from the upstream `aprsc` server are tracked — the system's own keepalive echoes and login responses are ignored.
+
+On graceful shutdown (SIGINT/SIGTERM) the current slot's bit is cleared before the file is written, since the slot was not fully covered. On restart, today's state is restored from this file so previously completed slots are preserved.
+
 ## Internationalisation
 
 Translation keys for the frontend are in `public/locales/en/common.json`:

@@ -2,7 +2,7 @@ import {useTranslation} from 'next-i18next';
 
 import graphcolours from '../graphcolours';
 
-export function UptimeBar({uptime}: {uptime?: number | null}) {
+export function UptimeBar({uptime, label, sublabel}: {uptime?: number | null; label?: string; sublabel?: string}) {
     const {t} = useTranslation('common', {keyPrefix: 'details.uptime'});
 
     if (uptime == null) return null;
@@ -12,7 +12,7 @@ export function UptimeBar({uptime}: {uptime?: number | null}) {
     return (
         <>
             <br />
-            <b>{t('title')}</b>
+            <b>{label ?? t('title')}</b>
             <div style={{margin: '4px 0'}}>
                 <div style={{background: '#eee', borderRadius: '4px', height: '16px', position: 'relative', overflow: 'hidden'}}>
                     <div
@@ -24,7 +24,7 @@ export function UptimeBar({uptime}: {uptime?: number | null}) {
                         }}
                     />
                 </div>
-                <span style={{fontSize: '0.85rem'}}>{t('percent', {percent})}</span>
+                <span style={{fontSize: '0.85rem'}}>{sublabel ?? t('percent', {percent})}</span>
             </div>
         </>
     );

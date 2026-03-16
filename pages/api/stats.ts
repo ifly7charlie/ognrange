@@ -4,23 +4,28 @@ import {join} from 'path';
 
 import {OUTPUT_PATH, ROLLUP_PERIOD_MINUTES} from '../../lib/common/config';
 import {dateBounds} from '../../lib/common/datebounds';
-import type {ProtocolStatsJson, ProtocolStatsApiResponse, DailyDevicesEntry, ProtocolEntry} from '../../lib/common/protocolstats';
+import type {ProtocolStatsJson, ProtocolStatsApiResponse, DailyDevicesEntry, ProtocolEntry, GlobalUptimeData, GlobalUptimeHistoryEntry} from '../../lib/common/protocolstats';
 
 const statsDir = join(OUTPUT_PATH, 'stats');
 
 // Match dated daily files: protocol-stats.YYYY-MM-DD.json.gz
 const dailyFilePattern = /^protocol-stats\.(\d{4}-\d{2}-\d{2})\.json\.gz$/;
+const uptimeFilePattern = /^global-uptime\.(\d{4}-\d{2}-\d{2})\.json$/;
 
-function readStatsFile(filePath: string): ProtocolStatsJson | null {
+function readJsonFile<T>(filePath: string): T | null {
     try {
         const raw = readFileSync(filePath);
         if (filePath.endsWith('.gz')) {
-            return JSON.parse(gunzipSync(raw).toString());
+            return JSON.parse(gunzipSync(raw).toString()) as T;
         }
-        return JSON.parse(raw.toString());
+        return JSON.parse(raw.toString()) as T;
     } catch {
         return null;
     }
+}
+
+function readStatsFile(filePath: string): ProtocolStatsJson | null {
+    return readJsonFile<ProtocolStatsJson>(filePath);
 }
 
 function todayDate(): string {
@@ -92,7 +97,7 @@ export default async function handler(req, res) {
     // Check for date range query params
     const dateStart = (req.query.dateStart as string) || '';
     const dateEnd = (req.query.dateEnd as string) || '';
-    const hasRange = dateStart && dateStart !== 'year' && dateStart !== 'yearnz';
+    const hasRange = !!dateStart;
 
     // Collect all dated files sorted by date descending
     const allDated = files
@@ -111,10 +116,7 @@ export default async function handler(req, res) {
         const rangeEnd = endBounds?.end || '9999-99-99';
 
         const rangeDays = allDated.filter((d) => d.date >= rangeStart && d.date <= rangeEnd);
-
-        // Read all files in range, build dailyDevices and aggregate current
-        const allStats: {date: string; stats: ProtocolStatsJson}[] = [];
-        const chronological = [...rangeDays].reverse();
+        const isSingleDay = startBounds?.start === startBounds?.end && (!dateEnd || dateEnd === dateStart);
 
         // For today's live data, use the symlink if today is in range
         const today = todayDate();
@@ -126,6 +128,25 @@ export default async function handler(req, res) {
                 // ignore
             }
         }
+
+        // For single-day selection, include 4 previous days in dailyDevices for context
+        const contextDays = isSingleDay
+            ? allDated.filter((d) => d.date < (rangeDays[0]?.date ?? rangeEnd)).slice(0, 4).reverse()
+            : [];
+        for (const day of contextDays) {
+            const stats = day.date === today && liveStats ? liveStats : readStatsFile(join(statsDir, day.file));
+            if (!stats) continue;
+            const entry: DailyDevicesEntry = {date: day.date, devices: {}, accepted: {}, restarts: stats.restarts};
+            for (const [proto, data] of Object.entries(stats.protocols)) {
+                entry.devices[proto] = data.devices;
+                entry.accepted[proto] = data.accepted;
+            }
+            response.dailyDevices.push(entry);
+        }
+
+        // Read all files in range, build dailyDevices and aggregate current
+        const allStats: {date: string; stats: ProtocolStatsJson}[] = [];
+        const chronological = [...rangeDays].reverse();
 
         for (const day of chronological) {
             const stats = day.date === today && liveStats ? liveStats : readStatsFile(join(statsDir, day.file));
@@ -146,13 +167,16 @@ export default async function handler(req, res) {
             response.dailyDevices.push(entry);
         }
 
-        // Aggregate all days into current
+        // Aggregate only the selected range into current (not the context days)
         if (allStats.length > 0) {
             response.current = aggregateStats(allStats);
         }
 
-        // Hourly history: last 3 individual days in range for the chart overlay
-        const historyDays = rangeDays.slice(0, 3);
+        // Hourly history: for single-day show previous 4 days;
+        // for multi-day ranges show the most recent days in the range
+        const historyDays = isSingleDay
+            ? allDated.filter((d) => d.date < (rangeDays[0]?.date ?? rangeEnd)).slice(0, 4)
+            : rangeDays.slice(0, 3);
         for (const day of historyDays) {
             const stats = day.date === today && liveStats ? liveStats : readStatsFile(join(statsDir, day.file));
             if (stats?.hourly) {
@@ -183,8 +207,8 @@ export default async function handler(req, res) {
             }
         }
 
-        // Hourly history: last 3 days before today
-        const historyDays = allDated.filter((d) => d.date < currentDate).slice(0, 3);
+        // Hourly history: last 4 days before today (5 total with today)
+        const historyDays = allDated.filter((d) => d.date < currentDate).slice(0, 4);
         for (const day of historyDays) {
             const stats = readStatsFile(join(statsDir, day.file));
             if (stats?.hourly) {
@@ -230,6 +254,27 @@ export default async function handler(req, res) {
             }
         }
     }
+
+    // Global uptime: read live file
+    response.globalUptime = readJsonFile<GlobalUptimeData>(join(statsDir, 'global-uptime.json'));
+
+    // Global uptime history: scan dated files in the stats dir
+    const uptimeHistory: GlobalUptimeHistoryEntry[] = [];
+    const uptimeRangeStart = hasRange ? (dateBounds(dateStart)?.start || '0000-00-00') : currentMonth();
+    const uptimeRangeEnd = hasRange ? (dateBounds(dateEnd || dateStart)?.end || '9999-99-99') : '9999-99-99';
+
+    for (const f of files) {
+        const m = f.match(uptimeFilePattern);
+        if (!m) continue;
+        const fDate = m[1];
+        if (fDate < uptimeRangeStart || fDate > uptimeRangeEnd) continue;
+        const data = readJsonFile<GlobalUptimeData>(join(statsDir, f));
+        if (data) {
+            uptimeHistory.push({date: fDate, activity: data.activity, uptime: data.uptime});
+        }
+    }
+    uptimeHistory.sort((a, b) => a.date.localeCompare(b.date));
+    response.globalUptimeHistory = uptimeHistory;
 
     res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
     res.status(200).json(response);

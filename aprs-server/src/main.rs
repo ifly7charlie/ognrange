@@ -1,8 +1,10 @@
 mod accumulators;
 mod aprs;
+mod bitvec;
 mod config;
 mod coverage;
 mod elevation;
+mod global_uptime;
 mod h3cache;
 mod ignore_station;
 mod layers;
@@ -126,6 +128,7 @@ struct AppState {
     elevation: elevation::ElevationService,
     packet_stats: PacketStats,
     protocol_stats: protocol_stats::ProtocolStats,
+    global_uptime: global_uptime::GlobalUptime,
     accumulators: RwLock<accumulators::Accumulators>,
     all_aircraft: Mutex<HashMap<(Layer, u32), AircraftState>>,
     aircraft_station: Mutex<HashMap<(Layer, u16, u32), u32>>,
@@ -203,6 +206,7 @@ async fn main() {
         elevation: elevation::ElevationService::new(),
         packet_stats: PacketStats::default(),
         protocol_stats: protocol_stats::ProtocolStats::load(),
+        global_uptime: global_uptime::GlobalUptime::new(),
         accumulators: RwLock::new(acc),
         all_aircraft: Mutex::new(HashMap::new()),
         aircraft_station: Mutex::new(HashMap::new()),
@@ -269,6 +273,7 @@ async fn main() {
     drop(_flush_guard);
 
     state.protocol_stats.save_state();
+    state.global_uptime.clear_current_slot();
     state.station_manager.close();
     info!("Shutdown complete");
 }
@@ -396,6 +401,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
             aprs::connection::AprsEvent::ServerMessage(msg) => {
                 let raw_count = state.packet_stats.raw_count.load(Ordering::Relaxed);
                 info!("{} # {}", msg, raw_count);
+                state.global_uptime.record_keepalive(&msg);
             }
             aprs::connection::AprsEvent::Disconnected(reason) => {
                 warn!("APRS disconnected: {}", reason);
@@ -865,5 +871,6 @@ async fn rollup_timer(state: Arc<AppState>) {
             None
         };
         state.protocol_stats.write_stats(&old_acc.day.file, day_rotation, month_rotation);
+        state.global_uptime.write_snapshot(&old_acc.day.file);
     }
 }

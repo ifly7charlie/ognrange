@@ -29,8 +29,27 @@ export interface DailyDevicesEntry {
     restarts: number;
 }
 
+export interface GlobalUptimeData {
+    generated: string;
+    date: string;
+    server: string;
+    serverSoftware: string;
+    serverAddress: string;
+    activity: string; // 36-char hex bitvector
+    uptime: number; // 0.0-100.0
+    slot: number; // 1-144
+}
+
+export interface GlobalUptimeHistoryEntry {
+    date: string;
+    activity: string;
+    uptime: number;
+}
+
 export interface ProtocolStatsApiResponse {
     current: ProtocolStatsJson | null;
     hourlyHistory: HourlyHistoryEntry[];
     dailyDevices: DailyDevicesEntry[];
+    globalUptime?: GlobalUptimeData | null;
+    globalUptimeHistory?: GlobalUptimeHistoryEntry[];
 }
