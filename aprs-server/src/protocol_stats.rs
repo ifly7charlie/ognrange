@@ -5,15 +5,13 @@
 //! persists state across restarts via a state file.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::sync::Mutex;
 
 use chrono::{Datelike, Utc};
-use flate2::write::GzEncoder;
-use flate2::Compression;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::config::{OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES};
+use crate::json_io::{read_json, write_atomic, write_gz_atomic};
 
 /// Infrastructure TOCALLs excluded from protocol stats
 const INFRASTRUCTURE_TOCALLS: &[&str] = &[
@@ -111,17 +109,9 @@ impl ProtocolStats {
     /// Load from state file, falling back to fresh if stale/missing
     pub fn load() -> Self {
         let state_path = format!("{}stats/protocol-stats.state.json", *OUTPUT_PATH);
-        let data = match std::fs::read_to_string(&state_path) {
-            Ok(d) => d,
-            Err(_) => return Self::new(),
-        };
-
-        let parsed: serde_json::Value = match serde_json::from_str(&data) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Failed to parse protocol stats state: {}", e);
-                return Self::new();
-            }
+        let parsed = match read_json(&state_path) {
+            Some(v) => v,
+            None => return Self::new(),
         };
 
         // Validate start_time is in current month
@@ -474,47 +464,6 @@ fn build_state_json(inner: &StatsInner) -> String {
     });
 
     serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string())
-}
-
-/// Write gzipped content atomically (via .working temp file + rename)
-fn write_gz_atomic(dir: &str, filename: &str, content: &str) {
-    let working = format!("{}/{}.working", dir, filename);
-    let final_path = format!("{}/{}", dir, filename);
-
-    let result = (|| -> Result<(), String> {
-        let file = std::fs::File::create(&working)
-            .map_err(|e| format!("create {}: {}", working, e))?;
-        let mut encoder = GzEncoder::new(file, Compression::default());
-        encoder
-            .write_all(content.as_bytes())
-            .map_err(|e| format!("write {}: {}", working, e))?;
-        encoder
-            .finish()
-            .map_err(|e| format!("finish {}: {}", working, e))?;
-        std::fs::rename(&working, &final_path)
-            .map_err(|e| format!("rename {} -> {}: {}", working, final_path, e))?;
-        Ok(())
-    })();
-
-    if let Err(e) = result {
-        error!("Failed to write gz stats: {}", e);
-        let _ = std::fs::remove_file(&working);
-    }
-}
-
-/// Write uncompressed content atomically
-fn write_atomic(dir: &str, filename: &str, content: &str) {
-    let working = format!("{}/{}.working", dir, filename);
-    let final_path = format!("{}/{}", dir, filename);
-
-    if let Err(e) = std::fs::write(&working, content.as_bytes()) {
-        error!("Failed to write stats {}: {}", working, e);
-        return;
-    }
-    if let Err(e) = std::fs::rename(&working, &final_path) {
-        error!("Failed to rename stats {} -> {}: {}", working, final_path, e);
-        let _ = std::fs::remove_file(&working);
-    }
 }
 
 #[cfg(test)]

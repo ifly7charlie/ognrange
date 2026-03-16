@@ -6,6 +6,7 @@ mod coverage;
 mod elevation;
 mod global_uptime;
 mod h3cache;
+mod json_io;
 mod ignore_station;
 mod layers;
 mod protocol_stats;

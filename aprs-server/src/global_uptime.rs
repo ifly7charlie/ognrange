@@ -2,15 +2,17 @@
 //!
 //! Each keepalive from the upstream APRS-IS server (e.g. aprsc) sets a bit
 //! in a 144-slot daily bitvector (one bit per 10-minute UTC window).
-//! The result is exported to `stats/global-uptime.json`.
+//! The result is exported to `stats/global-uptime.json.gz` (and `.json`
+//! if `UNCOMPRESSED_ARROW_FILES` is set).
 
 use std::sync::Mutex;
 
 use chrono::Utc;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::bitvec::{bitvec_to_hex, hex_to_bitvec, popcount_144, slot_from_timestamp};
-use crate::config::OUTPUT_PATH;
+use crate::config::{OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES};
+use crate::json_io::{read_json_or_gz, write_atomic, write_gz_atomic};
 use crate::symlinks::symlink_atomic;
 
 /// Snapshot of parsed server keepalive fields
@@ -117,8 +119,8 @@ impl GlobalUptime {
         write_live(now, &snap);
     }
 
-    /// Write a dated snapshot during rollup (e.g. `global-uptime.2026-03-16.json`)
-    /// and update the `global-uptime.json` symlink to point to it.
+    /// Write a dated snapshot during rollup (e.g. `global-uptime.2026-03-16.json.gz`)
+    /// and update symlinks to point to it.
     pub fn write_snapshot(&self, day_file: &str) {
         let now = Utc::now();
         let snap = {
@@ -131,12 +133,20 @@ impl GlobalUptime {
 
         let content = build_json(now, &snap);
         let stats_dir = format!("{}stats", *OUTPUT_PATH);
-        let dated_name = format!("global-uptime.{}.json", day_file);
 
-        write_atomic(&stats_dir, &dated_name, &content);
-        symlink_atomic(&dated_name, &format!("{}/global-uptime.json", stats_dir));
+        // Always write .json.gz
+        let dated_gz_name = format!("global-uptime.{}.json.gz", day_file);
+        write_gz_atomic(&stats_dir, &dated_gz_name, &content);
+        symlink_atomic(&dated_gz_name, &format!("{}/global-uptime.json.gz", stats_dir));
 
-        info!("Wrote global uptime snapshot: {}", dated_name);
+        // Conditionally write .json
+        if *UNCOMPRESSED_ARROW_FILES {
+            let dated_name = format!("global-uptime.{}.json", day_file);
+            write_atomic(&stats_dir, &dated_name, &content);
+            symlink_atomic(&dated_name, &format!("{}/global-uptime.json", stats_dir));
+        }
+
+        info!("Wrote global uptime snapshot: {}", dated_gz_name);
     }
 }
 
@@ -167,25 +177,13 @@ fn build_json(now: chrono::DateTime<Utc>, snap: &Snapshot) -> String {
     serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Write the live (non-dated) global-uptime.json directly.
+/// Write the live (non-dated) global-uptime files directly.
 fn write_live(now: chrono::DateTime<Utc>, snap: &Snapshot) {
     let content = build_json(now, snap);
     let stats_dir = format!("{}stats", *OUTPUT_PATH);
-    write_atomic(&stats_dir, "global-uptime.json", &content);
-}
-
-/// Write content atomically via a .working temp file + rename.
-fn write_atomic(dir: &str, filename: &str, content: &str) {
-    let working = format!("{}/{}.working", dir, filename);
-    let final_path = format!("{}/{}", dir, filename);
-
-    if let Err(e) = std::fs::write(&working, content.as_bytes()) {
-        error!("Failed to write {}: {}", working, e);
-        return;
-    }
-    if let Err(e) = std::fs::rename(&working, &final_path) {
-        error!("Failed to rename {} -> {}: {}", working, final_path, e);
-        let _ = std::fs::remove_file(&working);
+    write_gz_atomic(&stats_dir, "global-uptime.json.gz", &content);
+    if *UNCOMPRESSED_ARROW_FILES {
+        write_atomic(&stats_dir, "global-uptime.json", &content);
     }
 }
 
@@ -213,16 +211,12 @@ fn parse_server_keepalive(msg: &str) -> Option<ParsedKeepalive> {
     })
 }
 
-/// Load today's state from `stats/global-uptime.json`, or return defaults.
+/// Load today's state from `stats/global-uptime.json` (or `.json.gz`), or return defaults.
 fn load_state() -> Inner {
     let path = format!("{}stats/global-uptime.json", *OUTPUT_PATH);
-    let data = match std::fs::read_to_string(&path) {
-        Ok(d) => d,
-        Err(_) => return default_inner(),
-    };
-    let parsed: serde_json::Value = match serde_json::from_str(&data) {
-        Ok(v) => v,
-        Err(_) => return default_inner(),
+    let parsed = match read_json_or_gz(&path) {
+        Some(v) => v,
+        None => return default_inner(),
     };
 
     let today = Utc::now().format("%Y-%m-%d").to_string();

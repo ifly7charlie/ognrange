@@ -126,10 +126,12 @@ All files are written to `{OUTPUT_PATH}/stats/`:
 
 | File | Description |
 |------|-------------|
-| `global-uptime.json` | Symlink to the latest dated file (updated each rollup). Between rollups, written directly on each keepalive (~every 45 seconds) |
-| `global-uptime.2026-03-16.json` | Dated daily snapshot (written each rollup) |
+| `global-uptime.json.gz` | Symlink to the latest dated `.gz` file (updated each rollup). Between rollups, written directly on each keepalive (~every 45 seconds) |
+| `global-uptime.json` | Symlink to latest dated `.json` (only if `UNCOMPRESSED_ARROW_FILES`). Between rollups, written directly on each keepalive |
+| `global-uptime.2026-03-16.json.gz` | Dated daily snapshot (written each rollup) |
+| `global-uptime.2026-03-16.json` | Uncompressed daily (only if `UNCOMPRESSED_ARROW_FILES`) |
 
-On startup, today's state is restored from the live file if the date matches.
+On startup, today's state is restored from the live file (tries `.json` first, falls back to `.json.gz`) if the date matches.
 
 ### JSON Format
 
