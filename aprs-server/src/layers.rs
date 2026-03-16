@@ -159,6 +159,13 @@ pub fn layer_from_prefix(prefix: char) -> Option<Layer> {
     }
 }
 
+/// Check if a DB key has a layer prefix (e.g. "c/0042/...")
+pub fn is_layer_prefixed(key: &str) -> bool {
+    key.len() > 1
+        && key.as_bytes()[1] == b'/'
+        && layer_from_prefix(key.as_bytes()[0] as char).is_some()
+}
+
 /// Computes a layer bitmask from an iterable of layers
 pub fn layer_mask_from_set(layers: &[Layer]) -> u8 {
     layers.iter().fold(0u8, |mask, l| mask | l.bit_mask())

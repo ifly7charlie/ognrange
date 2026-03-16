@@ -39,10 +39,10 @@ use crate::config::{
 };
 use crate::coverage::activity::{update_activity, RollupActivity};
 use crate::coverage::header::{
-    AccumulatorBucket, AccumulatorType, AccumulatorTypeAndBucket, CoverageHeader,
+    AccumulatorBucket, AccumulatorType, CoverageHeader,
 };
 use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
-use crate::layers::Layer;
+use crate::layers::{is_layer_prefixed, Layer};
 use crate::station::{StationDetails, StationManager};
 use crate::db::{self, Storage, TrackedDb};
 use crate::types::{Epoch, H3Index, StationId, StationName};
@@ -320,7 +320,8 @@ pub async fn rollup_all(
             }
         }
 
-        // Skip stations with no new traffic since last output (mirrors TS rollup.ts:180)
+        // Skip DB rollup for stations with no new traffic since last output
+        // but still write station JSON so metadata stays current
         if !is_global && !has_retired {
             if let Some(meta) = &station_meta {
                 if let Some(out_epoch) = meta.output_epoch {
@@ -328,6 +329,8 @@ pub async fn rollup_all(
                         let last = meta.last_packet.map(|e| e.0).unwrap_or(0);
                         let cutoff = update_cutoff.map(|e| e.0).unwrap_or(out_epoch.0);
                         if last < cutoff {
+                            let output_dir = crate::config::output_dir(&station_name);
+                            write_station_json(&output_dir, &station_name, meta, &accumulators, None);
                             skipped_no_traffic += 1;
                             continue;
                         }
@@ -1348,6 +1351,9 @@ pub async fn rollup_startup(
                 }
             };
 
+            // Migrate all legacy unprefixed keys to prefixed format before scanning
+            let migrated = migrate_legacy_keys(&mut db);
+
             // Scan DB using seeking iterator (like TypeScript) — only reads meta keys,
             // skips past data ranges to avoid reading all H3 records into memory.
             let mut hanging_buckets: HashMap<(AccumulatorBucket, Layer), Accumulators> = HashMap::new();
@@ -1429,7 +1435,7 @@ pub async fn rollup_startup(
                 }
             }
 
-            if !all_accumulators.is_empty() || !hanging_buckets.is_empty() || !to_purge.is_empty() {
+            if !all_accumulators.is_empty() || !hanging_buckets.is_empty() || !to_purge.is_empty() || migrated > 0 {
                 let found: Vec<String> = all_accumulators.iter()
                     .map(|(t, b, l, f)| format!("{}/{}={:04x}({})", l.name(), t.name(), b.0, f))
                     .collect();
@@ -1440,9 +1446,10 @@ pub async fn rollup_startup(
                     .map(|(_, _, _, desc)| desc.clone())
                     .collect();
                 info!(
-                    "{}: scan: found=[{}] hanging=[{}] orphaned=[{}] expected day={:04x} month={:04x} year={:04x} yearnz={:04x}",
+                    "{}: scan: found=[{}] hanging=[{}] orphaned=[{}] migrated={} expected day={:04x} month={:04x} year={:04x} yearnz={:04x}",
                     station_name,
                     found.join(", "), hanging.join(", "), orphaned.join(", "),
+                    migrated,
                     expected.day.bucket.0, expected.month.bucket.0,
                     expected.year.bucket.0, expected.yearnz.bucket.0
                 );
@@ -1492,10 +1499,9 @@ pub async fn rollup_startup(
 
             if hanging_buckets.is_empty() {
                 log_progress(&completed);
-                return (0usize, 0usize, 0usize, 0usize);
+                return (migrated, 0usize, 0usize, 0usize);
             }
 
-            let mut migrated = 0usize;
             let mut rolled_up = 0usize;
             let mut arrow = 0usize;
             let mut deleted = 0usize;
@@ -1509,11 +1515,6 @@ pub async fn rollup_startup(
             let all_dest_files: HashSet<String> = all_accumulators.iter()
                 .map(|(_, _, _, file)| file.clone())
                 .collect();
-
-            // Migrate legacy keys first
-            for ((bucket, _layer), acc) in &hanging_buckets {
-                migrated += migrate_legacy_keys(&mut db, acc, *bucket);
-            }
 
             for ((_bucket, layer), acc) in &hanging_buckets {
                 let (current_start, dest_files) = acc.describe();
@@ -1529,9 +1530,10 @@ pub async fn rollup_startup(
                     .map(|(name, _)| *name)
                     .collect();
 
-                if missing.len() >= 3 {
+                if !missing.is_empty() {
                     warn!(
-                        "{}: DROPPING hanging current accumulator {:04x}({}) for {}: {} were missing",
+                        "{}: DROPPING hanging current accumulator {:04x}({}) for {}: {} missing — \
+                         rolling up would overwrite complete arrow files on disk",
                         station_name, acc.current.bucket.0, current_start, dest_files,
                         missing.join(",")
                     );
@@ -1544,9 +1546,8 @@ pub async fn rollup_startup(
                 }
 
                 info!(
-                    "{}: rolling up hanging current accumulator {:04x}({}) into {}{}",
-                    station_name, acc.current.bucket.0, current_start, dest_files,
-                    if missing.is_empty() { String::new() } else { format!(", missing: {}", missing.join(",")) }
+                    "{}: rolling up hanging current accumulator {:04x}({}) into {}",
+                    station_name, acc.current.bucket.0, current_start, dest_files
                 );
 
                 let layer_suffix = layer.file_suffix();
@@ -1664,74 +1665,60 @@ fn parse_acc_entry(v: &serde_json::Value) -> Option<AccumulatorEntry> {
     })
 }
 
-/// Migrate legacy unprefixed keys to layer-prefixed format.
+/// Migrate all legacy unprefixed keys in the DB to layer-prefixed format.
 ///
 /// Legacy keys: "0042/8828308283fffff" → prefixed: "c/0042/8828308283fffff"
-/// If a prefixed key already exists, merge via rollup.
-fn migrate_legacy_keys(
-    db: &mut rusty_leveldb::DB,
-    accumulators: &Accumulators,
-    _current_bucket: AccumulatorBucket,
-) -> usize {
-    let acc_entries = [
-        (AccumulatorType::Current, &accumulators.current),
-        (AccumulatorType::Day, &accumulators.day),
-        (AccumulatorType::Month, &accumulators.month),
-        (AccumulatorType::Year, &accumulators.year),
-        (AccumulatorType::YearNz, &accumulators.yearnz),
-    ];
+/// Checks the first key to determine if migration is needed; a DB is either
+/// entirely legacy or entirely prefixed.
+fn migrate_legacy_keys(db: &mut rusty_leveldb::DB) -> usize {
+    use rusty_leveldb::LdbIterator;
 
     let mut batch = rusty_leveldb::WriteBatch::default();
     let mut migrated = 0;
 
-    for (acc_type, entry) in &acc_entries {
-        let tb = AccumulatorTypeAndBucket::new(*acc_type, entry.bucket);
-        let legacy_prefix = format!("{}/8", tb.to_hex());
-        let legacy_end = format!("{}/9", tb.to_hex());
+    let mut iter = match db.new_iter() {
+        Ok(iter) => iter,
+        Err(_) => return 0,
+    };
+    iter.seek(&[]);
 
-        let legacy_records = db::read_range(db, &legacy_prefix, &legacy_end, None);
-
-        // Delete legacy meta key
-        let legacy_meta = CoverageHeader::legacy_meta_key(*acc_type, entry.bucket);
-        batch.delete(legacy_meta.as_bytes());
-
-        for (legacy_key, legacy_value) in &legacy_records {
-            // Skip meta keys
-            if legacy_key.contains("00_meta") {
-                batch.delete(legacy_key.as_bytes());
-                continue;
+    // Check the first key — if it's already layer-prefixed the DB is migrated
+    if let Some((first_key, _)) = iter.current() {
+        if let Ok(s) = std::str::from_utf8(&first_key) {
+            if is_layer_prefixed(s) {
+                return 0;
             }
-
-            // Extract H3 from legacy key
-            let h3 = match legacy_key.rsplit('/').next() {
-                Some(h3) => h3,
-                None => continue,
-            };
-
-            // Build prefixed key (combined layer for legacy)
-            let prefixed_key = make_dest_key(*acc_type, entry.bucket, Layer::Combined, h3);
-
-            // Check DB for existing prefixed key
-            let final_value = if let Some(existing_bytes) = db.get(prefixed_key.as_bytes()) {
-                if let (Some(existing_rec), Some(legacy_rec)) = (
-                    CoverageRecord::from_bytes(&existing_bytes),
-                    CoverageRecord::from_bytes(legacy_value),
-                ) {
-                    existing_rec
-                        .rollup(&legacy_rec, None)
-                        .map(|r| r.to_bytes())
-                        .unwrap_or_else(|| legacy_value.clone())
-                } else {
-                    legacy_value.clone()
-                }
-            } else {
-                legacy_value.clone()
-            };
-
-            batch.put(prefixed_key.as_bytes(), &final_value);
-            batch.delete(legacy_key.as_bytes());
-            migrated += 1;
         }
+    } else {
+        return 0;
+    }
+
+    while let Some((key_bytes, val_bytes)) = iter.current() {
+        let key_str = match std::str::from_utf8(&key_bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => { if !iter.advance() { break; } continue; }
+        };
+
+        // All keys should be legacy — if we hit a prefixed key something is wrong
+        if is_layer_prefixed(&key_str) {
+            error!("Legacy migration: unexpected prefixed key '{}' in legacy DB after migrating {} keys", key_str, migrated);
+            break;
+        }
+
+        // Parse the legacy key to get accumulator type/bucket and H3
+        let header = match CoverageHeader::from_db_key(&key_str) {
+            Some(h) => h,
+            None => { if !iter.advance() { break; } continue; }
+        };
+
+        // Build the prefixed key — same transform for data and meta keys
+        let prefixed_key = header.db_key();
+
+        batch.put(prefixed_key.as_bytes(), &val_bytes);
+        batch.delete(key_str.as_bytes());
+        migrated += 1;
+
+        if !iter.advance() { break; }
     }
 
     if migrated > 0 {
