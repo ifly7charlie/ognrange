@@ -76,6 +76,11 @@ pub static FORGET_AIRCRAFT_AFTER_SECS: Lazy<u64> =
     Lazy::new(|| env_parse::<u64>("FORGET_AIRCRAFT_AFTER_HOURS", 12) * 3600);
 
 // Station management
+/// Maximum station ID before refusing new allocations (u16::MAX - 1, since 0 = global)
+pub const MAX_STATION_ID: u16 = u16::MAX - 1;
+/// Warn when station ID allocation reaches this percentage of MAX_STATION_ID
+pub const STATION_ID_WARN_PERCENT: u16 = 90;
+
 pub static STATION_MOVE_THRESHOLD_KM: Lazy<f64> =
     Lazy::new(|| env_parse("STATION_MOVE_THRESHOLD_KM", 0.2));
 pub static STATION_MOVE_CONFIRM_SECS: Lazy<u64> =

@@ -457,7 +457,10 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     }
 
     // Get or create station
-    let mut station_details = state.station_manager.get_or_create(&station_name);
+    let mut station_details = match state.station_manager.get_or_create(&station_name) {
+        Some(d) => d,
+        None => return,
+    };
 
     let timestamp = match packet.timestamp {
         Some(ts) => ts,

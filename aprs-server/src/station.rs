@@ -243,20 +243,42 @@ impl StationManager {
         self.next_id.load(Ordering::SeqCst)
     }
 
-    /// Get or create station details
-    pub fn get_or_create(&self, name: &StationName) -> StationDetails {
+    /// Get or create station details.
+    /// Returns None if the station ID limit has been reached.
+    pub fn get_or_create(&self, name: &StationName) -> Option<StationDetails> {
         // Fast path: read lock
         {
             let stations = self.stations.read().unwrap();
             if let Some(details) = stations.get(name) {
-                return details.clone();
+                return Some(details.clone());
             }
         }
 
         // Slow path: write lock, re-check to avoid duplicate ID allocation
         let mut stations = self.stations.write().unwrap();
         if let Some(details) = stations.get(name) {
-            return details.clone();
+            return Some(details.clone());
+        }
+
+        // Hard cap: prevent u16 wrap-around
+        use crate::config::{MAX_STATION_ID, STATION_ID_WARN_PERCENT};
+        let current = self.next_id.load(Ordering::SeqCst);
+        if current > MAX_STATION_ID {
+            error!(
+                "Station ID limit reached ({}/{}), rejecting new station: {}",
+                current, MAX_STATION_ID, name
+            );
+            return None;
+        }
+        let warn_threshold = (MAX_STATION_ID as u32 * STATION_ID_WARN_PERCENT as u32 / 100) as u16;
+        if current >= warn_threshold {
+            warn!(
+                "Station ID allocation at {:.0}% ({}/{}), new station: {}",
+                current as f64 / MAX_STATION_ID as f64 * 100.0,
+                current,
+                MAX_STATION_ID,
+                name
+            );
         }
 
         let new_id = StationId(self.next_id.fetch_add(1, Ordering::SeqCst));
@@ -304,7 +326,7 @@ impl StationManager {
 
         self.persist(&details);
 
-        details
+        Some(details)
     }
 
     /// Get station details without creating
@@ -373,7 +395,10 @@ impl StationManager {
         timestamp: Epoch,
         raw_packet: &str,
     ) {
-        let mut details = self.get_or_create(name);
+        let mut details = match self.get_or_create(name) {
+            Some(d) => d,
+            None => return,
+        };
 
         if details.primary_location.is_none() {
             details.primary_location = Some([lat, lng]);
@@ -450,7 +475,10 @@ impl StationManager {
 
     /// Update station beacon status
     pub fn update_station_beacon(&self, name: &StationName, body: &str, timestamp: Epoch) {
-        let mut details = self.get_or_create(name);
+        let mut details = match self.get_or_create(name) {
+            Some(d) => d,
+            None => return,
+        };
         details.last_beacon = Some(timestamp);
         details.status = Some(body.to_string());
         self.update(&details);
@@ -466,7 +494,10 @@ impl StationManager {
 
         let slot = slot_from_timestamp(timestamp);
 
-        let mut details = self.get_or_create(name);
+        let mut details = match self.get_or_create(name) {
+            Some(d) => d,
+            None => return,
+        };
 
         // Reset if date changed
         let mut bits = match (&details.beacon_activity, &details.beacon_activity_date) {
@@ -621,7 +652,7 @@ mod tests {
     const LOC_D: (f64, f64) = (-37.3035, 142.988);
 
     fn get_station(mgr: &StationManager, name: &str) -> StationDetails {
-        mgr.get_or_create(&StationName(name.to_string()))
+        mgr.get_or_create(&StationName(name.to_string())).expect("test station allocation failed")
     }
 
     #[test]
