@@ -63,6 +63,7 @@ dependencies = [
  "rusty-leveldb",
  "serde",
  "serde_json",
+ "socket2",
  "tempfile",
  "tokio",
  "tracing",

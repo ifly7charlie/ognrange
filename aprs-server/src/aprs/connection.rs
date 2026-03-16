@@ -4,6 +4,7 @@
 //! authenticates, applies a traffic filter, and streams packets.
 
 use std::time::Duration;
+use socket2::SockRef;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -106,6 +107,15 @@ async fn connect_and_stream(
     shutdown_rx: &mut mpsc::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stream = TcpStream::connect(server_addr).await?;
+
+    // Enable TCP keepalive so the kernel detects dead connections —
+    // without this, read_until hangs forever on a half-open connection
+    let sock_ref = SockRef::from(&stream);
+    let tcp_keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(10));
+    sock_ref.set_tcp_keepalive(&tcp_keepalive)?;
+
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
@@ -174,8 +184,16 @@ async fn connect_and_stream(
                 had_traffic = false;
 
                 let keepalive = format!("# {} {}\r\n", siteurl, git_version);
-                if let Err(e) = writer.write_all(keepalive.as_bytes()).await {
-                    return Err(format!("Keepalive write error: {}", e).into());
+                // Timeout the write — on a half-open TCP connection write_all
+                // can block for minutes (kernel TCP retransmissions) which
+                // stalls this entire select loop including traffic checks
+                match tokio::time::timeout(
+                    Duration::from_secs(10),
+                    writer.write_all(keepalive.as_bytes()),
+                ).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(format!("Keepalive write error: {}", e).into()),
+                    Err(_) => return Err("Keepalive write timed out (connection likely dead)".into()),
                 }
             }
 
