@@ -1,0 +1,31 @@
+#!/bin/sh
+
+# PROVIDE: ognrange_next
+# REQUIRE: DAEMON NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="ognrange_next"
+rcvar="${name}_enable"
+
+load_rc_config $name
+
+: ${ognrange_next_enable:="NO"}
+: ${ognrange_next_user:="ognrange"}
+: ${ognrange_next_dir:="/usr/local/ognrange"}
+: ${ognrange_next_node:="/usr/local/bin/node"}
+
+pidfile="/var/run/${name}.pid"
+command="/usr/sbin/daemon"
+command_args="-P ${pidfile} -r -f -S -t ${name} ${ognrange_next_node} ${ognrange_next_dir}/node_modules/.bin/next start"
+
+start_precmd="${name}_prestart"
+
+ognrange_next_prestart()
+{
+	cd ${ognrange_next_dir}
+	install -o ${ognrange_next_user} /dev/null ${pidfile}
+}
+
+run_rc_command "$1"
