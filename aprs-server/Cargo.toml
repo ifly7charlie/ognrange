@@ -27,7 +27,7 @@ socket2 = "0.6"
 tempfile = "3"
 
 [patch.crates-io]
-rusty-leveldb = { path = "rusty-leveldb-patch" }
+rusty-leveldb = { git = "https://github.com/ifly7charlie/leveldb-rs.git" }
 
 [profile.release]
 opt-level = 3
