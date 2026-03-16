@@ -2,7 +2,7 @@ import {h3IndexToSplitLong} from 'h3-js';
 
 import {searchMatchingArrowFiles, mergeRows, RowResult} from '../../../../../lib/api/searcharrow';
 
-import {MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
+import {MAXIMUM_GRAPH_AGE_MSEC, ROLLUP_PERIOD_MINUTES} from '../../../../../lib/common/config';
 
 import {dateBounds} from '../../../../../lib/common/datebounds';
 
@@ -37,11 +37,13 @@ export default async function getH3Details(req, res) {
     const now = new Date();
 
     if (!h3SplitLong) {
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
         res.status(200).json({layers: {}});
         return;
     }
 
     if (subdir !== 'global' && ignoreStation(subdir)) {
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
         res.status(404).json({error: 'invalid station name'});
         return;
     }
@@ -98,6 +100,7 @@ export default async function getH3Details(req, res) {
             .sort((a, b) => a.date.localeCompare(b.date));
     }
 
+    res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
     res.status(200).json({layers: resultByLayer});
     console.log('<-', Date.now() - now.getTime(), 'msec', layerKeys.join(','));
 }

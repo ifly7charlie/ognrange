@@ -56,7 +56,7 @@ export default async function getH3Details(req, res) {
         }, {} as any);
 
     // How long should it be cached - rollup period is good enough
-    res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+    res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
 
     // Return the selected top 5 along with the number left over so we can
     // do a proper graph

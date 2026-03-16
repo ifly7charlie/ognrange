@@ -6,7 +6,7 @@
 import {h3IndexToSplitLong, cellToParent} from 'h3-js';
 import {searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow';
 
-import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
+import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC, ROLLUP_PERIOD_MINUTES} from '../../../../../lib/common/config';
 
 import {dateBounds} from '../../../../../lib/common/datebounds';
 
@@ -62,6 +62,7 @@ export default async function getH3Details(req, res) {
     const now = new Date();
 
     if (!h3SplitLong) {
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
         res.status(200).json({layers: {}});
         return;
     }
@@ -95,6 +96,7 @@ export default async function getH3Details(req, res) {
 
     if (!globalRecord || !globalRecord.stations) {
         console.log('no record in global file');
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
         res.status(200).json({layers: {}});
         return;
     }
@@ -146,6 +148,7 @@ export default async function getH3Details(req, res) {
         resultByLayer['all'] = buildSeriesData(allResult);
     }
 
+    res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
     res.status(200).json({layers: resultByLayer});
     console.log('<-', Date.now() - now.getTime(), 'msec', layerKeys.join(','), 'rows');
 }

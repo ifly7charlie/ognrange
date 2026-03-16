@@ -89,7 +89,7 @@ export default async function handler(req, res) {
     try {
         files = readdirSync(statsDir);
     } catch {
-        res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
         res.status(200).json(response);
         return;
     }
@@ -276,6 +276,6 @@ export default async function handler(req, res) {
     uptimeHistory.sort((a, b) => a.date.localeCompare(b.date));
     response.globalUptimeHistory = uptimeHistory;
 
-    res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+    res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
     res.status(200).json(response);
 }

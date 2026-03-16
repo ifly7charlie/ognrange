@@ -218,14 +218,14 @@ export default async function handler(req, res) {
         if (fileParam && !isLatestFile(stationDir, stationName, fileParam)) {
             // Historical period — return only the dated file data (no station metadata)
             const datedData = readStationFile(join(stationDir, `${stationName}.${fileParam}.json`));
-            res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+            res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
             res.status(200).json(datedData ?? {});
             return;
         }
 
         // Latest/current period — return full station metadata
         const latestData = readStationFile(join(stationDir, `${stationName}.json`));
-        res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
         res.status(200).json(latestData ?? {});
         return;
     }
@@ -240,7 +240,7 @@ export default async function handler(req, res) {
     try {
         dirFiles = readdirSync(stationDir);
     } catch {
-        res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
         res.status(200).json({});
         return;
     }
@@ -265,6 +265,6 @@ export default async function handler(req, res) {
 
     const aggregated = aggregateStationData(allData);
 
-    res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+    res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
     res.status(200).json(aggregated);
 }
