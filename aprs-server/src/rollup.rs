@@ -305,7 +305,12 @@ pub async fn rollup_all(
                         .as_ref()
                         .and_then(|s| s.last_packet.or(s.last_beacon));
                     match last {
-                        Some(e) => format!("expired, last activity epoch {}", e.0),
+                        Some(e) => {
+                            let dt = chrono::DateTime::from_timestamp_millis(e.0 as i64)
+                                .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                                .unwrap_or_else(|| "invalid".to_string());
+                            format!("expired, last activity {} ({})", dt, e.0)
+                        }
                         None => "no activity recorded".to_string(),
                     }
                 };

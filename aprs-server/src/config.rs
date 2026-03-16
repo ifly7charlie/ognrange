@@ -38,6 +38,11 @@ pub fn output_dir(station_name: &str) -> String {
 }
 
 // APRS connection
+pub static APRS_CALLSIGN: Lazy<String> = Lazy::new(|| {
+    let cs = env_or("APRS_CALLSIGN", "OGNRANGE");
+    assert!(cs.len() <= 8, "APRS_CALLSIGN must be at most 8 characters, got '{}'", cs);
+    cs
+});
 pub static APRS_KEEPALIVE_PERIOD_MS: Lazy<u64> =
     Lazy::new(|| env_parse::<u64>("APRS_KEEPALIVE_PERIOD_SECONDS", 45) * 1000);
 pub static APRS_TRAFFIC_FILTER: Lazy<String> =

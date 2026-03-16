@@ -4,7 +4,7 @@
 //! The LevelDB handle is NOT held in the struct (it's not Send/Sync).
 //! Instead, all DB operations go through `spawn_blocking`.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::RwLock;
@@ -40,8 +40,18 @@ pub struct StationStats {
     pub count: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Deserialize an `Option<[f64; 2]>` that tolerates nulls inside the array.
+/// JSON like `[null, null]` or `[52.1, null]` becomes `None` instead of a parse error.
+fn deserialize_coord_pair<'de, D>(deserializer: D) -> Result<Option<[f64; 2]>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v: Option<[Option<f64>; 2]> = Option::deserialize(deserializer)?;
+    Ok(v.and_then(|[a, b]| Some([a?, b?])))
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct StationDetails {
     pub id: StationId,
     pub station: StationName,
@@ -49,9 +59,11 @@ pub struct StationDetails {
     pub lat: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lng: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "primary_location")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "primary_location",
+            deserialize_with = "deserialize_coord_pair")]
     pub primary_location: Option<[f64; 2]>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "previous_location")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "previous_location",
+            deserialize_with = "deserialize_coord_pair")]
     pub previous_location: Option<[f64; 2]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_packet: Option<Epoch>,

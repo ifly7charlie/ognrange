@@ -53,7 +53,7 @@ async fn connection_loop(
     mut shutdown_rx: mpsc::Receiver<()>,
     git_version: String,
 ) {
-    let callsign = "OGNRANGE";
+    let callsign = &*config::APRS_CALLSIGN;
     let siteurl = &*config::NEXT_PUBLIC_SITEURL;
     let filter = &*config::APRS_TRAFFIC_FILTER;
     let keepalive_ms = *config::APRS_KEEPALIVE_PERIOD_MS;

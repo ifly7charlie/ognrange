@@ -13,7 +13,7 @@ pub struct EpochMs(pub u64);
 pub struct StationId(pub u16);
 
 /// Station name string
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct StationName(pub String);
 
 impl StationName {

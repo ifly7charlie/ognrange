@@ -459,6 +459,9 @@ MAX_SIMULTANEOUS_ROLLUPS=100
 # helps with testing
 ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_SECONDS=60
 
+# APRS-IS login callsign, max 8 characters (default: OGNRANGE)
+APRS_CALLSIGN=OGNRANGE
+
 # how often do we need to report to the APRS server, also how often
 # we check for lost connection to the server
 APRS_KEEPALIVE_PERIOD_SECONDS=45
