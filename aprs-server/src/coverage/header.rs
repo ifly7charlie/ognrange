@@ -239,12 +239,6 @@ impl CoverageHeader {
     pub fn accumulator_meta(t: AccumulatorType, b: AccumulatorBucket, layer: Layer) -> Self {
         CoverageHeader::new(StationId(0), t, b, H3Index("00_meta".to_string()), layer)
     }
-
-    /// Legacy meta key: "accumulator/00_meta" (no layer prefix)
-    pub fn legacy_meta_key(t: AccumulatorType, b: AccumulatorBucket) -> String {
-        let tb = AccumulatorTypeAndBucket::new(t, b);
-        format!("{}/00_meta", tb.to_hex())
-    }
 }
 
 impl std::fmt::Display for CoverageHeader {
