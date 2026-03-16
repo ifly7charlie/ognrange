@@ -119,15 +119,15 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
     });
 }
 
+// Encode a date string (YYYY, YYYY-MM, or YYYY-MM-DD) as a sortable integer
+// Missing month/day default to 1 so "2026-03" encodes as 2026-03-01
+function dateToNum(dateStr: string): number {
+    const parts = dateStr.split('-');
+    return (parseInt(parts[0]) || 0) * 384 + (parseInt(parts[1]) || 1) * 32 + (parseInt(parts[2]) || 1);
+}
+
 // Scan directory for files
-export async function searchMatchingArrowFiles(
-    station: string,
-    fileDateMatch: string,
-    h3SplitLong: [number, number],
-    oldest: Date | undefined,
-    combine: (row: RowResult, date: string, layer: string) => void,
-    layers?: string[]
-) {
+export async function searchMatchingArrowFiles(station: string, dateStart: string, dateEnd: string, h3SplitLong: [number, number], oldest: Date | undefined, combine: (row: RowResult, date: string, layer: string) => void, layers?: string[]) {
     const effectiveLayers = (layers?.length ? layers : ['combined']).filter((l) => ALL_LAYER_NAMES.has(l));
     if (!effectiveLayers.length) return;
     const includeCombined = effectiveLayers.includes('combined');
@@ -138,7 +138,10 @@ export async function searchMatchingArrowFiles(
     else if (!includeCombined) layerPart = `\\.(${nonCombined.join('|')})`;
     else layerPart = '';
 
-    const fileMatcher = new RegExp(`^(day|month|year)\\.([0-9-]+)${layerPart}\\.arrow\\.gz$`);
+    const fileMatcher = new RegExp(`(day|month|year)\\.([0-9-]+)${layerPart}\\.arrow\\.gz$`);
+
+    const queryStart = dateStart ? dateToNum(dateStart) : 0;
+    const queryEnd = dateEnd ? dateToNum(dateEnd) : Infinity;
 
     const pending = new Map<string, Promise<string>>();
     try {
@@ -150,7 +153,8 @@ export async function searchMatchingArrowFiles(
             })
             .filter((x): x is NonNullable<typeof x> => {
                 if (!x) return false;
-                if (x.date.substring(0, fileDateMatch.length) !== fileDateMatch) return false;
+                const fileNum = dateToNum(x.date);
+                if (fileNum < queryStart || fileNum > queryEnd) return false;
                 // Daily layers use day.* files; non-daily layers use month/year files
                 const isDaily = shouldProduceOutput(x.layer as Layer, 'day');
                 return isDaily ? x.periodType === 'day' : x.periodType !== 'day';

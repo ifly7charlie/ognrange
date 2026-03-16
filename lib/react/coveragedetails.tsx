@@ -169,7 +169,7 @@ export function CoverageDetails({
 
     const {data: byDay} = useSWR(
         key == doFetch && h3 //
-            ? `/api/station/${station || 'global'}/h3details/${h3}?file=${file}&lockedH3=${isLocked ? 1 : 0}&layers=${layersParam}`
+            ? `/api/station/${station || 'global'}/h3details/${h3}?dateStart=${dateRange?.start || file}&dateEnd=${dateRange?.end || file}&lockedH3=${isLocked ? 1 : 0}&layers=${layersParam}`
             : null,
         fetcher
     );
@@ -255,7 +255,7 @@ export function CoverageDetails({
                         <>
                             <div style={{height: '10px'}}></div>
                             {extraVisible ? ( //
-                                <OtherStationsDetails h3={details.h3} file={file} station={station} locked={locked} layers={layers} selectedLayer={selectedLayer} />
+                                <OtherStationsDetails h3={details.h3} file={file} station={station} locked={locked} layers={layers} selectedLayer={selectedLayer} dateRange={dateRange} />
                             ) : (
                                 <span>Loading...</span>
                             )}

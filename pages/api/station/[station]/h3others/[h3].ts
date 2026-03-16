@@ -8,7 +8,7 @@ import {searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles}
 
 import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
-import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
+import {dateBounds} from '../../../../../lib/common/datebounds';
 
 import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
@@ -70,21 +70,25 @@ export default async function getH3Details(req, res) {
     const parentH3 = cellToParent(req.query.h3, H3_GLOBAL_CELL_LEVEL);
     const parentH3SplitLong = h3IndexToSplitLong(parentH3);
 
-    // Get a Year/Month component from the file
-    let fileDateMatches = selectedFile?.match(/^[a-z]+\.([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
-    let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
+    // Resolve date range from dateStart/dateEnd params, falling back to file param
+    const dateStartParam = (req.query.dateStart as string) || selectedFile || 'year';
+    const dateEndParam = (req.query.dateEnd as string) || selectedFile || 'year';
+    const startBounds = dateBounds(dateStartParam);
+    const endBounds = dateBounds(dateEndParam);
+    const rangeStart = startBounds?.start || `${now.getUTCFullYear()}-01-01`;
+    const rangeEnd = endBounds?.end || `${now.getUTCFullYear()}-12-31`;
     let oldest: Date | undefined = undefined;
-    if (!fileDateMatch) {
+    if (!req.query.dateStart && !req.query.dateEnd) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
-            fileDateMatch = '' + now.getUTCFullYear();
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
-        } else {
-            fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
-    const globalFileName = `${fileDateMatch.indexOf('-') != -1 ? 'month' : 'year'}.${fileDateMatch}`;
 
-    console.log(now.toISOString(), ' h3others', selectedFile, fileDateMatch, fileDateMatches, req.query.h3, h3SplitLong);
+    // Build global file name from rangeStart for the station lookup
+    const rangeStartParts = rangeStart.split('-');
+    const globalFileName = rangeStartParts.length >= 2 ? `month.${rangeStartParts[0]}-${rangeStartParts[1]}` : `year.${rangeStartParts[0]}`;
+
+    console.log(now.toISOString(), ' h3others', selectedFile, rangeStart, rangeEnd, req.query.h3, h3SplitLong);
 
     // Find the enclosing global record
     const globalRecord = await searchArrowFileInline('global/global.' + globalFileName + '.arrow.gz', parentH3SplitLong);
@@ -108,7 +112,8 @@ export default async function getH3Details(req, res) {
         } else {
             await searchMatchingArrowFiles(
                 stationName,
-                fileDateMatch,
+                rangeStart,
+                rangeEnd,
                 h3SplitLong,
                 oldest,
                 (row, date, layer) => {

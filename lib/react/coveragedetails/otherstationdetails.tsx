@@ -27,7 +27,7 @@ import graphcolours from '../graphcolours';
 //
 // Other detailed coverage for this cell
 // COSTLY
-export function OtherStationsDetails(props: {h3: string; file: string; station: string; locked: boolean; layers?: string[]; selectedLayer?: string}) {
+export function OtherStationsDetails(props: {h3: string; file: string; station: string; locked: boolean; layers?: string[]; selectedLayer?: string; dateRange?: {start: string; end: string}}) {
     const [doFetch, setDoFetch] = useState(null);
     const selectedLayer = props.selectedLayer ?? 'all';
     const {t} = useTranslation('common', {keyPrefix: 'details.stations'});
@@ -48,10 +48,12 @@ export function OtherStationsDetails(props: {h3: string; file: string; station: 
     const layersParam = props.layers?.join(',') || 'combined';
 
     // What URL to use - both return same but act differently
+    const dateStart = props.dateRange?.start || props.file;
+    const dateEnd = props.dateRange?.end || props.file;
     const url = () =>
         isGlobal //
-            ? `/api/station/global/h3summary/${props.h3}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}&layers=${layersParam}`
-            : `/api/station/${props.station}/h3others/${props.h3}?file=${props.file}&lockedH3=${props?.locked ? 1 : 0}&layers=${layersParam}`;
+            ? `/api/station/global/h3summary/${props.h3}?dateStart=${dateStart}&dateEnd=${dateEnd}&lockedH3=${props?.locked ? 1 : 0}&layers=${layersParam}`
+            : `/api/station/${props.station}/h3others/${props.h3}?dateStart=${dateStart}&dateEnd=${dateEnd}&lockedH3=${props?.locked ? 1 : 0}&layers=${layersParam}`;
 
     // Actually load the data when it's time
     const {data: byDay} = useSWR(props.station + props?.h3 == doFetch && props?.h3 ? url() : null, fetcher);

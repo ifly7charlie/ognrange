@@ -4,7 +4,7 @@ import {searchMatchingArrowFiles, mergeRows, RowResult} from '../../../../../lib
 
 import {MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
 
-import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
+import {dateBounds} from '../../../../../lib/common/datebounds';
 
 import {H3DetailsOutputStructure} from '../../../../../lib/api/types';
 
@@ -46,25 +46,27 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    // Get a Year/Month component from the file
-    let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
-    let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
+    // Resolve date range from dateStart/dateEnd params, falling back to file param
+    const dateStartParam = (req.query.dateStart as string) || selectedFile || 'year';
+    const dateEndParam = (req.query.dateEnd as string) || selectedFile || 'year';
+    const startBounds = dateBounds(dateStartParam);
+    const endBounds = dateBounds(dateEndParam);
+    const rangeStart = startBounds?.start || `${now.getUTCFullYear()}-01-01`;
+    const rangeEnd = endBounds?.end || `${now.getUTCFullYear()}-12-31`;
     let oldest: Date | undefined = undefined;
-    if (!fileDateMatch) {
+    if (!req.query.dateStart && !req.query.dateEnd) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
-            fileDateMatch = '' + now.getUTCFullYear();
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
-        } else {
-            fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
         }
     }
-    console.log(now.toISOString(), 'h3details', subdir, selectedFile, fileDateMatch, oldest?.toISOString(), req.query.h3, h3SplitLong, lockedH3);
+    console.log(now.toISOString(), 'h3details', subdir, selectedFile, rangeStart, rangeEnd, oldest?.toISOString(), req.query.h3, h3SplitLong, lockedH3);
 
     const rowsByLayer: Record<string, Record<string, RowResult[]>> = {};
 
     await searchMatchingArrowFiles(
         subdir,
-        fileDateMatch,
+        rangeStart,
+        rangeEnd,
         h3SplitLong,
         oldest,
         (row, date, layer) => {
