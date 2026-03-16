@@ -177,31 +177,11 @@ pub async fn rollup_all(
         // transitions, so they won't be re-purged
     }
 
-    // Safety: if >2% of stations became invalid, don't purge data (something is wrong)
-    // but still update validity flags so station list reflects actual state
-    if invalid_count as f64 / (valid_stations.len().max(1) as f64) > 0.02 {
-        warn!(
-            "Too many invalid stations ({}), not purging any",
-            invalid_count
-        );
-    } else {
-        need_purge = invalid_count > 0 || moved_count > 0;
-    }
-
-    info!(
-        "performing rollup of {} valid stations + global, {} invalid, {} moved",
-        valid_stations.len(),
-        invalid_count,
-        moved_count,
-    );
-
-    // Update station validity in the station manager
+    // Update station validity in the station manager (always, regardless of purge safety)
     for station in &all_station_details {
         let is_valid = valid_stations.contains(&station.id);
         let was_moved = station.moved || confirmed_moves.contains(&station.id);
         if station.valid != is_valid || was_moved {
-            // For confirmed moves, re-read from station manager to avoid
-            // overwriting the updated state with the stale snapshot
             let mut updated = if confirmed_moves.contains(&station.id) {
                 station_manager.get_or_create(&station.station)
                     .expect("station must exist during rollup")
@@ -220,6 +200,27 @@ pub async fn rollup_all(
             station_manager.update(&updated);
         }
     }
+
+    // Safety: if >2% of stations became invalid, don't purge data (something is wrong).
+    // Add all back to valid_stations so global rollup keeps their coverage.
+    if invalid_count as f64 / (valid_stations.len().max(1) as f64) > 0.02 {
+        warn!(
+            "Too many invalid stations ({}), not purging any",
+            invalid_count
+        );
+        for station in &all_station_details {
+            valid_stations.insert(station.id);
+        }
+    } else {
+        need_purge = invalid_count > 0 || moved_count > 0;
+    }
+
+    info!(
+        "performing rollup of {} valid stations + global, {} invalid, {} moved",
+        valid_stations.len(),
+        invalid_count,
+        moved_count,
+    );
 
     // Determine which layers to process
     let layers: Vec<Layer> = if let Some(ref enabled) = *crate::config::ENABLED_LAYERS {
