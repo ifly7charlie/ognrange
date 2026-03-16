@@ -124,6 +124,12 @@ pub struct StationDetails {
     /// Consecutive packets at locations matching neither primary nor previous
     #[serde(default)]
     pub new_location_count: u16,
+    /// Epoch when the station's coverage data was last purged
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purged_at: Option<Epoch>,
+    /// Reason for the last data purge (e.g. "moved", "expired")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purge_reason: Option<String>,
     /// Last time a packet was received near `primary_location`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen_at_primary: Option<Epoch>,
@@ -310,6 +316,8 @@ impl StationManager {
             bouncing: false,
             mobile: false,
             new_location_count: 0,
+            purged_at: None,
+            purge_reason: None,
             last_seen_at_primary: None,
             last_seen_at_previous: None,
             valid: false,
@@ -552,6 +560,8 @@ impl StationManager {
             bouncing: false,
             mobile: false,
             new_location_count: 0,
+            purged_at: None,
+            purge_reason: None,
             last_seen_at_primary: None,
             last_seen_at_previous: None,
             valid: false,
@@ -687,6 +697,8 @@ mod tests {
             bouncing: false,
             mobile: false,
             new_location_count: 0,
+            purged_at: None,
+            purge_reason: None,
             last_seen_at_primary: None,
             last_seen_at_previous: None,
             valid: false,

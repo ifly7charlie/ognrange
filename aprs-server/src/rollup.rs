@@ -206,6 +206,11 @@ pub async fn rollup_all(
             updated.valid = is_valid;
             if was_moved {
                 updated.moved = false;
+                updated.purged_at = Some(crate::types::Epoch(now_epoch));
+                updated.purge_reason = Some("moved".into());
+            } else if !is_valid && station.valid {
+                updated.purged_at = Some(crate::types::Epoch(now_epoch));
+                updated.purge_reason = Some("expired".into());
             }
             station_manager.update(&updated);
         }

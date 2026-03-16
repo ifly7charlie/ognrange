@@ -78,6 +78,8 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `bouncing` | `bool` | Station is oscillating between two locations, or a move is pending confirmation |
 | `mobile` | `bool` | Station appears to be on a moving vehicle (3+ consecutive new locations) |
 | `newLocationCount` | `u16` | Consecutive packets at locations matching neither primary nor previous |
+| `purgedAt` | `u32?` | Unix timestamp when the station's coverage data was last purged |
+| `purgeReason` | `string?` | Reason for the last data purge (`"moved"` or `"expired"`) |
 | `lastSeenAtPrimary` | `u32?` | Unix timestamp of the last packet received near `primary_location` |
 | `lastSeenAtPrevious` | `u32?` | Unix timestamp of the last packet received near `previous_location` |
 | `valid` | `bool` | Station is actively contributing to coverage data |
@@ -179,7 +181,7 @@ Each incoming packet is compared against both known locations using a distance t
 Three scenarios emerge from this model:
 
 - **Bouncing** (two stations sharing a callsign): packets alternate between primary and previous. Both `lastSeenAt*` timestamps stay fresh. Neither decays, so no purge occurs.
-- **Moved** (test→production relocation): packets arrive only at the new primary. `lastSeenAtPrevious` ages. After `STATION_MOVE_CONFIRM_DAYS` (default 30) without activity at the previous location, rollup confirms the move: `moved = true`, data is purged.
+- **Moved** (test→production relocation): packets arrive only at the new primary. `lastSeenAtPrevious` ages. After `STATION_MOVE_CONFIRM_DAYS` (default 7) without activity at the previous location, rollup confirms the move: `moved = true`, data is purged.
 - **Mobile** (receiver on a vehicle): every packet is at a new location. After 3 consecutive new locations, `mobile = true`. `lastSeenAtPrevious` is always recent (refreshed on each rotation) so no confirmed move occurs. When the station stops moving and sends a packet at its current primary location, `mobile` is cleared and the station settles.
 
 Moved stations are marked `valid = false` during rollup and excluded from coverage processing until their data is re-established at the new location.

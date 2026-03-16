@@ -27,6 +27,7 @@ import {AvailableFiles} from './coveragedetails/availablefiles';
 import {ActivityDetails} from './coveragedetails/activitydetails';
 import {UptimeBar} from './coveragedetails/uptimebar';
 import {BeaconActivity} from './coveragedetails/beaconactivity';
+import {StationPosition} from './coveragedetails/stationposition';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 
 import {formatEpoch} from './formatdate';
@@ -276,16 +277,27 @@ export function CoverageDetails({
                 <AvailableFiles station={station} setFile={setFile} displayType="month" />
                 <AvailableFiles station={station} setFile={setFile} displayType="year" />
 
+                {stationData?.purgedAt ? (
+                    <>
+                        <hr />
+                        <b>{'\u26A0\uFE0F '}{t('purge.title')}</b>
+                        <br />
+                        {t(`purge.reason_${stationData.purgeReason || 'unknown'}`)}
+                        <br />
+                        {t('purge.when', {when: formatEpoch(stationData.purgedAt)})}
+                        <hr />
+                    </>
+                ) : null}
                 <ActivityDetails activity={stationData?.activity} />
                 <UptimeBar uptime={stationData?.uptime} />
                 <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} />
-
+                <br />
                 {stationData?.stats ? (
                     <>
                         <b>{isRange ? t('statistics.title_range') : t('statistics.title', {when: formatEpoch(stationData.outputEpoch)})}</b>
                         <table>
                             <tbody>
-                                {Object.keys(stationData.stats).map((key) => (
+                                {Object.keys(stationData.stats).filter((key) => key !== 'ignoredPAW').map((key) => (
                                     <tr key={key}>
                                         <td>{t(`statistics.${key}`)}</td>
                                         <td>{stationData.stats[key]}</td>
@@ -295,12 +307,32 @@ export function CoverageDetails({
                         </table>
                     </>
                 ) : null}
-                {stationData?.notice ? (
+                {(stationData?.mobile || stationData?.moved || stationData?.bouncing) ? (
+                    <StationPosition
+                        mobile={stationData.mobile}
+                        moved={stationData.moved}
+                        bouncing={stationData.bouncing}
+                        primaryLocation={stationData.primary_location}
+                        previousLocation={stationData.previous_location}
+                        lastSeenAtPrimary={stationData.lastSeenAtPrimary}
+                        lastSeenAtPrevious={stationData.lastSeenAtPrevious}
+                        mapboxToken={env?.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || ''}
+                    />
+                ) : null}
+                {stationData?.status ? (
                     <>
                         <br />
-                        <b>Notice</b>
+                        <b>{t('status.title')}</b>
                         <br />
-                        {stationData.notice}
+                        <div
+                            style={{
+                                width: '350px',
+                                overflowWrap: 'anywhere',
+                                fontSize: 'small'
+                            }}
+                        >
+                            {stationData.status}
+                        </div>
                     </>
                 ) : null}
                 {stationData?.lastLocation || stationData?.lastPacket || stationData?.lastBeacon || stationData?.outputDate ? (
@@ -335,22 +367,6 @@ export function CoverageDetails({
                                 ) : null}
                             </tbody>
                         </table>
-                    </>
-                ) : null}
-                {stationData?.status ? (
-                    <>
-                        <br />
-                        <b>{t('status.title')}</b>
-                        <br />
-                        <div
-                            style={{
-                                width: '350px',
-                                overflowWrap: 'anywhere',
-                                fontSize: 'small'
-                            }}
-                        >
-                            {stationData.status}
-                        </div>
                     </>
                 ) : null}
 

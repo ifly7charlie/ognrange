@@ -10,11 +10,18 @@ interface StationJson {
     station?: string;
     lat?: number | null;
     lng?: number | null;
+    primary_location?: [number, number] | null;
+    previous_location?: [number, number] | null;
     status?: string;
     notice?: string;
     moved?: boolean;
     bouncing?: boolean;
+    mobile?: boolean;
     valid?: boolean;
+    purgedAt?: number | null;
+    purgeReason?: string | null;
+    lastSeenAtPrimary?: number | null;
+    lastSeenAtPrevious?: number | null;
     outputEpoch?: number;
     outputDate?: string;
     lastOutputEpoch?: number;
@@ -78,9 +85,16 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
         lng: latest.lng,
         status: latest.status,
         notice: latest.notice,
+        primary_location: latest.primary_location,
+        previous_location: latest.previous_location,
         moved: latest.moved,
         bouncing: latest.bouncing,
+        mobile: latest.mobile,
         valid: latest.valid,
+        purgedAt: latest.purgedAt,
+        purgeReason: latest.purgeReason,
+        lastSeenAtPrimary: latest.lastSeenAtPrimary,
+        lastSeenAtPrevious: latest.lastSeenAtPrevious,
         outputEpoch: latest.outputEpoch,
         outputDate: latest.outputDate,
         lastOutputEpoch: latest.lastOutputEpoch,

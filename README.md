@@ -425,8 +425,12 @@ H3_GLOBAL_CELL_LEVEL=7
 # until approximately this many hours have passed
 FORGET_AIRCRAFT_AFTER_HOURS=12
 
-# How far a station is allowed to move without resetting the history for it
-STATION_MOVE_THRESHOLD_KM = 2
+# How far a station is allowed to move (in km) without triggering move detection
+STATION_MOVE_THRESHOLD_KM=0.2
+
+# How many days a station must remain at a new location (with no packets from
+# the original location) before the move is confirmed and old data is purged
+STATION_MOVE_CONFIRM_DAYS=7
 
 # If we haven't had traffic in this long then we expire the station and
 # delete all the history

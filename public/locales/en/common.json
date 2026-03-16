@@ -169,6 +169,21 @@
             "lastRollup": "Last rollup",
             "activeRanges": "{{count}} active periods"
         },
+        "purge": {
+            "title": "Data Purged",
+            "reason_moved": "Coverage data was reset because this station moved to a new location.",
+            "reason_expired": "Coverage data was reset because this station was inactive for too long.",
+            "reason_unknown": "Coverage data was reset.",
+            "when": "Purged at {{when}}"
+        },
+        "position": {
+            "title": "Station Position",
+            "mobile": "This station appears to be mobile (on a moving vehicle).",
+            "moved": "This station has moved. Coverage data has been reset.",
+            "bouncing": "This station is alternating between two locations.",
+            "primary": "Current location",
+            "previous": "Previous location"
+        },
         "status": {
             "title": "Last status message"
         },

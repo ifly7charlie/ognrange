@@ -74,7 +74,7 @@ pub static FORGET_AIRCRAFT_AFTER_SECS: Lazy<u64> =
 pub static STATION_MOVE_THRESHOLD_KM: Lazy<f64> =
     Lazy::new(|| env_parse("STATION_MOVE_THRESHOLD_KM", 0.2));
 pub static STATION_MOVE_CONFIRM_SECS: Lazy<u64> =
-    Lazy::new(|| env_parse::<u64>("STATION_MOVE_CONFIRM_DAYS", 30) * 3600 * 24);
+    Lazy::new(|| env_parse::<u64>("STATION_MOVE_CONFIRM_DAYS", 7) * 3600 * 24);
 pub static STATION_EXPIRY_TIME_SECS: Lazy<u64> =
     Lazy::new(|| env_parse::<u64>("STATION_EXPIRY_TIME_DAYS", 31) * 3600 * 24);
 

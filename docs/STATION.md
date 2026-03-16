@@ -43,6 +43,8 @@ The file contains all `StationDetails` fields (see [STATIONS.md](./STATIONS.md#s
   "bouncing": false,
   "mobile": false,
   "lastSeenAtPrimary": 1741968000,
+  "purgedAt": null,
+  "purgeReason": null,
   "lastSeenAtPrevious": null,
   "valid": true,
   "layerMask": 3,
