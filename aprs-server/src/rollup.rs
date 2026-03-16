@@ -177,15 +177,13 @@ pub async fn rollup_all(
         // transitions, so they won't be re-purged
     }
 
-    // Safety: if >2% of stations became invalid, don't purge (something is wrong)
+    // Safety: if >2% of stations became invalid, don't purge data (something is wrong)
+    // but still update validity flags so station list reflects actual state
     if invalid_count as f64 / (valid_stations.len().max(1) as f64) > 0.02 {
         warn!(
             "Too many invalid stations ({}), not purging any",
             invalid_count
         );
-        for station in &all_station_details {
-            valid_stations.insert(station.id);
-        }
     } else {
         need_purge = invalid_count > 0 || moved_count > 0;
     }
@@ -323,6 +321,17 @@ pub async fn rollup_all(
                 };
                 info!("clearing database for {}: {}", station_name, reason);
                 storage.purge_station(&station_name);
+                continue;
+            }
+        }
+
+        // Skip invalid stations entirely -- no rollup, no arrow output
+        if !is_global {
+            let is_invalid = station_meta
+                .as_ref()
+                .map(|s| !valid_stations.contains(&s.id))
+                .unwrap_or(false);
+            if is_invalid {
                 continue;
             }
         }
