@@ -339,9 +339,27 @@ the number of H3s in the database. This means the global database will
 take longer to run than the stations, it's also why stations are separated
 and global uses a lower resolution H3.
 
-## configuration
+## Logging
 
-config file is .env.local for aprs collector, for the front end it
+Logging defaults to `info` level. You can control verbosity via the
+`RUST_LOG` environment variable (see
+[`tracing-subscriber` EnvFilter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)
+for full syntax).
+
+```
+# show debug output for the aprs-server only
+RUST_LOG=aprs_server=debug
+
+# enable trace logging for everything (very noisy)
+RUST_LOG=trace
+```
+
+Output destination is controlled by `LOG_STDOUT` (default 1) and
+`LOG_SYSLOG` (default 0, Unix only).
+
+## Configuration
+
+Config file is .env.local for aprs collector, for the front end it
 follows nextjs naming convention NEXT_PUBLIC_XX goes to browser!
 
 See `lib/common/config.ts` for the latest values and documentation of

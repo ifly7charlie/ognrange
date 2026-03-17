@@ -283,6 +283,9 @@ async fn main() {
 fn init_logging() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let stdout_layer = if *LOG_STDOUT {
         Some(
@@ -301,6 +304,7 @@ fn init_logging() {
     };
 
     tracing_subscriber::registry()
+        .with(filter)
         .with(stdout_layer)
         .with(syslog_layer)
         .init();
@@ -310,6 +314,9 @@ fn init_logging() {
 fn init_logging() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let stdout_layer = if *LOG_STDOUT {
         Some(
@@ -322,6 +329,7 @@ fn init_logging() {
     };
 
     tracing_subscriber::registry()
+        .with(filter)
         .with(stdout_layer)
         .init();
 }
