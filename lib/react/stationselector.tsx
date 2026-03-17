@@ -6,7 +6,7 @@ import {useTranslation} from 'next-i18next';
 
 import {Checkbox} from './checkbox';
 
-import {useStationListMeta} from './stationmeta';
+import {useStationListMetaUnfiltered} from './stationmeta';
 
 export function StationSelector({
     station, //
@@ -29,7 +29,7 @@ export function StationSelector({
         {label: t('stations.global'), value: ''}
     ];
 
-    const stationMeta = useStationListMeta();
+    const stationMeta = useStationListMetaUnfiltered();
     const params = useSearchParams();
     const allStations = !!parseInt(params.get('allStations')?.toString() ?? '0');
 
@@ -44,12 +44,15 @@ export function StationSelector({
 
     const findStation = useCallback(
         async (s: string): Promise<{value: string; label: string}[]> => {
-            if (s.length >= 2) {
+            if (s.length >= 2 && stationMeta) {
                 try {
                     let re = new RegExp(s, 'i');
 
                     const p = stationMeta.name
-                        .filter((v) => v.match(re))
+                        .filter((v, index) => {
+                            if (!allStations && stationMeta.valid && !stationMeta.valid[index]) return false;
+                            return v.match(re);
+                        })
                         .map((station) => {
                             return {value: station, label: station};
                         });
@@ -61,7 +64,7 @@ export function StationSelector({
             }
             return [{value: '', label: t('stations.global')}];
         },
-        [stationMeta.length]
+        [stationMeta, allStations]
     );
     const selectStationOnChange = useCallback(
         (v: {value: string}) => {
