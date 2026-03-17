@@ -24,7 +24,7 @@ export function SlotStrip({hex, cellHeight, colorFn}: {hex: string; cellHeight: 
                         flex: '1 1 0',
                         height: cellHeight,
                         background: colorFn ? colorFn(i, active) : active ? graphcolours[0] : '#eee',
-                        borderRight: i % SLOTS_PER_HOUR === SLOTS_PER_HOUR - 1 ? '1px solid #ccc' : undefined
+                        borderRight: i % (SLOTS_PER_HOUR * 3) === SLOTS_PER_HOUR * 3 - 1 ? '1px solid #ccc' : undefined
                     }}
                 />
             );

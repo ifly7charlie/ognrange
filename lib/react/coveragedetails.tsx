@@ -328,7 +328,7 @@ export function CoverageDetails({
                 {serverUptimePercent != null && serverUptimePercent < 100 && (
                     <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
                 )}
-                <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} />
+                <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} />
                 <br />
                 {stationData?.stats ? (
                     <>

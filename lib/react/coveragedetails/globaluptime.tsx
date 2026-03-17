@@ -1,7 +1,8 @@
-import {useMemo} from 'react';
+import {useMemo, useCallback} from 'react';
 import useSWR from 'swr';
 import {useTranslation} from 'next-i18next';
 
+import graphcolours from '../graphcolours';
 import {SlotStrip, HourLabels} from './slotstrip';
 import {UptimeBar} from './uptimebar';
 import type {ProtocolStatsApiResponse} from '../../common/protocolstats';
@@ -23,6 +24,15 @@ export function GlobalUptimeCard({dateRange}: {dateRange?: {start: string; end: 
     const {data} = useSWR<ProtocolStatsApiResponse>(statsUrl, fetcher);
 
     const uptime = data?.globalUptime;
+    // Slots are 1-indexed (1–144); index i is future when i >= uptime.slot
+    const uptimeColorFn = useCallback(
+        (slot: number, active: boolean): string => {
+            if (uptime && slot >= uptime.slot) return '#cad5e1';
+            return active ? graphcolours[0] : '#eee';
+        },
+        [uptime?.slot]
+    );
+
     if (!uptime) return null;
 
     return (
@@ -31,7 +41,7 @@ export function GlobalUptimeCard({dateRange}: {dateRange?: {start: string; end: 
             <b>{t('title')}</b>
             <div style={{margin: '4px 0'}}>
                 <HourLabels />
-                <SlotStrip hex={uptime.activity} cellHeight={16} />
+                <SlotStrip hex={uptime.activity} cellHeight={16} colorFn={uptimeColorFn} />
             </div>
             <UptimeBar uptime={uptime.uptime} label={tDetails('uptime_title')} sublabel={t('uptime', {percent: uptime.uptime.toFixed(1)})} />
             <div style={{fontSize: '0.8rem', color: '#888', marginTop: '4px'}}>

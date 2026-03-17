@@ -25,18 +25,22 @@ function Legend() {
     );
 }
 
-function makeServerOverlayColorFn(serverHex: string): (slot: number, active: boolean) => string {
+// currentSlot is 1-indexed (1–144); slot index i is future when i >= currentSlot
+function makeColorFn(serverHex?: string, currentSlot?: number): (slot: number, active: boolean) => string {
     return (slot: number, active: boolean) => {
+        if (currentSlot !== undefined && slot >= currentSlot) return '#cad5e1';
         if (active) return graphcolours[0];
-        const serverUp = isSlotActive(serverHex, slot);
-        return serverUp ? '#eee' : SERVER_DOWN_COLOR;
+        if (serverHex && !isSlotActive(serverHex, slot)) return SERVER_DOWN_COLOR;
+        return '#eee';
     };
 }
 
 /** Single-day beacon activity: horizontal strip of 144 slots */
-function SingleDayView({hex, date, serverUptimeHex}: {hex: string; date?: string; serverUptimeHex?: string}) {
+function SingleDayView({hex, date, serverUptimeHex, currentSlot}: {hex: string; date?: string; serverUptimeHex?: string; currentSlot?: number}) {
     const {t} = useTranslation('common', {keyPrefix: 'details.beacon'});
-    const colorFn = useMemo(() => (serverUptimeHex ? makeServerOverlayColorFn(serverUptimeHex) : undefined), [serverUptimeHex]);
+    const today = new Date().toISOString().slice(0, 10);
+    const slotForDay = date === today ? currentSlot : undefined;
+    const colorFn = useMemo(() => makeColorFn(serverUptimeHex, slotForDay), [serverUptimeHex, slotForDay]);
     return (
         <>
             <br />
@@ -52,9 +56,10 @@ function SingleDayView({hex, date, serverUptimeHex}: {hex: string; date?: string
 }
 
 /** Multi-day beacon activity: punchcard with one row per day */
-function MultiDayView({days, serverUptime}: {days: {date: string; bitvector: string}[]; serverUptime?: {date: string; activity: string; uptime: number}[] | null}) {
+function MultiDayView({days, serverUptime, currentSlot}: {days: {date: string; bitvector: string}[]; serverUptime?: {date: string; activity: string; uptime: number}[] | null; currentSlot?: number}) {
     const {t} = useTranslation('common', {keyPrefix: 'details.beacon'});
     const sorted = [...days].sort((a, b) => a.date.localeCompare(b.date));
+    const today = new Date().toISOString().slice(0, 10);
 
     const serverMap = useMemo(() => {
         if (!serverUptime) return null;
@@ -70,9 +75,10 @@ function MultiDayView({days, serverUptime}: {days: {date: string; bitvector: str
     const colorFnForDay = useCallback(
         (date: string) => {
             const hex = serverMap?.get(date);
-            return hex ? makeServerOverlayColorFn(hex) : undefined;
+            const slotForDay = date === today ? currentSlot : undefined;
+            return makeColorFn(hex, slotForDay);
         },
-        [serverMap]
+        [serverMap, currentSlot, today]
     );
 
     return (
@@ -99,12 +105,14 @@ export function BeaconActivity({
     data,
     date,
     days,
-    serverUptime
+    serverUptime,
+    currentSlot
 }: {
     data?: string;
     date?: string;
     days?: {date: string; bitvector: string}[];
     serverUptime?: {date: string; activity: string; uptime: number}[] | null;
+    currentSlot?: number;
 }) {
     // Find matching server uptime entry for single-day view
     const serverUptimeHex = useMemo(() => {
@@ -114,10 +122,10 @@ export function BeaconActivity({
     }, [date, serverUptime]);
 
     if (days && days.length > 1) {
-        return <MultiDayView days={days} serverUptime={serverUptime} />;
+        return <MultiDayView days={days} serverUptime={serverUptime} currentSlot={currentSlot} />;
     }
     if (data) {
-        return <SingleDayView hex={data} date={date} serverUptimeHex={serverUptimeHex} />;
+        return <SingleDayView hex={data} date={date} serverUptimeHex={serverUptimeHex} currentSlot={currentSlot} />;
     }
     return null;
 }
