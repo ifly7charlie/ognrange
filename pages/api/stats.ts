@@ -10,7 +10,7 @@ const statsDir = join(OUTPUT_PATH, 'stats');
 
 // Match dated daily files: protocol-stats.YYYY-MM-DD.json.gz
 const dailyFilePattern = /^protocol-stats\.(\d{4}-\d{2}-\d{2})\.json\.gz$/;
-const uptimeFilePattern = /^global-uptime\.(\d{4}-\d{2}-\d{2})\.json$/;
+const uptimeFilePattern = /^global-uptime\.(\d{4}-\d{2}-\d{2})\.json\.gz$/;
 
 function readJsonFile<T>(filePath: string): T | null {
     try {
@@ -256,7 +256,7 @@ export default async function handler(req, res) {
     }
 
     // Global uptime: read live file
-    response.globalUptime = readJsonFile<GlobalUptimeData>(join(statsDir, 'global-uptime.json'));
+    response.globalUptime = readJsonFile<GlobalUptimeData>(join(statsDir, 'global-uptime.json.gz'));
 
     // Global uptime history: scan dated files in the stats dir
     const uptimeHistory: GlobalUptimeHistoryEntry[] = [];
