@@ -118,6 +118,9 @@ pub struct StationDetails {
     /// Station uptime today as a percentage (0.0–100.0). Computed at output time, not persisted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime: Option<f32>,
+    /// Human-readable layer names derived from layer_mask. Computed at output time, not persisted.
+    #[serde(skip_deserializing)]
+    pub layers: Vec<String>,
 }
 
 /// Station status manager with thread-safe access.
@@ -210,6 +213,7 @@ impl StationManager {
                     }
                     let station_name = StationName(name);
                     details.station = station_name.clone();
+                    details.layers = crate::layers::layer_names_from_mask(details.layer_mask.unwrap_or(0));
                     self.station_ids
                         .write()
                         .unwrap()
@@ -311,6 +315,7 @@ impl StationManager {
             beacon_activity: None,
             beacon_activity_date: None,
             uptime: None,
+            layers: Vec::new(),
         };
 
         info!(
@@ -561,6 +566,7 @@ impl StationManager {
             beacon_activity: None,
             beacon_activity_date: None,
             uptime: None,
+            layers: Vec::new(),
         }];
         result.extend(
             self.stations.read().unwrap().values()
@@ -617,6 +623,7 @@ mod tests {
             beacon_activity: None,
             beacon_activity_date: None,
             uptime: None,
+            layers: Vec::new(),
         }
     }
 

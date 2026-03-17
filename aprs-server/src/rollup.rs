@@ -1226,17 +1226,6 @@ fn write_station_json(
         current_slot,
     );
 
-    // Compute layers array from layer_mask
-    let layers_list: Vec<&str> = if let Some(mask) = station_meta.layer_mask {
-        crate::layers::ALL_LAYERS
-            .iter()
-            .filter(|l| mask & l.bit_mask() != 0)
-            .map(|l| l.name())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
     // Build the JSON: serialize StationDetails then merge in extra fields
     let mut json = match serde_json::to_value(station_meta) {
         Ok(v) => v,
@@ -1248,7 +1237,6 @@ fn write_station_json(
 
     if let Some(obj) = json.as_object_mut() {
         obj.insert("uptime".to_string(), serde_json::json!(uptime));
-        obj.insert("layers".to_string(), serde_json::json!(layers_list));
         if let Some(act) = day_activity {
             obj.insert("activity".to_string(), serde_json::to_value(act).unwrap_or_default());
         }
@@ -1547,30 +1535,41 @@ pub async fn rollup_startup(
                 .find(|s| s.station.as_str() == station_name);
 
             // Build set of existing destination files from the all_accumulators we already collected
+            // Also include expected accumulator files — a destination may not exist in the DB yet
+            // (e.g. first bucket of a new day) but is still valid to roll up into.
             let all_dest_files: HashSet<String> = all_accumulators.iter()
                 .map(|(_, _, _, file)| file.clone())
+                .chain([&expected.day, &expected.month, &expected.year, &expected.yearnz]
+                    .iter()
+                    .filter(|e| !e.file.is_empty())
+                    .map(|e| e.file.clone()))
                 .collect();
 
             for ((_bucket, layer), acc) in &hanging_buckets {
                 let (current_start, dest_files) = acc.describe();
 
-                // Check which destination buckets are missing
+                // Check which destination buckets are missing — skip accumulator types
+                // that aren't produced for this layer (e.g. ADSB doesn't produce Day)
                 let missing: Vec<&str> = [
-                    ("day", &acc.day),
-                    ("month", &acc.month),
-                    ("year", &acc.year),
-                    ("yearnz", &acc.yearnz),
+                    ("day", &acc.day, AccumulatorType::Day),
+                    ("month", &acc.month, AccumulatorType::Month),
+                    ("year", &acc.year, AccumulatorType::Year),
+                    ("yearnz", &acc.yearnz, AccumulatorType::YearNz),
                 ].iter()
-                    .filter(|(_, entry)| !entry.file.is_empty() && !all_dest_files.contains(&entry.file))
-                    .map(|(name, _)| *name)
+                    .filter(|(_, entry, acc_type)| {
+                        !entry.file.is_empty()
+                            && crate::layers::should_produce(*layer, *acc_type)
+                            && !all_dest_files.contains(&entry.file)
+                    })
+                    .map(|(name, _, _)| *name)
                     .collect();
 
                 if !missing.is_empty() {
                     warn!(
-                        "{}: DROPPING hanging current accumulator {:04x}({}) for {}: {} missing — \
+                        "{}: DROPPING hanging current accumulator {:04x}({}) for {} [{}]: {} missing — \
                          rolling up would overwrite complete arrow files on disk",
                         station_name, acc.current.bucket.0, current_start, dest_files,
-                        missing.join(",")
+                        layer.name(), missing.join(",")
                     );
                     // Delete the current meta key so it won't hang again
                     let meta_key = CoverageHeader::accumulator_meta(

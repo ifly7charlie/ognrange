@@ -669,8 +669,9 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Determine write layers (dual-write for FLARM/OGNTRK)
     let write_layers = get_write_layers(layer);
-    station_details.layer_mask =
-        Some(station_details.layer_mask.unwrap_or(0) | layer_mask_from_set(&write_layers));
+    let new_mask = station_details.layer_mask.unwrap_or(0) | layer_mask_from_set(&write_layers);
+    station_details.layer_mask = Some(new_mask);
+    station_details.layers = layers::layer_names_from_mask(new_mask);
 
     // Update last packet time
     station_details.last_packet = Some(Epoch(
@@ -822,8 +823,8 @@ async fn periodic_tasks(state: Arc<AppState>) {
     loop {
         flush_interval.tick().await;
 
-        let acc = state.accumulators.read().await.clone();
         let _flush_guard = state.flush_lock.lock().await;
+        let acc = state.accumulators.read().await.clone();
         let flush_stats = state
             .h3_cache
             .flush(&state.storage, &state.station_manager, &acc, false)
@@ -887,16 +888,23 @@ async fn rollup_timer(state: Arc<AppState>) {
             current.clone()
         };
 
+        // Acquire flush_lock first, then swap accumulators, so periodic
+        // flushes always see consistent accumulators.
+        let flush_guard = state.flush_lock.lock().await;
+
         // Update live accumulators so new packets use the new bucket
         {
             let mut acc = state.accumulators.write().await;
             *acc = new_acc.clone();
         }
 
-        // Flush all cached H3 data under the lock so no periodic flush
-        // can interleave. Uses old accumulators so data lands in the
-        // current bucket before rollup moves it.
-        let flush_guard = state.flush_lock.lock().await;
+        // Let any in-flight packet finish writing to cache.
+        // One packet processor task; bucket-read to last cache update
+        // is pure CPU + uncontended mutex — well under 1ms. 5ms is generous.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Flush all cached H3 data. Uses old accumulators so data lands
+        // in the correct bucket before rollup moves it.
         state
             .h3_cache
             .flush(&state.storage, &state.station_manager, &old_acc, true)
