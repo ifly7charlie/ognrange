@@ -420,7 +420,7 @@ pub async fn rollup_all(
 
     // Collect results with per-station timeout
     let mut total_stats = RollupStats::default();
-    total_stats.stations_processed = total_stations;
+    total_stats.stations_processed = tasks.len();
     let station_timeout = std::time::Duration::from_secs(300); // 5 minutes per station
 
     for (station_name, station_path, progress, cancel, handle) in tasks {
