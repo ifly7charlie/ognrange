@@ -115,6 +115,11 @@ pub async fn rollup_all(
     let mut moved_count = 0usize;
     let mut need_purge = false;
     let mut confirmed_moves: HashSet<StationId> = HashSet::new();
+    // Tracks stations transitioning valid→invalid THIS rollup.
+    // Only these get their databases purged — already-invalid stations (from
+    // previous rollups) are excluded so a single new expiry doesn't sweep up
+    // a large backlog of orphaned databases.
+    let mut newly_invalid: HashSet<StationId> = HashSet::new();
 
     let move_confirm_secs = *crate::config::STATION_MOVE_CONFIRM_SECS as u32;
 
@@ -164,6 +169,7 @@ pub async fn rollup_all(
             valid_stations.insert(station.id);
         } else if was_valid {
             invalid_count += 1;
+            newly_invalid.insert(station.id);
             info!(
                 "station {} now invalid: expired, last activity {}",
                 station.station,
@@ -173,11 +179,31 @@ pub async fn rollup_all(
             );
         }
         // already-invalid stations are left out of valid_stations (correct for
-        // global rollup filtering) and need_purge only fires on valid->invalid
-        // transitions, so they won't be re-purged
+        // global rollup filtering) and are NOT added to newly_invalid, so they
+        // won't have their databases purged just because need_purge is set by
+        // a different station expiring.
     }
 
-    // Update station validity in the station manager (always, regardless of purge safety)
+    // Safety: if >2% of stations became invalid, don't purge data (something is wrong).
+    // Add all back to valid_stations so global rollup keeps their coverage, and clear
+    // newly_invalid so their metadata is NOT updated — they'll be re-evaluated next rollup
+    // instead of being permanently orphaned with valid=false but intact databases.
+    if invalid_count as f64 / (valid_stations.len().max(1) as f64) > 0.02 {
+        warn!(
+            "Too many invalid stations ({}), not purging any",
+            invalid_count
+        );
+        for station in &all_station_details {
+            valid_stations.insert(station.id);
+        }
+        newly_invalid.clear();
+    } else {
+        need_purge = invalid_count > 0 || moved_count > 0;
+    }
+
+    // Update station validity in the station manager.
+    // newly_invalid is empty when the safety valve fired, so expiring stations
+    // retain valid=true and will be re-evaluated on the next rollup.
     for station in &all_station_details {
         let is_valid = valid_stations.contains(&station.id);
         let was_moved = station.moved || confirmed_moves.contains(&station.id);
@@ -199,20 +225,6 @@ pub async fn rollup_all(
             }
             station_manager.update(&updated);
         }
-    }
-
-    // Safety: if >2% of stations became invalid, don't purge data (something is wrong).
-    // Add all back to valid_stations so global rollup keeps their coverage.
-    if invalid_count as f64 / (valid_stations.len().max(1) as f64) > 0.02 {
-        warn!(
-            "Too many invalid stations ({}), not purging any",
-            invalid_count
-        );
-        for station in &all_station_details {
-            valid_stations.insert(station.id);
-        }
-    } else {
-        need_purge = invalid_count > 0 || moved_count > 0;
     }
 
     info!(
@@ -295,15 +307,19 @@ pub async fn rollup_all(
         let station_path = storage.station_path(&station_name).to_string_lossy().to_string();
         let is_global = station_name == "global";
 
-        // Purge invalid/moved stations instead of rolling them up
+        // Purge invalid/moved stations instead of rolling them up.
+        // Only purge stations that became invalid THIS rollup (newly_invalid) or
+        // were just confirmed as moved.  Already-invalid stations are skipped to
+        // prevent a single new expiry from sweeping up a large backlog of
+        // previously-undeleted databases.
         if !is_global && need_purge {
-            let is_invalid = station_meta
+            let is_newly_invalid = station_meta
                 .as_ref()
-                .map(|s| !valid_stations.contains(&s.id))
+                .map(|s| newly_invalid.contains(&s.id))
                 .unwrap_or(false);
             let was_moved = station_meta.as_ref().map(|s| s.moved).unwrap_or(false)
                 || station_meta.as_ref().map(|s| confirmed_moves.contains(&s.id)).unwrap_or(false);
-            if is_invalid || was_moved {
+            if is_newly_invalid || was_moved {
                 let reason = if was_moved {
                     "moved".to_string()
                 } else {
