@@ -106,6 +106,10 @@ pub static REJECT_LOG_MAX_MB: Lazy<u64> = Lazy::new(|| env_parse("REJECT_LOG_MAX
 pub static ENABLED_LAYERS: Lazy<Option<HashSet<Layer>>> =
     Lazy::new(|| parse_enabled_layers(env::var("ENABLED_LAYERS").ok().as_deref()));
 
+// Logging
+pub static LOG_SYSLOG: Lazy<bool> = Lazy::new(|| env_parse("LOG_SYSLOG", 0) != 0);
+pub static LOG_STDOUT: Lazy<bool> = Lazy::new(|| env_parse("LOG_STDOUT", 1) != 0);
+
 // Git version
 pub static GIT_REF: Lazy<Option<String>> = Lazy::new(|| {
     env::var("GIT_REF")

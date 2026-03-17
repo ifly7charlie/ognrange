@@ -18,7 +18,7 @@ load_rc_config $name
 
 pidfile="/var/run/${name}.pid"
 command="/usr/sbin/daemon"
-command_args="-P ${pidfile} -r -f -S -t ${name} ${ognrange_next_node} ${ognrange_next_dir}/node_modules/.bin/next start"
+command_args="-P ${pidfile} -r -f -S -l daemon -t ${name} ${ognrange_next_node} ${ognrange_next_dir}/node_modules/.bin/next start"
 
 start_precmd="${name}_prestart"
 

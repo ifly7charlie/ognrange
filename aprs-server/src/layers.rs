@@ -171,6 +171,15 @@ pub fn layer_mask_from_set(layers: &[Layer]) -> u8 {
     layers.iter().fold(0u8, |mask, l| mask | l.bit_mask())
 }
 
+/// Decode a layer bitmask into a list of layer names
+pub fn layer_names_from_mask(mask: u8) -> Vec<String> {
+    ALL_LAYERS
+        .iter()
+        .filter(|l| mask & l.bit_mask() != 0)
+        .map(|l| l.name().to_string())
+        .collect()
+}
+
 /// Bitmask with all layer bits set
 pub fn all_layers_mask() -> u8 {
     ALL_LAYERS.iter().fold(0u8, |m, l| m | l.bit_mask())

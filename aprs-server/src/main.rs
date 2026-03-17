@@ -17,6 +17,8 @@ mod stationfile;
 mod symlinks;
 mod db;
 mod types;
+#[cfg(unix)]
+mod syslog;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -155,10 +157,7 @@ async fn main() {
     let _ = dotenvy::from_filename(".env.local");
 
     // Set up logging
-    tracing_subscriber::fmt()
-        .with_target(false)
-        .with_thread_ids(false)
-        .init();
+    init_logging();
 
     let gv = config::git_version();
     info!("ognrange-rs v{}", gv);
@@ -277,6 +276,54 @@ async fn main() {
     state.global_uptime.clear_current_slot();
     state.station_manager.close();
     info!("Shutdown complete");
+}
+
+/// Initialise the tracing subscriber with optional stdout and syslog layers.
+#[cfg(unix)]
+fn init_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let stdout_layer = if *LOG_STDOUT {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_thread_ids(false),
+        )
+    } else {
+        None
+    };
+
+    let syslog_layer = if *LOG_SYSLOG {
+        Some(syslog::SyslogLayer::new("ognrange"))
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(syslog_layer)
+        .init();
+}
+
+#[cfg(not(unix))]
+fn init_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let stdout_layer = if *LOG_STDOUT {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_thread_ids(false),
+        )
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .init();
 }
 
 /// Listen for SIGTERM (Unix only)

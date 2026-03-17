@@ -55,6 +55,7 @@ dependencies = [
  "dotenvy",
  "flate2",
  "h3o",
+ "libc",
  "lru",
  "once_cell",
  "png",

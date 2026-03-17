@@ -18,7 +18,8 @@ load_rc_config $name
 
 pidfile="/var/run/${name}.pid"
 command="/usr/sbin/daemon"
-command_args="-P ${pidfile} -r -f -S -t ${name} ${ognrange_aprs_dir}/aprs-server"
+ognrange_aprs_env="LOG_SYSLOG=1 LOG_STDOUT=0"
+command_args="-P ${pidfile} -r -f -S -t ${name} env ${ognrange_aprs_env} ${ognrange_aprs_dir}/aprs-server"
 
 start_precmd="${name}_prestart"
 
