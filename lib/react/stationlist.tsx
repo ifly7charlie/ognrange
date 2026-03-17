@@ -1,10 +1,12 @@
 import Link from 'next/link';
 import {useMemo, useCallback} from 'react';
 import {useTranslation} from 'next-i18next';
+import {useSearchParams} from 'next/navigation';
 
 import {reduce as _reduce, sortedIndexOf as _sortedIndexOf} from 'lodash';
 
 import {useStationListMetaUnfiltered} from './stationmeta';
+import {LAYER_BIT, Layer, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
 import {cellToLatLng, greatCircleDistance} from 'h3-js';
 
 export function StationList({
@@ -19,6 +21,15 @@ export function StationList({
 }) {
     const {t} = useTranslation('common', {keyPrefix: 'details.stations'});
     const stationMeta = useStationListMetaUnfiltered();
+    const params = useSearchParams();
+    const selectedLayerMask = useMemo(() => {
+        const layersParam = params.get('layers');
+        if (!layersParam) return null;
+        const layerValues = layersParam.split(',').map((s) => s.trim()).filter((s) => ALL_LAYER_NAMES.has(s)) as Layer[];
+        return layerValues.length > 0 ? layerMaskFromSet(layerValues) : null;
+    }, [params]);
+    const combinedBit = 1 << LAYER_BIT[Layer.COMBINED];
+
     const selectStation = useCallback(
         (e) => {
             setStation(e.currentTarget?.id);
@@ -41,8 +52,11 @@ export function StationList({
                     const loc = index != -1 && !isNaN(stationMeta.lat[index]) ? [stationMeta.lat[index], stationMeta.lng[index]] : null;
                     const name = index != -1 ? stationMeta.name[index] : null;
                     const dist = loc ? greatCircleDistance(cellToLatLng(selectedH3), loc, 'km').toFixed(0) + ' km' : '';
+                    const mask = index != -1 && stationMeta.layerMask ? stationMeta.layerMask[index] : 0;
+                    const effectiveMask = mask === 0 ? combinedBit : mask;
+                    const layerSupported = selectedLayerMask === null || (effectiveMask & selectedLayerMask) !== 0;
                     acc.push(
-                        <tr key={sid}>
+                        <tr key={sid} style={layerSupported ? undefined : {opacity: 0.4}}>
                             <td>
                                 <Link replace onClick={selectStation} href={'#'} id={name}>
                                     {name || t('unknown')}
@@ -56,7 +70,7 @@ export function StationList({
                 },
                 []
             ),
-        [encodedList, stationMeta]
+        [encodedList, stationMeta, selectedLayerMask]
     );
 
     // A station is selected so do nothing
