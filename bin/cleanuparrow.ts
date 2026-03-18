@@ -12,6 +12,7 @@ import yargs from 'yargs';
 
 const args = yargs(process.argv.slice(2)) //
     .option('delete', {type: 'boolean', default: false, description: 'Actually delete files (default is dry-run)'})
+    .option('verbose', {alias: 'v', type: 'boolean', default: false, description: 'Show per-file detail in dry-run'})
     .option('path', {type: 'string', description: 'Override OUTPUT_PATH'})
     .help()
     .alias('help', 'h')
@@ -19,6 +20,7 @@ const args = yargs(process.argv.slice(2)) //
 
 const basePath = (args.path ?? OUTPUT_PATH).replace(/\/?$/, '/');
 const isDryRun = !args.delete;
+const verbose = args.verbose;
 
 // Minimum file sizes below which a file might be empty (no data rows).
 // Above these thresholds the file definitely contains data — skip opening it.
@@ -28,6 +30,19 @@ const MIN_DATA_SIZE_GZ = 512;     // compressed .arrow.gz
 interface FileEntry {
     path: string;
     size: number;
+    reason: string;
+}
+
+interface DirResult {
+    deletedArrow: number;
+    deletedArrowGz: number;
+    deletedJson: number;
+    deletedBytes: number;
+    deletedSymlinks: number;
+    failed: number;
+    keptArrow: number;
+    keptArrowGz: number;
+    keptJson: number;
 }
 
 function fmtSize(bytes: number): string {
@@ -72,28 +87,35 @@ function tryStat(p: string): {exists: boolean; size: number} {
 }
 
 // Returns true if the file has no data rows, using size shortcut then JSON then arrow read.
+// JSON arrowRecords==0 is trusted as empty, but arrowRecords>0 may be stale — always verify
+// by reading the file when the file is small enough to possibly be empty.
 async function isEmpty(filePath: string, fileSize: number, compressed: boolean): Promise<boolean> {
     const sizeThreshold = compressed ? MIN_DATA_SIZE_GZ : MIN_DATA_SIZE_ARROW;
-    if (fileSize > sizeThreshold) return false; // definitely has data
+    if (fileSize > sizeThreshold) return false;
 
     const jsonPath = filePath.replace(compressed ? /\.arrow\.gz$/ : /\.arrow$/, '.json');
     const jsonCount = rowCountFromJson(jsonPath);
-    if (jsonCount !== null) return jsonCount === 0;
+    if (jsonCount === 0) return true; // JSON confirms empty — reliable
 
     return isArrowEmpty(filePath, compressed);
 }
 
-async function processDir(dir: string): Promise<{deleted: number; bytes: number; symlinks: number; failed: number}> {
+async function processDir(dir: string): Promise<DirResult> {
+    const zero: DirResult = {deletedArrow: 0, deletedArrowGz: 0, deletedJson: 0, deletedBytes: 0, deletedSymlinks: 0, failed: 0, keptArrow: 0, keptArrowGz: 0, keptJson: 0};
     let entries: string[];
     try {
         entries = readdirSync(dir);
     } catch {
-        return {deleted: 0, bytes: 0, symlinks: 0, failed: 0};
+        return zero;
     }
 
     const toDelete: FileEntry[] = [];
     const toDeletePaths = new Set<string>();
     const symlinksToCheck: string[] = [];
+
+    let keptArrow = 0;
+    let keptArrowGz = 0;
+    let keptJson = 0;
 
     for (const entry of entries) {
         const fullPath = join(dir, entry);
@@ -115,14 +137,16 @@ async function processDir(dir: string): Promise<{deleted: number; bytes: number;
                 continue;
             }
             if (empty) {
-                toDelete.push({path: fullPath, size: stat.size});
+                toDelete.push({path: fullPath, size: stat.size, reason: 'empty'});
                 toDeletePaths.add(fullPath);
-                const js = tryStat(fullPath.replace(/\.arrow\.gz$/, '.json'));
+                const jsonPath = fullPath.replace(/\.arrow\.gz$/, '.json');
+                const js = tryStat(jsonPath);
                 if (js.exists) {
-                    const jsonPath = fullPath.replace(/\.arrow\.gz$/, '.json');
-                    toDelete.push({path: jsonPath, size: js.size});
+                    toDelete.push({path: jsonPath, size: js.size, reason: 'empty .arrow.gz'});
                     toDeletePaths.add(jsonPath);
                 }
+            } else {
+                keptArrowGz++;
             }
             continue;
         }
@@ -130,11 +154,9 @@ async function processDir(dir: string): Promise<{deleted: number; bytes: number;
         if (entry.endsWith('.arrow')) {
             const gzPath = fullPath + '.gz';
             if (tryStat(gzPath).exists) {
-                // .gz exists — unconditionally remove uncompressed copy
-                toDelete.push({path: fullPath, size: stat.size});
+                toDelete.push({path: fullPath, size: stat.size, reason: 'has .gz'});
                 toDeletePaths.add(fullPath);
             } else {
-                // No .gz — remove only if empty
                 let empty: boolean;
                 try {
                     empty = await isEmpty(fullPath, stat.size, false);
@@ -143,16 +165,23 @@ async function processDir(dir: string): Promise<{deleted: number; bytes: number;
                     continue;
                 }
                 if (empty) {
-                    toDelete.push({path: fullPath, size: stat.size});
+                    toDelete.push({path: fullPath, size: stat.size, reason: 'empty'});
                     toDeletePaths.add(fullPath);
                     const jsonPath = fullPath.replace(/\.arrow$/, '.json');
                     const js = tryStat(jsonPath);
                     if (js.exists) {
-                        toDelete.push({path: jsonPath, size: js.size});
+                        toDelete.push({path: jsonPath, size: js.size, reason: 'empty .arrow'});
                         toDeletePaths.add(jsonPath);
                     }
+                } else {
+                    keptArrow++;
                 }
             }
+            continue;
+        }
+
+        if (entry.endsWith('.json')) {
+            keptJson++; // tentative; decremented below if it ends up in toDelete
         }
     }
 
@@ -166,35 +195,51 @@ async function processDir(dir: string): Promise<{deleted: number; bytes: number;
         }
     }
 
-    const totalBytes = toDelete.reduce((s, f) => s + f.size, 0);
+    const deletedArrow = toDelete.filter(f => f.path.endsWith('.arrow') && !f.path.endsWith('.arrow.gz')).length;
+    const deletedArrowGz = toDelete.filter(f => f.path.endsWith('.arrow.gz')).length;
+    const deletedJson = toDelete.filter(f => f.path.endsWith('.json')).length;
+    keptJson -= deletedJson; // remove json files that are being deleted from the kept count
+    const deletedBytes = toDelete.reduce((s, f) => s + f.size, 0);
     const totalItems = toDelete.length + staleSymlinks.length;
 
-    if (totalItems === 0) return {deleted: 0, bytes: 0, symlinks: 0, failed: 0};
+    if (totalItems === 0) return {...zero, keptArrow, keptArrowGz, keptJson};
+
+    function dirSummary(bytes: number, symlinks: number): string {
+        const parts: string[] = [];
+        if (deletedArrowGz) parts.push(`${deletedArrowGz} .arrow.gz`);
+        if (deletedArrow) parts.push(`${deletedArrow} .arrow`);
+        if (deletedJson) parts.push(`${deletedJson} .json`);
+        if (symlinks) parts.push(`${symlinks} symlinks`);
+        return `${parts.join(', ')} (${fmtSize(bytes)})`;
+    }
 
     if (isDryRun) {
-        console.log(`\n${dir}:`);
-        for (const f of toDelete) console.log(`  ${fmtSize(f.size).padStart(7)}  ${f.path}`);
-        for (const s of staleSymlinks) console.log(`  [symlink]  ${s}`);
-        return {deleted: toDelete.length, bytes: totalBytes, symlinks: staleSymlinks.length, failed: 0};
+        if (verbose) {
+            console.log(`\n${dir}:`);
+            for (const f of toDelete) console.log(`  ${fmtSize(f.size).padStart(7)}  [${f.reason}]  ${f.path}`);
+            for (const s of staleSymlinks) console.log(`  [symlink]  ${s}`);
+        } else {
+            console.log(`${dir}: ${dirSummary(deletedBytes, staleSymlinks.length)}`);
+        }
+        return {deletedArrow, deletedArrowGz, deletedJson, deletedBytes, deletedSymlinks: staleSymlinks.length, failed: 0, keptArrow, keptArrowGz, keptJson};
     }
 
     // Delete mode: remove files immediately, then stale symlinks
-    let deleted = 0;
+    let actualDeleted = 0;
     let failed = 0;
     for (const f of toDelete) {
-        try { unlinkSync(f.path); deleted++; } catch (e) { console.error(`  Failed: ${f.path}: ${e}`); failed++; }
+        try { unlinkSync(f.path); actualDeleted++; } catch (e) { console.error(`  Failed: ${f.path}: ${e}`); failed++; }
     }
     for (const s of staleSymlinks) {
-        try { unlinkSync(s); deleted++; } catch (e) { console.error(`  Failed: ${s}: ${e}`); failed++; }
+        try { unlinkSync(s); actualDeleted++; } catch (e) { console.error(`  Failed: ${s}: ${e}`); failed++; }
     }
-    const summary = `  ${deleted} removed (${fmtSize(totalBytes)})${staleSymlinks.length ? `, ${staleSymlinks.length} symlinks` : ''}${failed ? `, ${failed} FAILED` : ''}`;
-    console.log(`${dir}: ${summary}`);
+    console.log(`${dir}: ${dirSummary(deletedBytes, staleSymlinks.length)} removed${failed ? ` — ${failed} FAILED` : ''}`);
 
-    return {deleted: toDelete.length, bytes: totalBytes, symlinks: staleSymlinks.length, failed};
+    return {deletedArrow, deletedArrowGz, deletedJson, deletedBytes, deletedSymlinks: staleSymlinks.length, failed, keptArrow, keptArrowGz, keptJson};
 }
 
 async function main() {
-    if (isDryRun) console.log(`Dry run — pass --delete to actually remove files`);
+    if (isDryRun) console.log(`Dry run — pass --delete to actually remove files${verbose ? '' : ' (use --verbose for per-file detail)'}\n`);
 
     const dirs = [basePath];
     for (const entry of readdirSync(basePath)) {
@@ -202,29 +247,24 @@ async function main() {
         if (lstatSync(fullPath).isDirectory()) dirs.push(fullPath);
     }
 
-    let totalDeleted = 0;
-    let totalBytes = 0;
-    let totalSymlinks = 0;
-    let totalFailed = 0;
+    let totals: DirResult = {deletedArrow: 0, deletedArrowGz: 0, deletedJson: 0, deletedBytes: 0, deletedSymlinks: 0, failed: 0, keptArrow: 0, keptArrowGz: 0, keptJson: 0};
     let dirCount = 0;
 
     for (const dir of dirs) {
         const r = await processDir(dir);
-        totalDeleted += r.deleted;
-        totalBytes += r.bytes;
-        totalSymlinks += r.symlinks;
-        totalFailed += r.failed;
+        for (const k of Object.keys(totals) as (keyof DirResult)[]) (totals[k] as number) += r[k];
         dirCount++;
         if (!isDryRun && dirCount % 100 === 0) {
             console.log(`  [${dirCount}/${dirs.length} dirs processed]`);
         }
     }
 
-    console.log(
-        `\nTotal: ${totalDeleted} files (${fmtSize(totalBytes)}), ${totalSymlinks} symlinks` +
-            (totalFailed ? `, ${totalFailed} failures` : '') +
-            (isDryRun ? ' — run with --delete to proceed' : ' removed')
-    );
+    const action = isDryRun ? 'would be removed' : 'removed';
+    console.log(`\n--- ${isDryRun ? 'Dry run' : 'Done'} ---`);
+    console.log(`Deleted  (${action}): ${totals.deletedArrowGz} .arrow.gz, ${totals.deletedArrow} .arrow, ${totals.deletedJson} .json, ${totals.deletedSymlinks} symlinks — ${fmtSize(totals.deletedBytes)}`);
+    console.log(`Kept:                 ${totals.keptArrowGz} .arrow.gz, ${totals.keptArrow} .arrow, ${totals.keptJson} .json`);
+    if (totals.failed) console.log(`Failures: ${totals.failed}`);
+    if (isDryRun) console.log(`Run with --delete to proceed.`);
 }
 
 main().catch((e) => {
