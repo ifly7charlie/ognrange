@@ -400,7 +400,7 @@ impl StationManager {
         timestamp: Epoch,
         raw_packet: &str,
     ) {
-        let mut details = match self.get_or_create(name) {
+        let mut details = match self.get(name) {
             Some(d) => d,
             None => return,
         };
@@ -480,7 +480,7 @@ impl StationManager {
 
     /// Update station beacon status
     pub fn update_station_beacon(&self, name: &StationName, body: &str, timestamp: Epoch) {
-        let mut details = match self.get_or_create(name) {
+        let mut details = match self.get(name) {
             Some(d) => d,
             None => return,
         };
@@ -499,7 +499,7 @@ impl StationManager {
 
         let slot = slot_from_timestamp(timestamp);
 
-        let mut details = match self.get_or_create(name) {
+        let mut details = match self.get(name) {
             Some(d) => d,
             None => return,
         };

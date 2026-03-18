@@ -64,3 +64,22 @@ Because of this, the layer selector only offers protocols that a given station h
 ### Presence-only layers
 
 ADS-B and PilotAware do not carry a signal strength value in the way that FLARM does. Coverage for these layers records only that the station *heard* the aircraft — not how well. On the map, presence-only layers use a fixed signal value rather than a measured one, so the colour scale reflects coverage extent rather than signal quality.
+
+## Station Lifecycle
+
+### How stations are added
+
+A station only enters the system when it has successfully received and forwarded at least one valid aircraft packet. For a packet to count, it must carry a measured signal strength, a valid timestamp, the correct protocol identifier, and originate from a moving aircraft.
+
+A receiver that connects to the APRS-IS network and sends its own beacon announcements — but has no aircraft in range — does not appear in ognrange. This prevents stations that are online but idle from accumulating in the database as 0-traffic entries.
+
+### How stations are removed
+
+During each rollup, ognrange checks every known station against two expiry conditions:
+
+- **Inactivity**: if a station's last packet or last beacon is older than `STATION_EXPIRY_TIME_DAYS` (default: 31 days), it is marked expired and its coverage database is deleted.
+- **Relocation**: if a station's position moves significantly, ognrange tracks both old and new locations. Once the old location has been silent for `STATION_MOVE_CONFIRM_DAYS` (default: 7 days), the old coverage data is purged.
+
+A safety valve prevents mass data loss: if more than 2% of active stations would expire in a single rollup — which can happen if the server loses connectivity for an extended period — the purge is deferred and re-evaluated at the next rollup.
+
+After purge, the station's metadata record (name, last known location, purge reason, purge timestamp) is retained. Only the coverage data (H3 observation records) is deleted.

@@ -405,6 +405,9 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                                 || raw.contains("qAC");
 
                             if is_station && !ignore_station::ignore_station(sn.as_str()) {
+                                if state.station_manager.get(&sn).is_none() {
+                                    reject_log::log_reject("beacon_no_traffic", &raw);
+                                } else {
                                 if let Some(ts) = packet.timestamp {
                                     state
                                         .station_manager
@@ -443,6 +446,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                                         reject_log::log_reject("invalid_packet_type", &raw);
                                     }
                                 }
+                                } // station exists
                             } else {
                                 reject_log::log_reject("not_station_or_ignored", &raw);
                             }
@@ -511,12 +515,6 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
     }
 
-    // Get or create station
-    let mut station_details = match state.station_manager.get_or_create(&station_name) {
-        Some(d) => d,
-        None => return,
-    };
-
     let timestamp = match packet.timestamp {
         Some(ts) => ts,
         None => {
@@ -524,8 +522,10 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                 .packet_stats
                 .invalid_timestamp
                 .fetch_add(1, Ordering::Relaxed);
-            station_details.stats.invalid_timestamp += 1;
-            state.station_manager.update(&station_details);
+            if let Some(mut sd) = state.station_manager.get(&station_name) {
+                sd.stats.invalid_timestamp += 1;
+                state.station_manager.update(&sd);
+            }
             reject_log::log_reject("invalid_timestamp", raw);
             return;
         }
@@ -539,8 +539,10 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                     .packet_stats
                     .ignored_tracker
                     .fetch_add(1, Ordering::Relaxed);
-                station_details.stats.ignored_tracker += 1;
-                state.station_manager.update(&station_details);
+                if let Some(mut sd) = state.station_manager.get(&station_name) {
+                    sd.stats.ignored_tracker += 1;
+                    state.station_manager.update(&sd);
+                }
                 reject_log::log_reject("ogntrk_relay", raw);
                 return;
             }
@@ -573,16 +575,55 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                 .packet_stats
                 .ignored_stationary
                 .fetch_add(1, Ordering::Relaxed);
-            station_details.stats.ignored_stationary += 1;
+            if let Some(mut sd) = state.station_manager.get(&station_name) {
+                sd.stats.ignored_stationary += 1;
+                state.station_manager.update(&sd);
+            }
             // Update aircraft seen time (always succeeds — entry created above)
             let mut all_aircraft = state.all_aircraft.lock().await;
             if let Some(aircraft) = all_aircraft.get_mut(&(layer, flarm_num)) {
                 aircraft.seen = timestamp;
             }
-            state.station_manager.update(&station_details);
             return;
         }
     }
+
+    // Signal handling — checked before station allocation
+    let is_presence_only = is_presence_only(layer);
+    let signal: u8;
+    let crc: u8;
+
+    if is_presence_only {
+        signal = PRESENCE_SIGNAL;
+        crc = 0;
+    } else {
+        crc = extract_crc(comment);
+
+        if let Some(raw_signal) = extract_signal_db(comment) {
+            signal = ((raw_signal.max(0.0) * 4.0).round() as u16).min(63).max(1) as u8;
+        } else {
+            signal = 0;
+        }
+
+        if signal == 0 {
+            state
+                .packet_stats
+                .ignored_signal0
+                .fetch_add(1, Ordering::Relaxed);
+            if let Some(mut sd) = state.station_manager.get(&station_name) {
+                sd.stats.ignored_signal0 += 1;
+                state.station_manager.update(&sd);
+            }
+            reject_log::log_reject("signal_zero", raw);
+            return;
+        }
+    }
+
+    // All pre-checks passed — allocate station ID now
+    let mut station_details = match state.station_manager.get_or_create(&station_name) {
+        Some(d) => d,
+        None => return,
+    };
 
     // Gap calculation
     let gap: u8;
@@ -639,35 +680,6 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                 state.station_manager.update(&station_details);
                 return;
             }
-        }
-    }
-
-    // Signal handling
-    let is_presence_only = is_presence_only(layer);
-    let signal: u8;
-    let crc: u8;
-
-    if is_presence_only {
-        signal = PRESENCE_SIGNAL;
-        crc = 0;
-    } else {
-        crc = extract_crc(comment);
-
-        if let Some(raw_signal) = extract_signal_db(comment) {
-            signal = ((raw_signal.max(0.0) * 4.0).round() as u16).min(63).max(1) as u8;
-        } else {
-            signal = 0;
-        }
-
-        if signal == 0 {
-            state
-                .packet_stats
-                .ignored_signal0
-                .fetch_add(1, Ordering::Relaxed);
-            station_details.stats.ignored_signal0 += 1;
-            state.station_manager.update(&station_details);
-            reject_log::log_reject("signal_zero", raw);
-            return;
         }
     }
 
