@@ -1,4 +1,47 @@
 import {useMemo} from 'react';
+
+type ProtocolRowEntry = {tocall: string; layer: string | null; accepted: number; devices: number};
+
+function ProtocolRow({row, maxAccepted, setLayers}: {row: ProtocolRowEntry; maxAccepted: number; setLayers?: (l: string[]) => void}) {
+    const {t} = useTranslation('common', {keyPrefix: 'stats'});
+    const {t: tProto} = useTranslation('common', {keyPrefix: 'protocols'});
+    const isCaptured = !!row.layer && !!setLayers;
+    return (
+        <tr
+            onClick={isCaptured ? () => setLayers!([row.layer!]) : undefined}
+            style={{cursor: isCaptured ? 'pointer' : 'default', color: row.layer ? undefined : 'gray'}}
+            title={isCaptured ? t('click_to_filter') : undefined}
+        >
+            <td style={{display: 'flex', alignItems: 'center', gap: '4px'}}>
+                <span
+                    style={{
+                        display: 'inline-block',
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: layerColorForTocall(row.tocall),
+                        flexShrink: 0
+                    }}
+                />
+                <span style={{display: 'inline-block', width: '60px', flexShrink: 0}}>
+                    <span
+                        style={{
+                            display: 'block',
+                            height: '6px',
+                            backgroundColor: layerColorForTocall(row.tocall),
+                            opacity: 0.3,
+                            width: `${Math.max(1, (row.accepted / maxAccepted) * 100)}%`,
+                            borderRadius: '2px'
+                        }}
+                    />
+                </span>
+                <span>{tProto(row.tocall, row.tocall)}</span>
+            </td>
+            <td style={{textAlign: 'right'}}>{row.accepted.toLocaleString()}</td>
+            <td style={{textAlign: 'right'}}>{row.devices.toLocaleString()}</td>
+        </tr>
+    );
+}
 import {useTranslation} from 'next-i18next';
 import {PieChart, Pie, Legend, Tooltip, ResponsiveContainer} from 'recharts';
 import {layerFromDestCallsign} from '../../common/layers';
@@ -9,16 +52,20 @@ import {layerColorForTocall} from './protocolstatsutil';
 export function ProtocolTable({
     protocols,
     selectedTab,
-    setLayers
+    setLayers,
+    period,
+    isRange
 }: {
     protocols: Record<string, ProtocolEntry>;
     selectedTab: string;
     setLayers: (l: string[]) => void;
+    period?: string;
+    /** True when the data spans multiple days — shows "Avg Devices" header */
+    isRange?: boolean;
 }) {
     const {t} = useTranslation('common', {keyPrefix: 'stats'});
-    const {t: tProto} = useTranslation('common', {keyPrefix: 'protocols'});
 
-    const entries = useMemo(() => {
+    const {supported, unsupported} = useMemo(() => {
         let list = Object.entries(protocols).map(([tocall, proto]) => ({
             tocall,
             layer: layerFromDestCallsign(tocall),
@@ -31,75 +78,45 @@ export function ProtocolTable({
         }
 
         list.sort((a, b) => b.accepted - a.accepted);
-        return list;
+        return {
+            supported: list.filter((e) => e.layer !== null),
+            unsupported: list.filter((e) => e.layer === null)
+        };
     }, [protocols, selectedTab]);
 
-    if (entries.length <= 1) return null;
+    if (supported.length + unsupported.length <= 1) return null;
 
-    const maxAccepted = entries[0]?.accepted ?? 1;
+    const maxAccepted = supported[0]?.accepted ?? unsupported[0]?.accepted ?? 1;
 
     return (
         <>
             <b style={{fontSize: 'small'}}>{t('protocol_table')}</b>
+            {period && <span style={{fontSize: 'x-small', color: 'gray'}}> · {period}</span>}
             <div style={{fontSize: 'small'}}>
                 <table style={{width: '100%', borderCollapse: 'collapse'}}>
                     <thead>
                         <tr style={{fontSize: 'x-small', color: 'gray'}}>
                             <th style={{textAlign: 'left'}}></th>
                             <th style={{textAlign: 'right'}}>{t('accepted')}</th>
-                            <th style={{textAlign: 'right'}}>{t('devices')}</th>
+                            <th style={{textAlign: 'right'}}>{isRange ? t('devices_avg') : t('devices')}</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {entries.map((row) => {
-                            const isCaptured = !!row.layer;
-                            return (
-                                <tr
-                                    key={row.tocall}
-                                    onClick={() => {
-                                        if (isCaptured) setLayers([row.layer!]);
-                                    }}
-                                    style={{cursor: isCaptured ? 'pointer' : 'default', color: isCaptured ? undefined : 'gray'}}
-                                    title={isCaptured ? t('click_to_filter') : undefined}
-                                >
-                                    <td style={{display: 'flex', alignItems: 'center', gap: '4px'}}>
-                                        <span
-                                            style={{
-                                                display: 'inline-block',
-                                                width: '8px',
-                                                height: '8px',
-                                                borderRadius: '50%',
-                                                backgroundColor: layerColorForTocall(row.tocall),
-                                                flexShrink: 0
-                                            }}
-                                        />
-                                        <span
-                                            style={{
-                                                display: 'inline-block',
-                                                width: '60px',
-                                                flexShrink: 0
-                                            }}
-                                        >
-                                            <span
-                                                style={{
-                                                    display: 'block',
-                                                    height: '6px',
-                                                    backgroundColor: layerColorForTocall(row.tocall),
-                                                    opacity: 0.3,
-                                                    width: `${Math.max(1, (row.accepted / maxAccepted) * 100)}%`,
-                                                    borderRadius: '2px'
-                                                }}
-                                            />
-                                        </span>
-                                        <span>{tProto(row.tocall, row.tocall)}</span>
-                                    </td>
-                                    <td style={{textAlign: 'right'}}>{row.accepted.toLocaleString()}</td>
-                                    <td style={{textAlign: 'right'}}>{row.devices.toLocaleString()}</td>
-                                </tr>
-                            );
-                        })}
+                        {supported.map((row) => <ProtocolRow key={row.tocall} row={row} maxAccepted={maxAccepted} setLayers={setLayers} />)}
                     </tbody>
                 </table>
+                {unsupported.length > 0 && (
+                    <details style={{marginTop: '4px'}}>
+                        <summary style={{fontSize: 'x-small', color: 'gray', cursor: 'pointer'}}>
+                            {t('unsupported', {count: unsupported.length})}
+                        </summary>
+                        <table style={{width: '100%', borderCollapse: 'collapse'}}>
+                            <tbody>
+                                {unsupported.map((row) => <ProtocolRow key={row.tocall} row={row} maxAccepted={maxAccepted} />)}
+                            </tbody>
+                        </table>
+                    </details>
+                )}
             </div>
         </>
     );

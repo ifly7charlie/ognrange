@@ -67,7 +67,7 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
     const currentType = from.type;
 
     const {availableTypes, datesByType, partialDatesByType, missingLayersByType} = useMemo(() => {
-        const files = data?.files || {};
+        const files = data || {};
         const datesByType: Record<string, string[]> = {};
         const partialDatesByType: Record<string, Set<string>> = {};
         const missingLayersByType: Record<string, Set<string>> = {};
@@ -84,14 +84,9 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
             for (const layer of layersToCheck) {
                 const lData = (layer === 'combined'
                     ? (layerData?.combined ?? layerData)
-                    : layerData?.[layer]) as {all?: string[]} | undefined;
-                const all = (lData?.all || []) as string[];
-                const inputVals = all
-                    .map((path: string) => {
-                        const m = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)(?:\.|$)/);
-                        return m ? dateToInput(type, m[2]) : null;
-                    })
-                    .filter(Boolean) as string[];
+                    : layerData?.[layer]) as string[] | undefined;
+                const all = (lData || []) as string[];
+                const inputVals = all.map((date: string) => dateToInput(type, date)).filter(Boolean) as string[];
                 layerDateSets[layer] = new Set(inputVals);
             }
 

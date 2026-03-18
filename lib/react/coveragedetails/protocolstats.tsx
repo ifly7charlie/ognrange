@@ -9,6 +9,7 @@ import {HourlyTrafficChart} from './protocolstatshourly';
 import {AcceptedByDayChart, DevicesByDayChart} from './protocolstatsdaily';
 import {ProtocolTable, RegionPieChart} from './protocolstatstable';
 import type {ProtocolStatsApiResponse} from '../../common/protocolstats';
+import {layerFromDestCallsign} from '../../common/layers';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -29,6 +30,20 @@ export function ProtocolStatsDashboard({layers, setLayers, dateRange}: {layers: 
 
     const tabs = useMemo(() => ['all', ...layers], [layers]);
     const color = useMemo(() => colorForTab(selectedTab), [selectedTab]);
+
+    // Filter protocols to those matching the URL-selected layers.
+    // Skip filtering when combined is selected — it aggregates all layers.
+    const filteredProtocols = useMemo(() => {
+        if (!data?.current?.protocols) return {};
+        if (layers.includes('combined')) return data.current.protocols;
+        const layerSet = new Set(layers);
+        return Object.fromEntries(
+            Object.entries(data.current.protocols).filter(([tocall]) => {
+                const layer = layerFromDestCallsign(tocall);
+                return layer === null || layerSet.has(layer);
+            })
+        );
+    }, [data?.current?.protocols, layers]);
 
     if (!data) {
         return (
@@ -73,8 +88,8 @@ export function ProtocolStatsDashboard({layers, setLayers, dateRange}: {layers: 
                     <DevicesByDayChart dailyDevices={data.dailyDevices} selectedTab={selectedTab} color={color} />
                 </>
             )}
-            <ProtocolTable protocols={data.current.protocols} selectedTab={selectedTab} setLayers={setLayers} />
-            <RegionPieChart protocols={data.current.protocols} selectedTab={selectedTab} />
+            <RegionPieChart protocols={filteredProtocols} selectedTab={selectedTab} />
+            <ProtocolTable protocols={filteredProtocols} selectedTab={selectedTab} setLayers={setLayers} period={period} isRange={!data.devicesExact} />
         </div>
     );
 }

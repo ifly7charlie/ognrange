@@ -50,6 +50,8 @@ export interface ProtocolStatsApiResponse {
     current: ProtocolStatsJson | null;
     hourlyHistory: HourlyHistoryEntry[];
     dailyDevices: DailyDevicesEntry[];
+    /** true = unique device count for the period; false = averaged across sub-periods */
+    devicesExact: boolean;
     globalUptime?: GlobalUptimeData | null;
     globalUptimeHistory?: GlobalUptimeHistoryEntry[];
 }

@@ -4,6 +4,16 @@ import {BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 import {layerFromDestCallsign} from '../../common/layers';
 import type {DailyDevicesEntry} from '../../common/protocolstats';
 
+/** Format a date string for chart X-axis labels.
+ *  YYYY-MM → abbreviated month name in browser locale (e.g. "Mar")
+ *  YYYY-MM-DD → MM-DD */
+function dateLabel(date: string): string {
+    if (date.length === 7) {
+        return new Intl.DateTimeFormat(undefined, {month: 'short'}).format(new Date(date + '-01'));
+    }
+    return date.slice(5);
+}
+
 export function AcceptedByDayChart({dailyDevices, selectedTab, color}: {dailyDevices: DailyDevicesEntry[]; selectedTab: string; color: string}) {
     const {t} = useTranslation('common', {keyPrefix: 'stats'});
 
@@ -21,7 +31,7 @@ export function AcceptedByDayChart({dailyDevices, selectedTab, color}: {dailyDev
                     }
                 }
             }
-            return {date: day.date.slice(5), accepted: total};
+            return {date: dateLabel(day.date), accepted: total};
         });
     }, [dailyDevices, selectedTab]);
 
@@ -60,7 +70,7 @@ export function DevicesByDayChart({dailyDevices, selectedTab, color}: {dailyDevi
                     }
                 }
             }
-            return {date: day.date.slice(5) + (day.restarts > 0 ? ` (${t('partial')})` : ''), devices: total, restarts: day.restarts};
+            return {date: dateLabel(day.date) + (day.restarts > 0 ? ` (${t('partial')})` : ''), devices: total, restarts: day.restarts};
         });
     }, [dailyDevices, selectedTab]);
 

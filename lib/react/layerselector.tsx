@@ -1,6 +1,6 @@
 'use client';
 
-import {useCallback, useMemo} from 'react';
+import {useCallback, useEffect, useMemo} from 'react';
 import {useTranslation} from 'next-i18next';
 
 import Select, {type StylesConfig} from 'react-select';
@@ -72,6 +72,17 @@ export function LayerSelector({layers, setLayers, stationLayerMask}: {layers: st
     );
 
     const selectedOptions = useMemo(() => options.filter((o) => layers.includes(o.value)), [options, layers]);
+
+    // When the station changes and the new mask excludes some currently-selected layers,
+    // drop them from state so downstream components (FileSelector) don't check them
+    useEffect(() => {
+        if (!stationLayerMask) return;
+        const validValues = new Set(options.map((o) => o.value));
+        const filtered = layers.filter((l) => validValues.has(l));
+        if (filtered.length !== layers.length) {
+            setLayers(filtered.length ? filtered : ['combined']);
+        }
+    }, [stationLayerMask, options]);
 
     const onChange = useCallback(
         (selected: readonly LayerOption[]) => {

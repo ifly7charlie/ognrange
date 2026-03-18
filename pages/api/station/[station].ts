@@ -19,23 +19,8 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    // This will produce a list of arrays of available arrow files for the
-    // station, we need to convert that into
-    /*
-  "files": {
-    "day": {
-      "current": "UKDUN2/UKDUN2.day.2023-09-23",
-      "all": [
-        "UKDUN2/UKDUN2.day.2023-09-23",
-      ]
-    },
-    "month": ...
-    "year": ...
-  }
-
-*/
-
-    const files = readdirSync(ARROW_PATH + stationName)
+    // Produces: { day: { combined: ["2024-03-18", ...], flarm: [...] }, month: {...}, ... }
+    const result = readdirSync(ARROW_PATH + stationName)
         .map((fileName: string) => {
             const parts = fileName.match(fileMatcher);
             if (!parts || parts.length < 2) {
@@ -47,18 +32,14 @@ export default async function getH3Details(req, res) {
         .sort((a, b) => a.date.localeCompare(b.date))
         .reduce((output, parts) => {
             const {type, date, layerName} = parts;
-            const pathToUse = `${stationName}/${stationName}.${type}.${date}${layerName === 'combined' ? '' : '.' + layerName}`;
             output[type] ??= {};
-            output[type][layerName] ??= {all: []};
-            output[type][layerName].all.push(pathToUse);
-            output[type][layerName].current = pathToUse;
+            output[type][layerName] ??= [];
+            output[type][layerName].push(date);
             return output;
         }, {} as any);
 
     // How long should it be cached - rollup period is good enough
     res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
 
-    // Return the selected top 5 along with the number left over so we can
-    // do a proper graph
-    res.status(200).json({files: {day: files.day, month: files.month, year: files.year, yearnz: files.yearnz}});
+    res.status(200).json(result);
 }

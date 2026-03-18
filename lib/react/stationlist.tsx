@@ -6,7 +6,14 @@ import {useSearchParams} from 'next/navigation';
 import {reduce as _reduce, sortedIndexOf as _sortedIndexOf} from 'lodash';
 
 import {useStationListMetaUnfiltered} from './stationmeta';
-import {LAYER_BIT, Layer, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
+import {LAYER_BIT, LAYER_COLOR, Layer, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
+
+// Ordered to match protocol statistics tab order
+const LAYER_DOT_ORDER = [Layer.FLARM, Layer.ADSB, Layer.ADSL, Layer.FANET, Layer.OGNTRK, Layer.PAW, Layer.SAFESKY] as const;
+
+function rgbToHex([r, g, b]: [number, number, number]): string {
+    return '#' + [r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('');
+}
 import {cellToLatLng, greatCircleDistance} from 'h3-js';
 
 export function StationList({
@@ -55,12 +62,30 @@ export function StationList({
                     const mask = index != -1 && stationMeta.layerMask ? stationMeta.layerMask[index] : 0;
                     const effectiveMask = mask === 0 ? combinedBit : mask;
                     const layerSupported = selectedLayerMask === null || (effectiveMask & selectedLayerMask) !== 0;
+                    const dots = LAYER_DOT_ORDER.filter((l) => effectiveMask & (1 << LAYER_BIT[l]));
                     acc.push(
                         <tr key={sid} style={layerSupported ? undefined : {opacity: 0.4}}>
                             <td>
                                 <Link replace onClick={selectStation} href={'#'} id={name}>
                                     {name || t('unknown')}
                                 </Link>
+                            </td>
+                            <td style={{width: '1px', whiteSpace: 'nowrap', paddingLeft: '4px'}}>
+                                <span style={{display: 'flex', gap: '2px'}}>
+                                    {dots.map((l) => (
+                                        <span
+                                            key={l}
+                                            title={l}
+                                            style={{
+                                                display: 'inline-block',
+                                                width: '6px',
+                                                height: '6px',
+                                                borderRadius: '50%',
+                                                background: rgbToHex(LAYER_COLOR[l])
+                                            }}
+                                        />
+                                    ))}
+                                </span>
                             </td>
                             <td>{dist}</td>
                             <td>{percentage > 10 ? percentage.toFixed(0) + '%' : ''}</td>

@@ -931,13 +931,7 @@ async fn rollup_timer(state: Arc<AppState>) {
         drop(flush_guard);
 
         // Write protocol stats after rollup completes
-        let day_rotation = old_acc.day.bucket != new_acc.day.bucket;
-        let month_rotation = if old_acc.month.bucket != new_acc.month.bucket {
-            Some(old_acc.month.file.as_str())
-        } else {
-            None
-        };
-        state.protocol_stats.write_stats(&old_acc.day.file, day_rotation, month_rotation);
+        state.protocol_stats.write_stats(&old_acc, &new_acc);
         state.global_uptime.write_snapshot(&old_acc.day.file);
     }
 }

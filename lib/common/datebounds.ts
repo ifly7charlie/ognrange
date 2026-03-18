@@ -1,3 +1,10 @@
+/** Parse a period param like "month.2026-03", "year.2026", "day.2026-03-18"
+ *  into its type and optional value. Used by all stats API handlers. */
+export function parsePeriodParam(param: string): {type: string; value: string | null} {
+    const dot = param.indexOf('.');
+    return dot === -1 ? {type: param, value: null} : {type: param.slice(0, dot), value: param.slice(dot + 1)};
+}
+
 // Convert app date param (e.g. "year", "month.2026-03", "day.2026-03-15") to YYYY-MM-DD bounds
 export function dateBounds(param: string): {start: string; end: string} | null {
     const dot = param.indexOf('.');

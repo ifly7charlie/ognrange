@@ -55,10 +55,6 @@ const CustomTooltip = ({active, payload, label, tickFormatter}: {active?: any; p
     return null;
 };
 
-function extractDateStr(filePath: string): string {
-    return filePath.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)/)?.[2] ?? '';
-}
-
 export function AvailableFiles({
     station,
     displayType = 'day',
@@ -74,14 +70,14 @@ export function AvailableFiles({
     const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher, {revalidateOnFocus: false});
     const {t} = useTranslation();
 
-    // Collect file paths for the requested layer (or union all layers if none / 'all')
-    const layerData = data?.files?.[displayType] as Record<string, {all: string[]}> | undefined;
+    // Collect dates for the requested layer (or union all layers if none / 'all')
+    const layerData = data?.[displayType] as Record<string, string[]> | undefined;
     const all: string[] | undefined = useMemo(() => {
         if (!layerData) return undefined;
         const paths = layer && layer !== 'all'
-            ? (layerData[layer]?.all ?? [])
-            : Object.values(layerData).flatMap((l) => l?.all ?? []);
-        const dates = [...new Set(paths.map(extractDateStr).filter(Boolean))].sort();
+            ? (layerData[layer] ?? [])
+            : Object.values(layerData).flatMap((l) => l ?? []);
+        const dates = [...new Set(paths)].sort();
         return dates.length ? dates : undefined;
     }, [layerData, layer]);
 

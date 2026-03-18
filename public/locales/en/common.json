@@ -53,7 +53,8 @@
         "stations": "Number of stations",
         "primaryStation": "Primary station",
         "layerCoverage": "Protocol coverage type",
-        "layerCoverageBlend": "Overlapping protocols show blended colours"
+        "layerCoverageBlend": "Overlapping protocols show blended colours",
+        "presenceOnlySignalWarning": "{{layers}} use a synthetic signal value — signal-based visualisations may be misleading for this layer selection"
     },
     "stations": {
         "global": "All stations (global)",
@@ -146,7 +147,7 @@
             "legend_server_down": "Server down"
         },
         "uptime": {
-            "title": "Uptime",
+            "title": "Station Uptime",
             "percent": "{{percent}}%"
         },
         "server": {
@@ -250,7 +251,7 @@
     "serverUptime": {
         "title": "Server Connection",
         "uptime": "Uptime: {{percent}}%",
-        "server": "Server: {{server}}",
+        "server": "APRS Server: {{server}}",
         "software": "{{software}}"
     },
     "stats": {
@@ -267,8 +268,10 @@
         "raw": "Raw",
         "accepted": "Accepted",
         "devices": "Devices",
+        "devices_avg": "Avg Devices",
         "accepted_by_day": "Accepted packets by day",
         "no_data": "No protocol statistics available",
-        "click_to_filter": "Click to filter map"
+        "click_to_filter": "Click to filter map",
+        "unsupported": "{{count}} unrecognised"
     }
 }

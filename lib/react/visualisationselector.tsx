@@ -2,7 +2,7 @@ import {useMemo, useCallback, useEffect} from 'react';
 import {useTranslation} from 'next-i18next';
 
 import Select from 'react-select';
-import {Layer, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
+import {Layer, layerMaskFromSet, ALL_LAYER_NAMES, PRESENCE_ONLY} from '../common/layers';
 import {LayerBadges} from './layerbadges';
 
 const normalVisualisations = ['avgSig', 'maxSig', 'count', 'minAlt', 'minAgl', 'minAltSig', 'avgCrc', 'avgGap'];
@@ -75,10 +75,18 @@ export function VisualisationSelector({
 
     const selectVisualisationOnChange = useCallback((v) => setVisualisation(v.value), [setVisualisation]);
 
+    const presenceOnlyLayers = !isPresenceOnly ? (layers?.filter((l) => PRESENCE_ONLY.has(l as Layer)) ?? []) : [];
+    const showPresenceWarning = presenceOnlyLayers.length > 0 && visualisation && signalVisualisations.has(visualisation);
+
     return (
         <>
             <b>{t('selectors.visualisation')}:</b>
             <Select options={visualisations} value={selectedVisualisation} onChange={selectVisualisationOnChange} />
+            {showPresenceWarning && (
+                <div style={{marginTop: '4px', padding: '4px 8px', background: '#fff3cd', border: '1px solid #f0c040', borderRadius: '4px', fontSize: '0.85em'}}>
+                    ⚠ {t('visualisation.presenceOnlySignalWarning', {layers: presenceOnlyLayers.map((l) => t(`layers.${l}`)).join(', ')})}
+                </div>
+            )}
             <VisualisationLegend visualisation={visualisation} layers={layers} setLayers={setLayers} />
         </>
     );

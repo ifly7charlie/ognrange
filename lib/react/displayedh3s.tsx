@@ -97,7 +97,7 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
     const rangeBuildUrls = useMemo(() => {
         if (isTypeOnly || !stationData) return null;
         const rangeType = dateStart.split('.')[0];
-        const typeFiles = (stationData?.files || {})[rangeType] as Record<string, {all?: string[]}> | undefined;
+        const typeFiles = (stationData || {})[rangeType] as Record<string, string[]> | undefined;
 
         const urls: string[] = [];
         const presenceOnly: boolean[] = [];
@@ -105,13 +105,11 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
 
         for (const layer of layerList) {
             const layerFiles = typeFiles?.[layer];
-            for (const path of (layerFiles?.all || []) as string[]) {
-                const match = path.match(/\.(day|month|year|yearnz)\.([0-9-]+[nz]*)(?:\.[a-z]+)?$/);
-                if (!match) continue;
-                const key = `${match[1]}.${match[2]}`;
+            for (const date of (layerFiles || []) as string[]) {
+                const key = `${rangeType}.${date}`;
                 if (key >= dateStart && key <= dateEnd) {
                     const suffix = layer === 'combined' ? '' : `.${layer}`;
-                    urls.push(`${DATA_URL}${stationName}/${stationName}.${match[1]}.${match[2]}${suffix}.arrow`);
+                    urls.push(`${DATA_URL}${stationName}/${stationName}.${rangeType}.${date}${suffix}.arrow`);
                     presenceOnly.push(PRESENCE_ONLY.has(layer as Layer));
                     urlLayers.push(layer);
                 }
