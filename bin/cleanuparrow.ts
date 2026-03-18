@@ -112,10 +112,10 @@ async function processDir(dir: string): Promise<DirResult> {
     const toDelete: FileEntry[] = [];
     const toDeletePaths = new Set<string>();
     const symlinksToCheck: string[] = [];
+    const jsonFiles: {path: string; size: number}[] = [];
 
     let keptArrow = 0;
     let keptArrowGz = 0;
-    let keptJson = 0;
 
     for (const entry of entries) {
         const fullPath = join(dir, entry);
@@ -139,12 +139,6 @@ async function processDir(dir: string): Promise<DirResult> {
             if (empty) {
                 toDelete.push({path: fullPath, size: stat.size, reason: 'empty'});
                 toDeletePaths.add(fullPath);
-                const jsonPath = fullPath.replace(/\.arrow\.gz$/, '.json');
-                const js = tryStat(jsonPath);
-                if (js.exists) {
-                    toDelete.push({path: jsonPath, size: js.size, reason: 'empty .arrow.gz'});
-                    toDeletePaths.add(jsonPath);
-                }
             } else {
                 keptArrowGz++;
             }
@@ -167,12 +161,6 @@ async function processDir(dir: string): Promise<DirResult> {
                 if (empty) {
                     toDelete.push({path: fullPath, size: stat.size, reason: 'empty'});
                     toDeletePaths.add(fullPath);
-                    const jsonPath = fullPath.replace(/\.arrow$/, '.json');
-                    const js = tryStat(jsonPath);
-                    if (js.exists) {
-                        toDelete.push({path: jsonPath, size: js.size, reason: 'empty .arrow'});
-                        toDeletePaths.add(jsonPath);
-                    }
                 } else {
                     keptArrow++;
                 }
@@ -181,9 +169,20 @@ async function processDir(dir: string): Promise<DirResult> {
         }
 
         if (entry.endsWith('.json')) {
-            keptJson++; // tentative; decremented below if it ends up in toDelete
+            jsonFiles.push({path: fullPath, size: stat.size});
         }
     }
+
+    // Delete JSON files only if no arrow files will remain in this directory
+    const noArrowRemaining = keptArrow + keptArrowGz === 0;
+    if (noArrowRemaining) {
+        for (const j of jsonFiles) {
+            toDelete.push({path: j.path, size: j.size, reason: 'no arrow files remain'});
+            toDeletePaths.add(j.path);
+        }
+    }
+
+    const keptJson = noArrowRemaining ? 0 : jsonFiles.length;
 
     // Collect stale symlinks: currently broken OR pointing to a file we're deleting
     const staleSymlinks: string[] = [];
@@ -198,7 +197,6 @@ async function processDir(dir: string): Promise<DirResult> {
     const deletedArrow = toDelete.filter(f => f.path.endsWith('.arrow') && !f.path.endsWith('.arrow.gz')).length;
     const deletedArrowGz = toDelete.filter(f => f.path.endsWith('.arrow.gz')).length;
     const deletedJson = toDelete.filter(f => f.path.endsWith('.json')).length;
-    keptJson -= deletedJson; // remove json files that are being deleted from the kept count
     const deletedBytes = toDelete.reduce((s, f) => s + f.size, 0);
     const totalItems = toDelete.length + staleSymlinks.length;
 
