@@ -31,7 +31,7 @@ static DB_OPEN: std::sync::LazyLock<(Mutex<usize>, Condvar)> =
 /// A LevelDB handle that blocks on open when the global limit is reached and
 /// automatically decrements the count on drop.
 pub struct TrackedDb {
-    db: rusty_leveldb::DB,
+    db: Option<rusty_leveldb::DB>,
 }
 
 impl TrackedDb {
@@ -50,7 +50,7 @@ impl TrackedDb {
         opts.create_if_missing = create_if_missing;
         opts.max_open_files = 40;
         match rusty_leveldb::DB::open(path, opts) {
-            Ok(db) => Ok(TrackedDb { db }),
+            Ok(db) => Ok(TrackedDb { db: Some(db) }),
             Err(e) => {
                 *DB_OPEN.0.lock().unwrap() -= 1;
                 DB_OPEN.1.notify_one();
@@ -62,15 +62,18 @@ impl TrackedDb {
 
 impl std::ops::Deref for TrackedDb {
     type Target = rusty_leveldb::DB;
-    fn deref(&self) -> &Self::Target { &self.db }
+    fn deref(&self) -> &Self::Target { self.db.as_ref().unwrap() }
 }
 
 impl std::ops::DerefMut for TrackedDb {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.db }
+    fn deref_mut(&mut self) -> &mut Self::Target { self.db.as_mut().unwrap() }
 }
 
 impl Drop for TrackedDb {
     fn drop(&mut self) {
+        // Drop the DB (closes file handles) before releasing the slot so the
+        // count never exceeds MAX_STATION_DBS worth of open file descriptors.
+        drop(self.db.take());
         *DB_OPEN.0.lock().unwrap() -= 1;
         DB_OPEN.1.notify_one();
     }

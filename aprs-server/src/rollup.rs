@@ -422,6 +422,8 @@ pub async fn rollup_all(
     let mut total_stats = RollupStats::default();
     total_stats.stations_processed = tasks.len();
     let station_timeout = std::time::Duration::from_secs(300); // 5 minutes per station
+    let total_tasks = tasks.len();
+    let mut completed_count = 0usize;
 
     for (station_name, station_path, progress, cancel, handle) in tasks {
         tokio::pin!(handle);
@@ -473,6 +475,11 @@ pub async fn rollup_all(
                 }
                 total_stats.stations_skipped += 1;
             }
+        }
+        completed_count += 1;
+        let pct = if total_tasks > 0 { completed_count * 100 / total_tasks } else { 100 };
+        if pct % 10 == 0 || completed_count == total_tasks {
+            info!("rollup {}% [{}/{}]", pct, completed_count, total_tasks);
         }
     }
 
@@ -1372,8 +1379,8 @@ pub async fn rollup_startup(
 
             let log_progress = |completed: &std::sync::atomic::AtomicUsize| {
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if done % 100 == 0 || done == total {
-                    let pct = done * 100 / total;
+                let pct = if total > 0 { done * 100 / total } else { 100 };
+                if pct % 10 == 0 || done == total {
                     let elapsed = startup_start.elapsed().as_secs_f64();
                     let speed = if elapsed > 0.0 { done as f64 / elapsed } else { 0.0 };
                     info!("startup:{}% [{}/{}] {:.0}s elapsed, {:.1}/s", pct, done, total, elapsed, speed);
