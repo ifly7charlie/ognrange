@@ -155,13 +155,15 @@ impl StationManager {
         if let Err(e) = manager.load_sync() {
             error!("Fatal: failed to open station database {}: {}", db_path, e);
             error!("Is another instance already running?");
+            error!("If the database is corrupt, consider restoring from a backup.");
+            error!("To rebuild from the last exported data, run: yarn tsx bin/recover_station_db.ts");
             std::process::exit(1);
         }
 
         // Spawn the writer thread which takes over the DB lock
         let writer_db_path = db_path;
         std::thread::spawn(move || {
-            let mut db = match TrackedDb::open(&writer_db_path, true, "station_writer") {
+            let mut db = match TrackedDb::open(&writer_db_path, true) {
                 Ok(db) => db,
                 Err(e) => {
                     error!("Fatal: writer thread failed to open status DB {}: {}", writer_db_path, e);
@@ -190,7 +192,7 @@ impl StationManager {
     }
 
     fn load_sync(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut db = TrackedDb::open(&self.db_path, true, "station_load")?;
+        let mut db = TrackedDb::open(&self.db_path, true)?;
         let entries = crate::db::read_all(&mut db);
 
         let mut max_id: u16 = 0;

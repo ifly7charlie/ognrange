@@ -537,7 +537,7 @@ fn rollup_station_all_layers(
     cancel: &AtomicBool,
 ) -> Result<RollupStats, String> {
     let station_start = std::time::Instant::now();
-    let mut db = match TrackedDb::open(station_path, true, "rollup") {
+    let mut db = match TrackedDb::open(station_path, true) {
         Ok(db) => db,
         Err(e) => {
             return Err(format!("Failed to open DB {}: {}", station_path, e));
@@ -1381,7 +1381,7 @@ pub async fn rollup_startup(
             };
 
             // Open DB once for all operations on this station
-            let mut db = match TrackedDb::open(&station_path, true, "startup_rollup") {
+            let mut db = match TrackedDb::open(&station_path, true) {
                 Ok(db) => db,
                 Err(e) => {
                     error!("Startup rollup: failed to open DB {}: {}", station_path, e);

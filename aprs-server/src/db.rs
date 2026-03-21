@@ -1,58 +1,59 @@
 //! LevelDB abstraction layer.
 //!
-//! Provides `TrackedDb` (RAII wrapper with open/close tracking), shared iteration
+//! Provides `TrackedDb` (RAII wrapper with open-count limiting), shared iteration
 //! helpers, and `Storage` for per-station database paths and batch writes.
 
 use rusty_leveldb::LdbIterator;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use tracing::error;
 
-use crate::config::DB_PATH;
+use crate::config::{DB_PATH, MAX_STATION_DBS};
 use crate::coverage::record::CoverageRecord;
 
-// ---- DB open/close tracking (for debugging LockErrors) ----
+// ---- Global concurrent-open limit ----
+//
+// Each open LevelDB holds file handles for its WAL log, MANIFEST, and up to
+// `max_open_files - 10` SST table files. Letting too many databases open
+// simultaneously exhausts the OS file-descriptor limit, which can corrupt
+// databases that are mid-write when the error occurs.
+//
+// The counter is incremented in TrackedDb::open (after the limit check) and
+// decremented in Drop, so it naturally limits concurrent opens across rollup,
+// H3 cache flush, and any other caller without needing per-call coordination.
 
-static OPEN_DBS: std::sync::LazyLock<Mutex<std::collections::HashMap<String, &'static str>>> =
-    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+static DB_OPEN: std::sync::LazyLock<(Mutex<usize>, Condvar)> =
+    std::sync::LazyLock::new(|| (Mutex::new(0), Condvar::new()));
 
-fn track_db_open(path: &str, operation: &'static str) {
-    let mut open = OPEN_DBS.lock().unwrap();
-    if let Some(existing_op) = open.insert(path.to_string(), operation) {
-        tracing::error!(
-            "BUG: DB {} opened for '{}' but already open for '{}'",
-            path, operation, existing_op
-        );
-    }
-}
+// ---- TrackedDb: RAII wrapper for LevelDB with open-count limiting ----
 
-fn track_db_close(path: &str) {
-    OPEN_DBS.lock().unwrap().remove(path);
-}
-
-fn open_dbs_summary() -> Vec<(String, &'static str)> {
-    OPEN_DBS.lock().unwrap().iter().map(|(k, v)| (k.clone(), *v)).collect()
-}
-
-// ---- TrackedDb: RAII wrapper for LevelDB with open/close tracking ----
-
-/// A tracked LevelDB handle that automatically manages open/close tracking via Drop.
+/// A LevelDB handle that blocks on open when the global limit is reached and
+/// automatically decrements the count on drop.
 pub struct TrackedDb {
     db: rusty_leveldb::DB,
-    path: String,
 }
 
 impl TrackedDb {
-    /// Open a LevelDB database with automatic open/close tracking.
-    pub fn open(path: &str, create_if_missing: bool, operation: &'static str) -> Result<Self, rusty_leveldb::Status> {
-        track_db_open(path, operation);
+    /// Open a LevelDB database, blocking if the global open limit is reached.
+    pub fn open(path: &str, create_if_missing: bool) -> Result<Self, rusty_leveldb::Status> {
+        let (lock, condvar) = &*DB_OPEN;
+        let mut count = lock.lock().unwrap();
+        while *count >= *MAX_STATION_DBS {
+            tracing::warn!("DB open limit ({}) reached — waiting", *MAX_STATION_DBS);
+            count = condvar.wait(count).unwrap();
+        }
+        *count += 1;
+        drop(count);
+
         let mut opts = rusty_leveldb::Options::default();
         opts.create_if_missing = create_if_missing;
+        opts.max_open_files = 40;
         match rusty_leveldb::DB::open(path, opts) {
-            Ok(db) => Ok(TrackedDb { db, path: path.to_string() }),
+            Ok(db) => Ok(TrackedDb { db }),
             Err(e) => {
-                track_db_close(path);
+                *DB_OPEN.0.lock().unwrap() -= 1;
+                DB_OPEN.1.notify_one();
                 Err(e)
             }
         }
@@ -70,7 +71,8 @@ impl std::ops::DerefMut for TrackedDb {
 
 impl Drop for TrackedDb {
     fn drop(&mut self) {
-        track_db_close(&self.path);
+        *DB_OPEN.0.lock().unwrap() -= 1;
+        DB_OPEN.1.notify_one();
     }
 }
 
@@ -258,12 +260,12 @@ impl Storage {
         let records_owned: Vec<(String, Vec<u8>)> = records.to_vec();
 
         tokio::task::spawn_blocking(move || {
-            let mut db = match TrackedDb::open(&station_path_str, true, "write_batch") {
+            let mut db = match TrackedDb::open(&station_path_str, true) {
                 Ok(db) => db,
                 Err(e) => {
                     error!(
-                        "Failed to open DB for {}: {} — currently open: {:?}",
-                        station_path_str, e, open_dbs_summary()
+                        "Failed to open DB for {}: {} — {} databases currently open",
+                        station_path_str, e, *DB_OPEN.0.lock().unwrap()
                     );
                     return;
                 }
@@ -291,7 +293,9 @@ impl Storage {
                     new_data.clone()
                 };
 
-                let _ = db.put(key.as_bytes(), &merged);
+                if let Err(e) = db.put(key.as_bytes(), &merged) {
+                    error!("Failed to write key {} to {}: {}", key, station_path_str, e);
+                }
             }
 
             if let Err(e) = db.flush() {
