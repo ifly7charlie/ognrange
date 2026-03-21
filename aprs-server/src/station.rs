@@ -38,6 +38,7 @@ pub struct StationStats {
     pub ignored_h3stationary: u32,
     pub ignored_elevation: u32,
     pub ignored_future_timestamp: u32,
+    pub ignored_stale_timestamp: u32,
     pub count: u64,
 }
 

@@ -137,7 +137,8 @@
             "ignoredPAW": "Ignored (PAW/fake signal strength)",
             "ignoredH3stationary": "Ignored (Mostly Stationary)",
             "ignoredElevation": "Ignored (Corrupt elevation)",
-            "ignoredFutureTimestamp": "Ignored (Future timestamp)"
+            "ignoredFutureTimestamp": "Ignored (Future timestamp)",
+            "ignoredStaleTimestamp": "Ignored (Stale timestamp)"
         },
         "beacon": {
             "title": "Beacon Activity",

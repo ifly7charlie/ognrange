@@ -54,6 +54,7 @@ struct PacketStats {
     ignored_h3stationary: AtomicU64,
     ignored_elevation: AtomicU64,
     ignored_future_timestamp: AtomicU64,
+    ignored_stale_timestamp: AtomicU64,
     count: AtomicU64,
     raw_count: AtomicU64,
 }
@@ -73,6 +74,7 @@ impl PacketStats {
             ignored_h3stationary: self.ignored_h3stationary.load(Ordering::Relaxed),
             ignored_elevation: self.ignored_elevation.load(Ordering::Relaxed),
             ignored_future_timestamp: self.ignored_future_timestamp.load(Ordering::Relaxed),
+            ignored_stale_timestamp: self.ignored_stale_timestamp.load(Ordering::Relaxed),
             count: self.count.load(Ordering::Relaxed),
             raw_count: self.raw_count.load(Ordering::Relaxed),
         }
@@ -93,6 +95,7 @@ struct PacketStatsSnapshot {
     ignored_h3stationary: u64,
     ignored_elevation: u64,
     ignored_future_timestamp: u64,
+    ignored_stale_timestamp: u64,
     count: u64,
     raw_count: u64,
 }
@@ -109,6 +112,7 @@ impl std::fmt::Display for PacketStatsSnapshot {
         if self.ignored_paw > 0 { parts.push(format!("paw:{}", self.ignored_paw)); }
         if self.ignored_elevation > 0 { parts.push(format!("elevation:{}", self.ignored_elevation)); }
         if self.ignored_future_timestamp > 0 { parts.push(format!("future_ts:{}", self.ignored_future_timestamp)); }
+        if self.ignored_stale_timestamp > 0 { parts.push(format!("stale_ts:{}", self.ignored_stale_timestamp)); }
         if self.invalid_packet > 0 { parts.push(format!("invalid:{}", self.invalid_packet)); }
         if self.invalid_tracker > 0 { parts.push(format!("bad_tracker:{}", self.invalid_tracker)); }
         if self.invalid_timestamp > 0 { parts.push(format!("bad_ts:{}", self.invalid_timestamp)); }
@@ -550,6 +554,23 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
             state.station_manager.update(&sd);
         }
         reject_log::log_reject("future_timestamp", raw);
+        return;
+    }
+
+    // Reject packets with timestamps before today's UTC midnight — delayed packets
+    // with yesterday's date (common with DDHHMMz day rollover or HHMMSSh near midnight)
+    // would otherwise pollute today's hourly statistics with yesterday's hour buckets.
+    let today_midnight = now_secs - (now_secs % 86400);
+    if timestamp < today_midnight {
+        state
+            .packet_stats
+            .ignored_stale_timestamp
+            .fetch_add(1, Ordering::Relaxed);
+        if let Some(mut sd) = state.station_manager.get(&station_name) {
+            sd.stats.ignored_stale_timestamp += 1;
+            state.station_manager.update(&sd);
+        }
+        reject_log::log_reject("stale_timestamp", raw);
         return;
     }
 

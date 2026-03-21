@@ -314,7 +314,13 @@ fn parse_longitude(s: &str) -> Option<f64> {
     Some(lon)
 }
 
-/// Parse APRS timestamp: HHMMSSh (UTC HMS) or DDHHMMz (UTC DDHHMM)
+/// Parse APRS timestamp: HHMMSSh (UTC HMS) or DDHHMMz (UTC DDHHMM).
+///
+/// Mirrors js-aprs-fap behaviour:
+/// - HHMMSSh: if the resulting timestamp is more than 65 minutes in the future,
+///   roll back by one day — the packet is from yesterday (delayed delivery).
+/// - DDHHMMz: try current month first; if that is more than 43400 s in the
+///   future try the previous month (handles rollover near month boundaries).
 fn parse_timestamp(s: &str) -> Option<u32> {
     if s.len() < 7 {
         return None;
@@ -322,10 +328,14 @@ fn parse_timestamp(s: &str) -> Option<u32> {
     let format_char = s.as_bytes()[6];
 
     let now = chrono::Utc::now();
+    let now_ts = now.timestamp();
+
+    use chrono::{Datelike, Duration, NaiveDate, NaiveTime};
 
     match format_char {
         b'h' => {
-            // HHMMSSh format — UTC time today
+            // HHMMSSh format — UTC time, no date supplied.
+            // If the time looks future by more than 65 min, it is from yesterday.
             let hh: u32 = s[..2].parse().ok()?;
             let mm: u32 = s[2..4].parse().ok()?;
             let ss: u32 = s[4..6].parse().ok()?;
@@ -334,28 +344,54 @@ fn parse_timestamp(s: &str) -> Option<u32> {
                 return None;
             }
 
-            // Build epoch for today at HH:MM:SS UTC
-            use chrono::{Datelike, NaiveDate, NaiveTime};
             let date = NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())?;
             let time = NaiveTime::from_hms_opt(hh, mm, ss)?;
-            let dt = date.and_time(time);
-            Some(dt.and_utc().timestamp() as u32)
+            let mut ts = date.and_time(time).and_utc().timestamp();
+            if ts > now_ts + 3900 {
+                ts -= 86400;
+            }
+            if ts < 0 {
+                return None;
+            }
+            Some(ts as u32)
         }
         b'z' => {
-            // DDHHMMz format — day + time UTC
+            // DDHHMMz format — day-of-month + UTC time; no month or year supplied.
+            // Try the current month; if that date is more than ~12 h in the future,
+            // fall back to the previous month (packet just before month rollover).
             let dd: u32 = s[..2].parse().ok()?;
             let hh: u32 = s[2..4].parse().ok()?;
             let mm: u32 = s[4..6].parse().ok()?;
 
-            if dd > 31 || hh > 23 || mm > 59 {
+            if dd < 1 || dd > 31 || hh > 23 || mm > 59 {
                 return None;
             }
 
-            use chrono::{Datelike, NaiveDate, NaiveTime};
-            let date = NaiveDate::from_ymd_opt(now.year(), now.month(), dd)?;
             let time = NaiveTime::from_hms_opt(hh, mm, 0)?;
-            let dt = date.and_time(time);
-            Some(dt.and_utc().timestamp() as u32)
+
+            // Current-month candidate
+            let curr = NaiveDate::from_ymd_opt(now.year(), now.month(), dd)
+                .map(|d| d.and_time(time).and_utc().timestamp());
+
+            if let Some(ts) = curr {
+                if ts <= now_ts + 43400 {
+                    return if ts >= 0 { Some(ts as u32) } else { None };
+                }
+            }
+
+            // Previous-month candidate (handles packets arriving just after month roll)
+            let prev_month_date = NaiveDate::from_ymd_opt(now.year(), now.month(), 1)?
+                .checked_sub_signed(Duration::days(1))?;
+            let back = NaiveDate::from_ymd_opt(prev_month_date.year(), prev_month_date.month(), dd)
+                .map(|d| d.and_time(time).and_utc().timestamp());
+
+            if let Some(ts) = back {
+                if ts >= 0 {
+                    return Some(ts as u32);
+                }
+            }
+
+            None
         }
         _ => None,
     }
