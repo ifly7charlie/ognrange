@@ -45,6 +45,10 @@ export function HourlyTrafficChart({data, selectedTab, color}: {data: ProtocolSt
         return result;
     }, [data, selectedTab]);
 
+    const fmtDate = (iso: string) => new Date(iso + 'T00:00:00').toLocaleDateString(undefined, {month: 'short', day: 'numeric'});
+    const periodKey = data.currentPeriod && data.currentPeriod !== 'day' ? `period_${data.currentPeriod}` : null;
+    const currentDateLabel = periodKey ? t(periodKey) : fmtDate(data.current.startTime.slice(0, 10));
+
     if (!hourlyData) return null;
 
     return (
@@ -56,9 +60,9 @@ export function HourlyTrafficChart({data, selectedTab, color}: {data: ProtocolSt
                     <XAxis dataKey="hour" style={{fontSize: '0.7rem'}} />
                     <YAxis style={{fontSize: '0.7rem'}} />
                     <Tooltip />
-                    <Line name={t('today')} type="monotone" dataKey="today" stroke={color} strokeWidth={2} dot={{r: 1}} isAnimationActive={false} />
+                    <Line name={currentDateLabel} type="monotone" dataKey="today" stroke={color} strokeWidth={2} dot={{r: 1}} isAnimationActive={false} />
                     {data.hourlyHistory.map((hist, i) => (
-                        <Line key={hist.date} name={t('days_ago', {count: i + 1})} type="monotone" dataKey={`d${i + 1}`} stroke={HISTORY_COLORS[i]} strokeWidth={1} dot={false} isAnimationActive={false} />
+                        <Line key={hist.date} name={fmtDate(hist.date)} type="monotone" dataKey={`d${i + 1}`} stroke={HISTORY_COLORS[i]} strokeWidth={1} dot={false} isAnimationActive={false} />
                     ))}
                 </LineChart>
             </ResponsiveContainer>

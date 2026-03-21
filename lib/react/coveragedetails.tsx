@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import {useTranslation, Trans} from 'next-i18next';
 
 import type {ProtocolStatsApiResponse, GlobalUptimeHistoryEntry} from '../common/protocolstats';
+import {dateBounds} from '../common/datebounds';
 
 import {useStationMeta} from './stationmeta';
 import type {PickableDetails} from './pickabledetails';
@@ -214,15 +215,22 @@ export function CoverageDetails({
     const serverUptime = useMemo((): GlobalUptimeHistoryEntry[] | null => {
         if (!statsData) return null;
         const entries: GlobalUptimeHistoryEntry[] = [...(statsData.globalUptimeHistory ?? [])];
-        // Include today's live data if available
         if (statsData.globalUptime) {
             const liveDate = statsData.globalUptime.date;
             if (!entries.some((e) => e.date === liveDate)) {
-                entries.push({date: liveDate, activity: statsData.globalUptime.activity, uptime: statsData.globalUptime.uptime});
+                // Only include live data when today falls within the requested period
+                const periodStart = dateRange?.start || file;
+                const periodEnd = dateRange?.end || file;
+                const sb = periodStart ? dateBounds(periodStart) : null;
+                const eb = periodEnd ? dateBounds(periodEnd) : null;
+                const inRange = !sb || (liveDate >= sb.start && liveDate <= (eb?.end ?? sb.end));
+                if (inRange) {
+                    entries.push({date: liveDate, activity: statsData.globalUptime.activity, uptime: statsData.globalUptime.uptime});
+                }
             }
         }
         return entries.length > 0 ? entries : null;
-    }, [statsData]);
+    }, [statsData, dateRange?.start, dateRange?.end, file]);
 
     const serverUptimePercent = useMemo(() => {
         if (!serverUptime) return null;

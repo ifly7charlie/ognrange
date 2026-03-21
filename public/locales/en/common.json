@@ -136,7 +136,8 @@
             "ignoredSignal0": "Ignored (No signal strength)",
             "ignoredPAW": "Ignored (PAW/fake signal strength)",
             "ignoredH3stationary": "Ignored (Mostly Stationary)",
-            "ignoredElevation": "Ignored (Corrupt elevation)"
+            "ignoredElevation": "Ignored (Corrupt elevation)",
+            "ignoredFutureTimestamp": "Ignored (Future timestamp)"
         },
         "beacon": {
             "title": "Beacon Activity",
@@ -258,8 +259,10 @@
         "title": "Protocol Statistics",
         "generated": "Updated {{time}}",
         "traffic_by_hour": "Traffic by hour (UTC)",
-        "today": "Today",
-        "days_ago": "{{count}}d ago",
+        "period_year": "Year",
+        "period_yearnz": "Year",
+        "period_month": "Month",
+        "period_range": "Period",
         "devices_by_day": "Unique devices by day",
         "partial": "partial",
         "partial_restart": "partial (restart)",

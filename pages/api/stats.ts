@@ -157,6 +157,7 @@ export default async function handler(req, res) {
     if (hasRange) {
         const {type: periodType, value: periodValue} = parsePeriodParam(dateStart);
         const isSinglePeriod = !dateEnd || dateEnd === dateStart;
+        response.currentPeriod = isSinglePeriod ? periodType as ProtocolStatsApiResponse['currentPeriod'] : 'range';
 
         const startBounds = dateBounds(dateStart);
         const endBounds = dateBounds(dateEnd || dateStart);
@@ -291,14 +292,18 @@ export default async function handler(req, res) {
             }
             // devicesExact stays false
 
-            // Hourly history: most recent daily files in range (up to 3)
-            for (const day of rangeDays.slice(0, 3)) {
+            // Hourly history: most recent daily files BEFORE the range (up to 3),
+            // so the history lines show context outside the selected period rather
+            // than duplicating days already included in the aggregate.
+            const beforeRange = allDated.filter((d) => d.date < rangeStart).slice(0, 3);
+            for (const day of beforeRange) {
                 const stats = day.date === today && liveStats ? liveStats : readStatsFile(join(statsDir, day.file));
                 if (stats?.hourly) response.hourlyHistory.push({date: day.date, hourly: stats.hourly});
             }
         }
     } else {
         // Default mode: current day's live data
+        response.currentPeriod = 'day';
 
         const symlinkPath = join(statsDir, 'protocol-stats.json.gz');
         let currentDate = todayDate();
@@ -344,6 +349,17 @@ export default async function handler(req, res) {
         }
     }
 
+    // Truncate future hours from today's live hourly data so the chart doesn't
+    // show zero-filled buckets for times that haven't happened yet.
+    if (response.current?.startTime.slice(0, 10) === todayDate()) {
+        const currentHour = new Date().getUTCHours();
+        const truncatedHourly: Record<string, number[]> = {};
+        for (const [layer, hours] of Object.entries(response.current.hourly ?? {})) {
+            truncatedHourly[layer] = hours.slice(0, currentHour + 1);
+        }
+        response.current = {...response.current, hourly: truncatedHourly};
+    }
+
     // Global uptime: read live file
     response.globalUptime = readJsonFile<GlobalUptimeData>(join(statsDir, 'global-uptime.json.gz'));
 
@@ -364,6 +380,51 @@ export default async function handler(req, res) {
     }
     uptimeHistory.sort((a, b) => a.date.localeCompare(b.date));
     response.globalUptimeHistory = uptimeHistory;
+
+    // Populate globalUptimeAggregate for non-today periods
+    if (hasRange) {
+        const {type: upPeriodType, value: upPeriodValue} = parsePeriodParam(dateStart);
+        const upIsSingle = !dateEnd || dateEnd === dateStart;
+        const today = todayDate();
+
+        if (upIsSingle && upPeriodType === 'day') {
+            const isoDate = upPeriodValue ?? today;
+            if (isoDate !== today) {
+                // Past single day: read dated file; server/software from that day
+                const dated = readJsonFile<GlobalUptimeData>(join(statsDir, `global-uptime.${isoDate}.json.gz`));
+                if (dated) {
+                    response.globalUptimeAggregate = {
+                        uptime: dated.uptime,
+                        coverageStart: isoDate,
+                        coverageEnd: isoDate,
+                        activity: dated.activity,
+                        server: dated.server,
+                        serverSoftware: dated.serverSoftware,
+                    };
+                }
+            }
+            // else: today → no aggregate, GlobalUptimeCard falls through to globalUptime
+        } else {
+            // Range / non-day period: aggregate uptime from history + live if today is in range
+            const allEntries: {date: string; uptime: number}[] = [...uptimeHistory];
+            const liveUptime = response.globalUptime;
+            if (liveUptime) {
+                const ld = liveUptime.date;
+                if (ld >= uptimeRangeStart && ld <= uptimeRangeEnd && !allEntries.some(e => e.date === ld)) {
+                    allEntries.push({date: ld, uptime: liveUptime.uptime});
+                    allEntries.sort((a, b) => a.date.localeCompare(b.date));
+                }
+            }
+            if (allEntries.length > 0) {
+                const avg = allEntries.reduce((sum, e) => sum + e.uptime, 0) / allEntries.length;
+                response.globalUptimeAggregate = {
+                    uptime: avg,
+                    coverageStart: allEntries[0].date,
+                    coverageEnd: allEntries[allEntries.length - 1].date,
+                };
+            }
+        }
+    }
 
     res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
     res.status(200).json(response);

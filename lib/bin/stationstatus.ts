@@ -39,6 +39,7 @@ export interface StationDetails {
         ignoredSignal0: number; // no signal strength
         ignoredH3stationary: number; // device jumping between only a few locations
         ignoredElevation: number; // unable to determine elevation of coordinates
+        ignoredFutureTimestamp: number; // packet timestamp is too far in the future
         count: number; // total packets
     };
 }
@@ -53,6 +54,7 @@ function emptyStats() {
         ignoredPAW: 0,
         ignoredH3stationary: 0,
         ignoredElevation: 0,
+        ignoredFutureTimestamp: 0,
         count: 0
     };
 }

@@ -131,7 +131,8 @@ impl GlobalUptime {
             inner.snapshot()
         };
 
-        let content = build_json(now, &snap);
+        // Snapshot is for a completed day — all 144 slots elapsed
+        let content = build_json(now, &snap, Some(144));
         let stats_dir = format!("{}stats", *OUTPUT_PATH);
 
         // Always write .json.gz
@@ -151,11 +152,14 @@ impl GlobalUptime {
 }
 
 /// Build the JSON string from a snapshot.
-fn build_json(now: chrono::DateTime<Utc>, snap: &Snapshot) -> String {
+/// `elapsed_override`: if Some, use this as the elapsed slot count (e.g. 144 for a completed day).
+/// If None, derive elapsed from the current time (for the live file).
+fn build_json(now: chrono::DateTime<Utc>, snap: &Snapshot, elapsed_override: Option<u32>) -> String {
     let hex = bitvec_to_hex(&snap.bits);
-    let ts = now.timestamp() as u32;
-    let current_slot = slot_from_timestamp(ts) as u32 + 1; // 1-based elapsed
-    let elapsed = current_slot.min(144);
+    let elapsed = elapsed_override.unwrap_or_else(|| {
+        let ts = now.timestamp() as u32;
+        (slot_from_timestamp(ts) as u32 + 1).min(144)
+    });
     let set = popcount_144(&snap.bits);
     let uptime = if elapsed > 0 {
         ((set as f32 / elapsed as f32) * 1000.0).round() / 10.0
@@ -179,7 +183,7 @@ fn build_json(now: chrono::DateTime<Utc>, snap: &Snapshot) -> String {
 
 /// Write the live (non-dated) global-uptime files directly.
 fn write_live(now: chrono::DateTime<Utc>, snap: &Snapshot) {
-    let content = build_json(now, snap);
+    let content = build_json(now, snap, None);
     let stats_dir = format!("{}stats", *OUTPUT_PATH);
     write_gz_atomic(&stats_dir, "global-uptime.json.gz", &content);
     if *UNCOMPRESSED_ARROW_FILES {

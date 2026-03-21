@@ -477,8 +477,8 @@ pub async fn rollup_all(
             }
         }
         completed_count += 1;
-        let pct = if total_tasks > 0 { completed_count * 100 / total_tasks } else { 100 };
-        if pct % 10 == 0 || completed_count == total_tasks {
+        if total_tasks == 0 || completed_count * 10 / total_tasks != (completed_count - 1) * 10 / total_tasks {
+            let pct = if total_tasks > 0 { completed_count * 100 / total_tasks } else { 100 };
             info!("rollup {}% [{}/{}]", pct, completed_count, total_tasks);
         }
     }
@@ -1240,14 +1240,27 @@ fn write_station_json(
     let now = Utc::now();
     let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
     let current_slot = now.hour() * 6 + now.minute() / 10 + 1; // 1-144
+    let day_file = &accumulators.day.file;
 
-    // Compute uptime from beacon activity
-    let uptime = crate::station::compute_uptime(
-        &station_meta.beacon_activity,
-        &station_meta.beacon_activity_date,
-        &today,
-        current_slot,
-    );
+    // Compute uptime from beacon activity.
+    // If the beacon activity covers the day being rolled up and that day is already
+    // complete (not today), use elapsed=144 so the uptime is accurate for the full day.
+    let uptime = if station_meta.beacon_activity_date.as_deref() == Some(day_file.as_str())
+        && day_file.as_str() != today.as_str()
+    {
+        station_meta.beacon_activity.as_deref().and_then(|hex| {
+            let bits = crate::bitvec::hex_to_bitvec(hex)?;
+            let set = crate::bitvec::popcount_144(&bits);
+            Some(((set as f32 / 144.0) * 1000.0).round() / 10.0)
+        })
+    } else {
+        crate::station::compute_uptime(
+            &station_meta.beacon_activity,
+            &station_meta.beacon_activity_date,
+            &today,
+            current_slot,
+        )
+    };
 
     // Build the JSON: serialize StationDetails then merge in extra fields
     let mut json = match serde_json::to_value(station_meta) {
@@ -1379,8 +1392,8 @@ pub async fn rollup_startup(
 
             let log_progress = |completed: &std::sync::atomic::AtomicUsize| {
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                let pct = if total > 0 { done * 100 / total } else { 100 };
-                if pct % 10 == 0 || done == total {
+                if total == 0 || done * 10 / total != (done - 1) * 10 / total {
+                    let pct = if total > 0 { done * 100 / total } else { 100 };
                     let elapsed = startup_start.elapsed().as_secs_f64();
                     let speed = if elapsed > 0.0 { done as f64 / elapsed } else { 0.0 };
                     info!("startup:{}% [{}/{}] {:.0}s elapsed, {:.1}/s", pct, done, total, elapsed, speed);

@@ -5,11 +5,10 @@ import {useTranslation} from 'next-i18next';
 import Select, {SingleValue} from 'react-select';
 import {DayPicker, MonthPicker} from './datepicker';
 import {shouldProduceOutput, Layer} from '../common/layers';
+import type {PeriodType} from '../common/datebounds';
+import {ALL_PERIOD_TYPES} from '../common/datebounds';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
-
-type PeriodType = 'year' | 'yearnz' | 'month' | 'day';
-const ALL_PERIOD_TYPES: PeriodType[] = ['year', 'yearnz', 'month', 'day'];
 
 type Option = {value: string; label: string; isPartial?: boolean};
 

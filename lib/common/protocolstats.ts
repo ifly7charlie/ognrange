@@ -1,5 +1,7 @@
 // TypeScript types for protocol statistics JSON files produced by aprs-server
 
+import type {PeriodType} from './datebounds';
+
 export interface ProtocolEntry {
     raw: number;
     accepted: number;
@@ -46,12 +48,24 @@ export interface GlobalUptimeHistoryEntry {
     uptime: number;
 }
 
+export interface GlobalUptimeAggregate {
+    uptime: number;
+    coverageStart: string;   // YYYY-MM-DD of first available entry
+    coverageEnd: string;     // YYYY-MM-DD of last available entry
+    activity?: string;       // hex bitvector — present for single past day only
+    server?: string;         // from dated file — present for single past day only
+    serverSoftware?: string; // from dated file — present for single past day only
+}
+
 export interface ProtocolStatsApiResponse {
     current: ProtocolStatsJson | null;
     hourlyHistory: HourlyHistoryEntry[];
     dailyDevices: DailyDevicesEntry[];
     /** true = unique device count for the period; false = averaged across sub-periods */
     devicesExact: boolean;
+    /** The type of period the current stats cover, for display labelling */
+    currentPeriod?: PeriodType | 'range';
     globalUptime?: GlobalUptimeData | null;
     globalUptimeHistory?: GlobalUptimeHistoryEntry[];
+    globalUptimeAggregate?: GlobalUptimeAggregate | null;
 }

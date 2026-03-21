@@ -1,3 +1,6 @@
+export type PeriodType = 'year' | 'yearnz' | 'month' | 'day';
+export const ALL_PERIOD_TYPES: PeriodType[] = ['year', 'yearnz', 'month', 'day'];
+
 /** Parse a period param like "month.2026-03", "year.2026", "day.2026-03-18"
  *  into its type and optional value. Used by all stats API handlers. */
 export function parsePeriodParam(param: string): {type: string; value: string | null} {
