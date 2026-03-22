@@ -539,11 +539,13 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
     };
 
-    // Reject packets with timestamps too far in the future
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as u32;
+
+    // Count packets with timestamps far in the future — logged for diagnostics,
+    // but still processed (hourly stats use wall-clock so no chart pollution).
     if timestamp > now_secs + *FUTURE_PACKET_CUTOFF_SECS {
         state
             .packet_stats
@@ -554,14 +556,11 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
             state.station_manager.update(&sd);
         }
         reject_log::log_reject("future_timestamp", raw);
-        return;
     }
 
-    // Reject packets with timestamps before today's UTC midnight — delayed packets
-    // with yesterday's date (common with DDHHMMz day rollover or HHMMSSh near midnight)
-    // would otherwise pollute today's hourly statistics with yesterday's hour buckets.
-    let today_midnight = now_secs - (now_secs % 86400);
-    if timestamp < today_midnight {
+    // Count packets with timestamps older than STALE_PACKET_CUTOFF_SECS — logged for
+    // diagnostics, but still processed (hourly stats use wall-clock so no chart pollution).
+    if timestamp < now_secs.saturating_sub(*STALE_PACKET_CUTOFF_SECS) {
         state
             .packet_stats
             .ignored_stale_timestamp
@@ -571,7 +570,6 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
             state.station_manager.update(&sd);
         }
         reject_log::log_reject("stale_timestamp", raw);
-        return;
     }
 
     // OGNTRK relay filter
@@ -770,7 +768,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     }
 
     state.protocol_stats.record_accepted(&packet.dest_callsign, coarse_agl);
-    let hour = (timestamp / 3600) % 24;
+    let hour = (now_secs / 3600) % 24;
     for wl in &write_layers {
         state.protocol_stats.record_hourly(wl.name(), hour);
     }

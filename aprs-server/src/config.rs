@@ -102,9 +102,13 @@ pub static ELEVATION_TILE_RESOLUTION: Lazy<u32> =
 // Reject log rotation
 pub static REJECT_LOG_MAX_MB: Lazy<u64> = Lazy::new(|| env_parse("REJECT_LOG_MAX_MB", 50));
 
-/// Reject packets with timestamps more than this many seconds in the future (default: 300 = 5 minutes)
+/// Count (but still process) packets with timestamps more than this many seconds in the future (default: 300 = 5 minutes)
 pub static FUTURE_PACKET_CUTOFF_SECS: Lazy<u32> =
     Lazy::new(|| env_parse("FUTURE_PACKET_CUTOFF_SECS", 300u32));
+
+/// Count (but still process) packets with timestamps older than this many seconds (default: 3600 = 1 hour)
+pub static STALE_PACKET_CUTOFF_SECS: Lazy<u32> =
+    Lazy::new(|| env_parse("STALE_PACKET_CUTOFF_SECS", 3600u32));
 
 // Layer configuration
 pub static ENABLED_LAYERS: Lazy<Option<HashSet<Layer>>> =
