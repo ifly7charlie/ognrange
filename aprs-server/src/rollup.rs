@@ -43,7 +43,7 @@ use crate::coverage::header::{
 };
 use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
 use crate::layers::{is_layer_prefixed, Layer};
-use crate::station::{StationDetails, StationManager};
+use crate::station::{AprsPacketStats, StationDetails, StationManager};
 use crate::db::{self, Storage, TrackedDb};
 use crate::types::{Epoch, H3Index, StationId, StationName};
 
@@ -92,6 +92,7 @@ pub async fn rollup_all(
     station_manager: &StationManager,
     old_accumulators: &Accumulators,
     new_accumulators: Option<&Accumulators>,
+    write_json: bool,
 ) -> RollupStats {
     let start = std::time::Instant::now();
 
@@ -362,8 +363,10 @@ pub async fn rollup_all(
                         let last = meta.last_packet.map(|e| e.0).unwrap_or(0);
                         let cutoff = update_cutoff.map(|e| e.0).unwrap_or(out_epoch.0);
                         if last < cutoff {
-                            let output_dir = crate::config::output_dir(&station_name);
-                            write_station_json(&output_dir, &station_name, meta, &accumulators, None);
+                            if write_json {
+                                let output_dir = crate::config::output_dir(&station_name);
+                                write_station_json(&output_dir, &station_name, meta, &accumulators, None);
+                            }
                             skipped_no_traffic += 1;
                             continue;
                         }
@@ -403,6 +406,7 @@ pub async fn rollup_all(
                 &task_progress,
                 &retired,
                 &task_cancel,
+                write_json,
             ) {
                 Ok(stats) => stats,
                 Err(e) => {
@@ -434,6 +438,7 @@ pub async fn rollup_all(
                 total_stats.records_deleted += stats.records_deleted;
                 total_stats.arrow_records += stats.arrow_records;
                 // Update output_epoch/output_date (mirrors TS rollup.ts:207-208)
+                // Also reset per-station stats on day rotation (after write_station_json captured them).
                 if station_name != "global" {
                     if let Some(mut details) = station_manager.get(&StationName(station_name.clone())) {
                         details.output_epoch = Some(Epoch(now_epoch));
@@ -442,6 +447,12 @@ pub async fn rollup_all(
                                 .map(|d| d.to_rfc3339())
                                 .unwrap_or_default()
                         );
+                        let day_rotated = new_accumulators
+                            .map(|na| na.day.bucket != old_accumulators.day.bucket)
+                            .unwrap_or(false);
+                        if day_rotated {
+                            details.stats = AprsPacketStats::default();
+                        }
                         station_manager.update(&details);
                     }
                 }
@@ -485,6 +496,9 @@ pub async fn rollup_all(
 
     total_stats.stations_skipped += skipped_no_traffic;
     total_stats.elapsed_ms = start.elapsed().as_millis() as u64;
+
+    // Persist all in-memory station state (output_epoch, stats resets, validity) to the DB
+    station_manager.flush_all();
 
     info!(
         "Rollup complete in {}ms: {} stations ({} skipped no-traffic, {} concurrent), {} records read, {} written, {} deleted, {} arrow records",
@@ -542,6 +556,7 @@ fn rollup_station_all_layers(
     progress: &std::sync::Mutex<RollupProgress>,
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
     cancel: &AtomicBool,
+    write_json: bool,
 ) -> Result<RollupStats, String> {
     let station_start = std::time::Instant::now();
     let mut db = match TrackedDb::open(station_path, true) {
@@ -599,8 +614,8 @@ fn rollup_station_all_layers(
         }
     }
 
-    // Write per-station JSON (skip for global)
-    if !is_global && !cancelled() {
+    // Write per-station JSON (skip for global, and only when write_json is set)
+    if write_json && !is_global && !cancelled() {
         if let Some(meta) = station_meta {
             let output_dir = crate::config::output_dir(station_name);
             write_station_json(

@@ -1,6 +1,6 @@
-import {readdirSync, readFileSync, readlinkSync} from 'fs';
-import {gunzipSync} from 'zlib';
+import {readdirSync, readlinkSync} from 'fs';
 import {join} from 'path';
+import {readJsonFile} from '../../lib/common/statsio';
 
 import {OUTPUT_PATH, ROLLUP_PERIOD_MINUTES} from '../../lib/common/config';
 import {dateBounds, parsePeriodParam} from '../../lib/common/datebounds';
@@ -11,18 +11,6 @@ const statsDir = join(OUTPUT_PATH, 'stats');
 // Match dated daily files: protocol-stats.YYYY-MM-DD.json.gz
 const dailyFilePattern = /^protocol-stats\.(\d{4}-\d{2}-\d{2})\.json\.gz$/;
 const uptimeFilePattern = /^global-uptime\.(\d{4}-\d{2}-\d{2})\.json\.gz$/;
-
-function readJsonFile<T>(filePath: string): T | null {
-    try {
-        const raw = readFileSync(filePath);
-        if (filePath.endsWith('.gz')) {
-            return JSON.parse(gunzipSync(raw).toString()) as T;
-        }
-        return JSON.parse(raw.toString()) as T;
-    } catch {
-        return null;
-    }
-}
 
 function readStatsFile(filePath: string): ProtocolStatsJson | null {
     return readJsonFile<ProtocolStatsJson>(filePath);

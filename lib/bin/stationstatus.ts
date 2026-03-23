@@ -31,6 +31,9 @@ export interface StationDetails {
     layerMask?: number;
 
     stats: {
+        count: number; // all packets before any filtering
+        accepted: number; // packets written to coverage data (was: count)
+        delaySumSecs: number; // sum of packet ages at receipt (server time − packet timestamp) in seconds, accepted only; divide by `accepted` for mean
         ignoredPAW: number; // we ignore from PAW devices
         ignoredTracker: number; //  OGNTRK or not sent to qA first (ie repeated)
         invalidTracker: number; // invalid flarmid
@@ -40,14 +43,18 @@ export interface StationDetails {
         ignoredH3stationary: number; // device jumping between only a few locations
         ignoredElevation: number; // unable to determine elevation of coordinates
         ignoredFutureTimestamp: number; // packet timestamp is too far in the future
-        count: number; // total packets
-        delaySumSecs: number; // sum of packet delays (now - timestamp) in seconds
+        ignoredStaleTimestamp: number; // packet timestamp is too old
+        /** Accepted packets by layer and hour-of-day (0–23) */
+        hourly: Record<string, number[]>;
     };
 }
 
 function emptyStats() {
     return {
-        ignoredTracker: 0, //
+        count: 0,
+        accepted: 0,
+        delaySumSecs: 0,
+        ignoredTracker: 0,
         invalidTracker: 0,
         invalidTimestamp: 0,
         ignoredStationary: 0,
@@ -56,8 +63,8 @@ function emptyStats() {
         ignoredH3stationary: 0,
         ignoredElevation: 0,
         ignoredFutureTimestamp: 0,
-        count: 0,
-        delaySumSecs: 0
+        ignoredStaleTimestamp: 0,
+        hourly: {} as Record<string, number[]>
     };
 }
 

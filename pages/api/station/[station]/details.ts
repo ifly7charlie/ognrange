@@ -30,7 +30,7 @@ interface StationJson {
     lastLocation?: number;
     lastBeacon?: number;
     layerMask?: number;
-    stats?: Record<string, number>;
+    stats?: Record<string, number | Record<string, number[]>>;
     activity?: {
         ranges: {start: number; end: number; cells: number}[];
         totalRollups: number;
@@ -109,8 +109,9 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
     // Bitwise OR for layerMask
     let layerMask = 0;
 
-    // Sum stats
-    const sumStats: Record<string, number> = {};
+    // Sum stats (numeric fields) and hourly (element-wise array sums)
+    const sumStats: Record<string, number | Record<string, number[]>> = {};
+    const sumHourly: Record<string, number[]> = {};
 
     // Activity aggregation
     let allRanges: {start: number; end: number; cells: number}[] = [];
@@ -137,7 +138,17 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
 
         if (data.stats) {
             for (const [key, val] of Object.entries(data.stats)) {
-                sumStats[key] = (sumStats[key] ?? 0) + val;
+                if (key === 'hourly' && val !== null && typeof val === 'object') {
+                    for (const [layer, hours] of Object.entries(val as Record<string, number[]>)) {
+                        if (!sumHourly[layer]) sumHourly[layer] = new Array(24).fill(0);
+                        (hours as number[]).forEach((v, i) => { sumHourly[layer][i] += v; });
+                    }
+                } else if (typeof val === 'number') {
+                    // Normalise old `count` key to `accepted` for backward compat with old day files
+                    const k = key === 'count' ? 'accepted' : key;
+                    const prev = typeof sumStats[k] === 'number' ? (sumStats[k] as number) : 0;
+                    sumStats[k] = prev + val;
+                }
             }
         }
 
@@ -165,7 +176,9 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
     if (maxLastLocation) result.lastLocation = maxLastLocation;
     if (maxLastBeacon) result.lastBeacon = maxLastBeacon;
     if (layerMask) result.layerMask = layerMask;
-    if (Object.keys(sumStats).length) result.stats = sumStats;
+    if (Object.keys(sumStats).length || Object.keys(sumHourly).length) {
+        result.stats = Object.keys(sumHourly).length ? {...sumStats, hourly: sumHourly} : sumStats;
+    }
 
     // Sort ranges by start time
     allRanges.sort((a, b) => a.start - b.start);

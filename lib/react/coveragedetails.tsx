@@ -33,6 +33,7 @@ import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {StationPosition} from './coveragedetails/stationposition';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 import {GlobalUptimeCard} from './coveragedetails/globaluptime';
+import {StationStatsDashboard, StationHourlyDetailChart} from './coveragedetails/stationstats';
 
 import {formatEpoch} from './formatdate';
 
@@ -148,6 +149,7 @@ export function CoverageDetails({
     const [doFetch, setDoFetch] = useState(key);
     const [extraVisible, setExtraVisible] = useState(false);
     const [selectedLayer, setSelectedLayer] = useState('all');
+    const [statsView, setStatsView] = useState<'protocol' | 'stations'>('protocol');
 
     // Reset layer selection when the hexagon changes
     useEffect(() => {
@@ -199,12 +201,14 @@ export function CoverageDetails({
 
     const stationData = stationDataRaw && Object.keys(stationDataRaw).length > 0 ? stationDataRaw : null;
 
-    // Convert raw delaySumSecs + count into avgDelaySecs for display
+    // Convert raw delaySumSecs + accepted/count into avgDelaySecs for display
+    // Filter out hourly (object, not a number) and delaySumSecs (replaced by avg)
     const displayStats = useMemo(() => {
         if (!stationData?.stats) return null;
-        const {delaySumSecs, ...rest} = stationData.stats as any;
-        if (delaySumSecs != null && rest.count > 0) {
-            return {...rest, avgDelaySecs: Math.round(delaySumSecs / rest.count)} as Record<string, number>;
+        const {delaySumSecs, hourly: _hourly, ...rest} = stationData.stats as any;
+        const accepted = rest.accepted ?? rest.count ?? 0;
+        if (delaySumSecs != null && accepted > 0) {
+            return {...rest, avgDelaySecs: Math.round(delaySumSecs / accepted)} as Record<string, number>;
         }
         return rest as Record<string, number>;
     }, [stationData]);
@@ -361,6 +365,12 @@ export function CoverageDetails({
                                 ))}
                             </tbody>
                         </table>
+                        {stationData?.stats?.hourly && Object.keys(stationData.stats.hourly).length > 0 && (
+                            <StationHourlyDetailChart
+                                hourly={stationData.stats.hourly as Record<string, number[]>}
+                                isToday={!isRange}
+                            />
+                        )}
                     </>
                 ) : null}
                 {(stationData?.mobile || stationData?.moved || stationData?.bouncing) ? (
@@ -445,7 +455,26 @@ export function CoverageDetails({
             {!station && (
                 <>
                     <hr />
-                    <ProtocolStatsDashboard layers={layers ?? ['combined']} setLayers={setLayers ?? (() => {})} dateRange={dateRange} />
+                    <div style={{display: 'flex', gap: '8px', marginBottom: '4px'}}>
+                        <button
+                            style={{fontWeight: statsView === 'protocol' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'protocol' ? '2px solid #4488cc' : 'none'}}
+                            onClick={() => setStatsView('protocol')}
+                        >
+                            {t('stats.tab_protocol')}
+                        </button>
+                        <button
+                            style={{fontWeight: statsView === 'stations' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'stations' ? '2px solid #4488cc' : 'none'}}
+                            onClick={() => setStatsView('stations')}
+                        >
+                            {t('stats.tab_stations')}
+                        </button>
+                    </div>
+                    {statsView === 'protocol' && (
+                        <ProtocolStatsDashboard layers={layers ?? ['combined']} setLayers={setLayers ?? (() => {})} dateRange={dateRange} />
+                    )}
+                    {statsView === 'stations' && (
+                        <StationStatsDashboard dateRange={dateRange} />
+                    )}
                     <GlobalUptimeCard dateRange={dateRange} />
                 </>
             )}

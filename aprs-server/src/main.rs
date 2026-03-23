@@ -12,7 +12,9 @@ mod layers;
 mod protocol_stats;
 mod reject_log;
 mod rollup;
+mod stats_accumulator;
 mod station;
+mod station_stats;
 mod stationfile;
 mod symlinks;
 mod db;
@@ -139,6 +141,7 @@ struct AppState {
     elevation: elevation::ElevationService,
     packet_stats: PacketStats,
     protocol_stats: protocol_stats::ProtocolStats,
+    station_global_stats: station_stats::StationGlobalStats,
     global_uptime: global_uptime::GlobalUptime,
     accumulators: RwLock<accumulators::Accumulators>,
     all_aircraft: Mutex<HashMap<(Layer, u32), AircraftState>>,
@@ -214,6 +217,7 @@ async fn main() {
         elevation: elevation::ElevationService::new(),
         packet_stats: PacketStats::default(),
         protocol_stats: protocol_stats::ProtocolStats::load(),
+        station_global_stats: station_stats::StationGlobalStats::load(),
         global_uptime: global_uptime::GlobalUptime::new(),
         accumulators: RwLock::new(acc),
         all_aircraft: Mutex::new(HashMap::new()),
@@ -281,6 +285,7 @@ async fn main() {
     drop(_flush_guard);
 
     state.protocol_stats.save_state();
+    state.station_global_stats.save_state();
     state.global_uptime.clear_current_slot();
     state.station_manager.close();
     info!("Shutdown complete");
@@ -523,6 +528,14 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
     }
 
+    // Allocate (or retrieve) the station entry and count this packet once
+    let mut station_details = match state.station_manager.get_or_create(&station_name) {
+        Some(d) => d,
+        None => return,
+    };
+    station_details.stats.count += 1;
+    state.station_global_stats.record_raw();
+
     let timestamp = match packet.timestamp {
         Some(ts) => ts,
         None => {
@@ -530,10 +543,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                 .packet_stats
                 .invalid_timestamp
                 .fetch_add(1, Ordering::Relaxed);
-            if let Some(mut sd) = state.station_manager.get(&station_name) {
-                sd.stats.invalid_timestamp += 1;
-                state.station_manager.update(&sd);
-            }
+            station_details.stats.invalid_timestamp += 1;
+            state.station_manager.update(&station_details);
             reject_log::log_reject("invalid_timestamp", raw);
             return;
         }
@@ -545,30 +556,24 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         .as_secs() as u32;
 
     // Count packets with timestamps far in the future — logged for diagnostics,
-    // but still processed (hourly stats use wall-clock so no chart pollution).
+    // but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp > now_secs + *FUTURE_PACKET_CUTOFF_SECS {
         state
             .packet_stats
             .ignored_future_timestamp
             .fetch_add(1, Ordering::Relaxed);
-        if let Some(mut sd) = state.station_manager.get(&station_name) {
-            sd.stats.ignored_future_timestamp += 1;
-            state.station_manager.update(&sd);
-        }
+        station_details.stats.ignored_future_timestamp += 1;
         reject_log::log_reject("future_timestamp", raw);
     }
 
     // Count packets with timestamps older than STALE_PACKET_CUTOFF_SECS — logged for
-    // diagnostics, but still processed (hourly stats use wall-clock so no chart pollution).
+    // diagnostics, but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp < now_secs.saturating_sub(*STALE_PACKET_CUTOFF_SECS) {
         state
             .packet_stats
             .ignored_stale_timestamp
             .fetch_add(1, Ordering::Relaxed);
-        if let Some(mut sd) = state.station_manager.get(&station_name) {
-            sd.stats.ignored_stale_timestamp += 1;
-            state.station_manager.update(&sd);
-        }
+        station_details.stats.ignored_stale_timestamp += 1;
         reject_log::log_reject("stale_timestamp", raw);
     }
 
@@ -580,10 +585,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                     .packet_stats
                     .ignored_tracker
                     .fetch_add(1, Ordering::Relaxed);
-                if let Some(mut sd) = state.station_manager.get(&station_name) {
-                    sd.stats.ignored_tracker += 1;
-                    state.station_manager.update(&sd);
-                }
+                station_details.stats.ignored_tracker += 1;
+                state.station_manager.update(&station_details);
                 reject_log::log_reject("ogntrk_relay", raw);
                 return;
             }
@@ -616,10 +619,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                 .packet_stats
                 .ignored_stationary
                 .fetch_add(1, Ordering::Relaxed);
-            if let Some(mut sd) = state.station_manager.get(&station_name) {
-                sd.stats.ignored_stationary += 1;
-                state.station_manager.update(&sd);
-            }
+            station_details.stats.ignored_stationary += 1;
+            state.station_manager.update(&station_details);
             // Update aircraft seen time (always succeeds — entry created above)
             let mut all_aircraft = state.all_aircraft.lock().await;
             if let Some(aircraft) = all_aircraft.get_mut(&(layer, flarm_num)) {
@@ -629,7 +630,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
     }
 
-    // Signal handling — checked before station allocation
+    // Signal handling
     let is_presence_only = is_presence_only(layer);
     let signal: u8;
     let crc: u8;
@@ -651,20 +652,12 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                 .packet_stats
                 .ignored_signal0
                 .fetch_add(1, Ordering::Relaxed);
-            if let Some(mut sd) = state.station_manager.get(&station_name) {
-                sd.stats.ignored_signal0 += 1;
-                state.station_manager.update(&sd);
-            }
+            station_details.stats.ignored_signal0 += 1;
+            state.station_manager.update(&station_details);
             reject_log::log_reject("signal_zero", raw);
             return;
         }
     }
-
-    // All pre-checks passed — allocate station ID now
-    let mut station_details = match state.station_manager.get_or_create(&station_name) {
-        Some(d) => d,
-        None => return,
-    };
 
     // Gap calculation
     let gap: u8;
@@ -717,7 +710,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
                     .packet_stats
                     .ignored_h3stationary
                     .fetch_add(1, Ordering::Relaxed);
-                station_details.stats.ignored_stationary += 1;
+                station_details.stats.ignored_h3stationary += 1;
                 state.station_manager.update(&station_details);
                 return;
             }
@@ -726,7 +719,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Count valid packet
     state.packet_stats.count.fetch_add(1, Ordering::Relaxed);
-    station_details.stats.count += 1;
+    station_details.stats.accepted += 1;
     station_details.stats.delay_sum_secs = station_details
         .stats
         .delay_sum_secs
@@ -734,6 +727,13 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Determine write layers (dual-write for FLARM/OGNTRK)
     let write_layers = get_write_layers(layer);
+
+    // Hourly per-layer breakdown and global station stats
+    let hour = ((now_secs / 3600) % 24) as usize;
+    for wl in &write_layers {
+        station_details.stats.hourly.entry(wl.name().to_string()).or_insert([0u64; 24])[hour] += 1;
+        state.station_global_stats.record_accepted(wl.name(), hour);
+    }
     let new_mask = station_details.layer_mask.unwrap_or(0) | layer_mask_from_set(&write_layers);
     station_details.layer_mask = Some(new_mask);
     station_details.layers = layers::layer_names_from_mask(new_mask);
@@ -765,6 +765,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
             .packet_stats
             .ignored_elevation
             .fetch_add(1, Ordering::Relaxed);
+        station_details.stats.ignored_elevation += 1;
+        state.station_manager.update(&station_details);
         if layer != Layer::Adsb {
             reject_log::log_reject("altitude_too_high", raw);
         }
@@ -772,9 +774,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     }
 
     state.protocol_stats.record_accepted(&packet.dest_callsign, coarse_agl);
-    let hour = (now_secs / 3600) % 24;
     for wl in &write_layers {
-        state.protocol_stats.record_hourly(wl.name(), hour);
+        state.protocol_stats.record_hourly(wl.name(), hour as u32);
     }
 
     // Get current accumulator bucket
@@ -885,6 +886,7 @@ async fn periodic_tasks(state: Arc<AppState>) {
         })
     };
 
+    let mut last_station_flush: i64 = chrono::Utc::now().timestamp() / 3600;
     loop {
         flush_interval.tick().await;
 
@@ -895,6 +897,13 @@ async fn periodic_tasks(state: Arc<AppState>) {
             .flush(&state.storage, &state.station_manager, &acc, false)
             .await;
         drop(_flush_guard);
+
+        // Flush station status DB once per hour
+        let current_hour = chrono::Utc::now().timestamp() / 3600;
+        if current_hour != last_station_flush {
+            last_station_flush = current_hour;
+            state.station_manager.flush_all();
+        }
 
         let stats = state.packet_stats.snapshot();
         let packets = stats.count - last_count;
@@ -938,6 +947,7 @@ async fn periodic_tasks(state: Arc<AppState>) {
 /// Rollup timer: triggers accumulator rotation at period boundaries.
 /// Acquires flush_lock to flush all cached H3 data, then rolls up.
 async fn rollup_timer(state: Arc<AppState>) {
+    let mut last_hourly_write: i64 = chrono::Utc::now().timestamp() / 3600;
     loop {
         let delay = accumulators::next_rollup_delay();
         tokio::time::sleep(delay).await;
@@ -952,6 +962,13 @@ async fn rollup_timer(state: Arc<AppState>) {
             }
             current.clone()
         };
+
+        // Write JSON files and stats once per hour (or always if rollup period >= 1h)
+        let current_hour = now.timestamp() / 3600;
+        let write_outputs = current_hour != last_hourly_write;
+        if write_outputs {
+            last_hourly_write = current_hour;
+        }
 
         // Acquire flush_lock first, then swap accumulators, so periodic
         // flushes always see consistent accumulators.
@@ -983,12 +1000,16 @@ async fn rollup_timer(state: Arc<AppState>) {
             &state.station_manager,
             &old_acc,
             Some(&new_acc),
+            write_outputs,
         )
         .await;
         drop(flush_guard);
 
-        // Write protocol stats after rollup completes
+        // Write protocol and station stats after rollup completes (hourly)
         state.protocol_stats.write_stats(&old_acc, &new_acc);
-        state.global_uptime.write_snapshot(&old_acc.day.file);
+        if write_outputs {
+            state.station_global_stats.write_and_maybe_reset(&old_acc, &new_acc);
+            state.global_uptime.write_snapshot(&old_acc.day.file);
+        }
     }
 }
