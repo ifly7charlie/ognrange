@@ -496,6 +496,24 @@ pub async fn rollup_all(
     total_stats.stations_skipped += skipped_no_traffic;
     total_stats.elapsed_ms = start.elapsed().as_millis() as u64;
 
+    // On day rotation, clear beacon_activity for stations whose bitvector is still from the
+    // previous day.  Stations that already received a beacon in the new day (beacon_activity_date
+    // == new day file) are left untouched.  Without this sweep, stations that go silent at night
+    // would carry yesterday's bitvector into today's day files indefinitely.
+    if let Some(new_acc) = new_accumulators {
+        if new_acc.day.bucket != old_accumulators.day.bucket {
+            let new_day = &new_acc.day.file;
+            for mut details in station_manager.all_stations() {
+                let is_new_day = details.beacon_activity_date.as_deref() == Some(new_day.as_str());
+                if !is_new_day && (details.beacon_activity.is_some() || details.beacon_activity_date.is_some()) {
+                    details.beacon_activity = None;
+                    details.beacon_activity_date = None;
+                    station_manager.update(&details);
+                }
+            }
+        }
+    }
+
     // Persist all in-memory station state (output_epoch, stats resets, validity) to the DB
     station_manager.flush_all();
 
