@@ -138,7 +138,8 @@
             "ignoredH3stationary": "Ignored (Mostly Stationary)",
             "ignoredElevation": "Ignored (Corrupt elevation)",
             "ignoredFutureTimestamp": "Ignored (Future timestamp)",
-            "ignoredStaleTimestamp": "Ignored (Stale timestamp)"
+            "ignoredStaleTimestamp": "Ignored (Stale timestamp)",
+            "avgDelaySecs": "Avg Packet Delay (s)"
         },
         "beacon": {
             "title": "Beacon Activity",

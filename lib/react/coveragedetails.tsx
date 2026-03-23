@@ -199,6 +199,16 @@ export function CoverageDetails({
 
     const stationData = stationDataRaw && Object.keys(stationDataRaw).length > 0 ? stationDataRaw : null;
 
+    // Convert raw delaySumSecs + count into avgDelaySecs for display
+    const displayStats = useMemo(() => {
+        if (!stationData?.stats) return null;
+        const {delaySumSecs, ...rest} = stationData.stats as any;
+        if (delaySumSecs != null && rest.count > 0) {
+            return {...rest, avgDelaySecs: Math.round(delaySumSecs / rest.count)} as Record<string, number>;
+        }
+        return rest as Record<string, number>;
+    }, [stationData]);
+
     // Fetch server uptime data for station view overlay
     const statsUrl = useMemo(() => {
         if (h3 || !station) return null;
@@ -338,15 +348,15 @@ export function CoverageDetails({
                     <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
                 )}
                 <br />
-                {stationData?.stats ? (
+                {displayStats ? (
                     <>
                         <b>{isRange ? t('statistics.title_range') : t('statistics.title', {when: formatEpoch(stationData.outputEpoch)})}</b>
                         <table>
                             <tbody>
-                                {Object.keys(stationData.stats).filter((key) => key !== 'ignoredPAW').map((key) => (
+                                {Object.keys(displayStats).filter((key) => key !== 'ignoredPAW').map((key) => (
                                     <tr key={key}>
                                         <td>{t(`statistics.${key}`)}</td>
-                                        <td>{stationData.stats[key]}</td>
+                                        <td>{displayStats[key]}</td>
                                     </tr>
                                 ))}
                             </tbody>

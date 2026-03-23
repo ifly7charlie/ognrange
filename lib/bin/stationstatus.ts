@@ -41,6 +41,7 @@ export interface StationDetails {
         ignoredElevation: number; // unable to determine elevation of coordinates
         ignoredFutureTimestamp: number; // packet timestamp is too far in the future
         count: number; // total packets
+        delaySumSecs: number; // sum of packet delays (now - timestamp) in seconds
     };
 }
 
@@ -55,7 +56,8 @@ function emptyStats() {
         ignoredH3stationary: 0,
         ignoredElevation: 0,
         ignoredFutureTimestamp: 0,
-        count: 0
+        count: 0,
+        delaySumSecs: 0
     };
 }
 

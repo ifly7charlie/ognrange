@@ -40,6 +40,7 @@ pub struct StationStats {
     pub ignored_future_timestamp: u32,
     pub ignored_stale_timestamp: u32,
     pub count: u64,
+    pub delay_sum_secs: u64,
 }
 
 /// Deserialize an `Option<[f64; 2]>` that tolerates nulls inside the array.

@@ -727,6 +727,10 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     // Count valid packet
     state.packet_stats.count.fetch_add(1, Ordering::Relaxed);
     station_details.stats.count += 1;
+    station_details.stats.delay_sum_secs = station_details
+        .stats
+        .delay_sum_secs
+        .saturating_add(now_secs.saturating_sub(timestamp) as u64);
 
     // Determine write layers (dual-write for FLARM/OGNTRK)
     let write_layers = get_write_layers(layer);
