@@ -82,7 +82,7 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
             const layerDateSets: Record<string, Set<string>> = {};
             for (const layer of layersToCheck) {
                 const lData = (layer === 'combined'
-                    ? (layerData?.combined ?? layerData)
+                    ? (Array.isArray(layerData) ? layerData : layerData?.combined)
                     : layerData?.[layer]) as string[] | undefined;
                 const all = (lData || []) as string[];
                 const inputVals = all.map((date: string) => dateToInput(type, date)).filter(Boolean) as string[];
