@@ -365,7 +365,7 @@ pub async fn rollup_all(
                         if last < cutoff {
                             if write_json {
                                 let output_dir = crate::config::output_dir(&station_name);
-                                write_station_json(&output_dir, &station_name, meta, &accumulators, None);
+                                write_station_json(&output_dir, &station_name, meta, &accumulators, None, 0);
                             }
                             skipped_no_traffic += 1;
                             continue;
@@ -406,7 +406,6 @@ pub async fn rollup_all(
                 &task_progress,
                 &retired,
                 &task_cancel,
-                write_json,
             ) {
                 Ok(stats) => stats,
                 Err(e) => {
@@ -556,7 +555,6 @@ fn rollup_station_all_layers(
     progress: &std::sync::Mutex<RollupProgress>,
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
     cancel: &AtomicBool,
-    write_json: bool,
 ) -> Result<RollupStats, String> {
     let station_start = std::time::Instant::now();
     let mut db = match TrackedDb::open(station_path, true) {
@@ -570,6 +568,7 @@ fn rollup_station_all_layers(
     let mut total_stats = RollupStats::default();
     let cancelled = || cancel.load(Ordering::Relaxed);
     let mut combined_day_activity: Option<RollupActivity> = None;
+    let mut combined_day_arrow_count: usize = 0;
 
     for layer in layers {
         if cancelled() {
@@ -586,7 +585,7 @@ fn rollup_station_all_layers(
             *layer, layer_suffix, valid_stations, is_global, station_meta,
             retired_accumulators, cancel, progress,
         ) {
-            Ok((stats, day_activity)) => {
+            Ok((stats, day_activity, day_arrow_count)) => {
                 let layer_elapsed = layer_start.elapsed();
                 if layer_elapsed.as_secs() >= 20 {
                     warn!("{}: layer {} took {:?} (read={}, written={}, deleted={}, arrow={})",
@@ -601,6 +600,9 @@ fn rollup_station_all_layers(
                 if let Some(act) = day_activity {
                     combined_day_activity = Some(act);
                 }
+                if let Some(count) = day_arrow_count {
+                    combined_day_arrow_count = count;
+                }
                 if let Ok(mut p) = progress.lock() {
                     p.records_read = total_stats.records_read;
                     p.records_written = total_stats.records_written;
@@ -614,8 +616,9 @@ fn rollup_station_all_layers(
         }
     }
 
-    // Write per-station JSON (skip for global, and only when write_json is set)
-    if write_json && !is_global && !cancelled() {
+    // Write per-station JSON for every active-station rollup (not gated by write_json so that
+    // beaconActivity, stats, and arrowRecords are always current, not just on hourly writes).
+    if !is_global && !cancelled() {
         if let Some(meta) = station_meta {
             let output_dir = crate::config::output_dir(station_name);
             write_station_json(
@@ -624,6 +627,7 @@ fn rollup_station_all_layers(
                 meta,
                 accumulators,
                 combined_day_activity.as_ref(),
+                combined_day_arrow_count,
             );
         }
     }
@@ -678,7 +682,7 @@ fn rollup_station_layer(
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
     cancel: &AtomicBool,
     progress: &std::sync::Mutex<RollupProgress>,
-) -> Result<(RollupStats, Option<RollupActivity>), String> {
+) -> Result<(RollupStats, Option<RollupActivity>, Option<usize>), String> {
     let mut stats = RollupStats::default();
     let layer_t0 = std::time::Instant::now();
 
@@ -702,7 +706,7 @@ fn rollup_station_layer(
     let t_read_current = layer_t0.elapsed();
 
     if is_shutdown() || cancel.load(Ordering::Relaxed) || current_records.is_empty() {
-        return Ok((stats, None));
+        return Ok((stats, None, None));
     }
 
     // Set up rollup destination accumulators
@@ -751,7 +755,7 @@ fn rollup_station_layer(
     let t_merge_start = std::time::Instant::now();
     for (current_key, current_value) in &current_records {
         if cancel.load(Ordering::Relaxed) {
-            return Ok((stats, None));
+            return Ok((stats, None, None));
         }
         let current_record = match CoverageRecord::from_bytes(current_value) {
             Some(r) => r,
@@ -927,6 +931,11 @@ fn rollup_station_layer(
         None
     };
 
+    // Arrow count for the combined-layer Day dest, returned to caller so write_station_json
+    // can include it. We skip write_metadata_json for this specific dest to avoid overwriting
+    // the full station JSON (which includes beaconActivity, stats, etc.) with stripped metadata.
+    let mut combined_day_arrow_count: Option<usize> = None;
+
     for dest in &destinations {
         if dest.file.is_empty() {
             continue;
@@ -952,6 +961,14 @@ fn rollup_station_layer(
             )?
         };
         stats.arrow_records += arrow_count;
+
+        // For the combined-layer Day dest on non-global stations, skip write_metadata_json:
+        // write_station_json (called by the parent) writes the same filename with full details
+        // including beaconActivity and stats. Return the arrow count to the parent instead.
+        if !is_global && layer == Layer::Combined && dest.acc_type == AccumulatorType::Day {
+            combined_day_arrow_count = Some(arrow_count);
+            continue;
+        }
 
         // Write metadata JSON (includes activity)
         write_metadata_json(
@@ -981,7 +998,7 @@ fn rollup_station_layer(
             t_arrow, stats.arrow_records);
     }
 
-    Ok((stats, day_activity))
+    Ok((stats, day_activity, combined_day_arrow_count))
 }
 
 /// Emit the record at dest.pos to arrow output, optionally filtering stations.
@@ -1249,6 +1266,7 @@ fn write_station_json(
     station_meta: &crate::station::StationDetails,
     accumulators: &Accumulators,
     day_activity: Option<&RollupActivity>,
+    arrow_records: usize,
 ) {
     use chrono::{Datelike, Timelike, Utc};
 
@@ -1288,6 +1306,7 @@ fn write_station_json(
 
     if let Some(obj) = json.as_object_mut() {
         obj.insert("uptime".to_string(), serde_json::json!(uptime));
+        obj.insert("arrowRecords".to_string(), serde_json::json!(arrow_records));
         if let Some(act) = day_activity {
             obj.insert("activity".to_string(), serde_json::to_value(act).unwrap_or_default());
         }
@@ -1651,7 +1670,7 @@ pub async fn rollup_startup(
                     &SHUTDOWN, // use global shutdown for startup rollup
                     &startup_progress,
                 ) {
-                    Ok((stats, _day_activity)) => {
+                    Ok((stats, _day_activity, _day_arrow_count)) => {
                         info!(
                             "{}: startup rollup complete {} — {} written, {} arrow, {} deleted",
                             station_name, layer.name(),

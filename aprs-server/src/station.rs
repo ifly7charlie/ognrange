@@ -279,6 +279,25 @@ impl StationManager {
                     let station_name = StationName(name);
                     details.station = station_name.clone();
                     details.layers = crate::layers::layer_names_from_mask(details.layer_mask.unwrap_or(0));
+                    // Migrate old TypeScript format: count was the accepted counter,
+                    // accepted field didn't exist. Detected by accepted==0 && count > sum(rejections).
+                    if details.stats.accepted == 0 && details.stats.count > 0 {
+                        let s = &mut details.stats;
+                        let rejected = s.ignored_tracker as u64
+                            + s.invalid_tracker as u64
+                            + s.invalid_timestamp as u64
+                            + s.ignored_stationary as u64
+                            + s.ignored_signal0 as u64
+                            + s.ignored_paw as u64
+                            + s.ignored_h3stationary as u64
+                            + s.ignored_elevation as u64
+                            + s.ignored_future_timestamp as u64
+                            + s.ignored_stale_timestamp as u64;
+                        if s.count > rejected {
+                            s.accepted = s.count;
+                            s.count = s.accepted + rejected;
+                        }
+                    }
                     self.station_ids
                         .write()
                         .unwrap()

@@ -14,7 +14,8 @@ import yargs from 'yargs';
  * New format (Rust server):       stats.count = all packets (raw), stats.accepted = accepted packets
  *
  * Migration: if stats.accepted is absent, the old stats.count was the accepted count.
- * We set accepted = old count and keep count = accepted (raw count is unknown).
+ * We set accepted = old count, then recompute count = accepted + all rejection counters
+ * (the true raw count is unknown; this is the best approximation available).
  */
 
 const args = yargs(process.argv.slice(2))

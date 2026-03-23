@@ -717,23 +717,10 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
     }
 
-    // Count valid packet
-    state.packet_stats.count.fetch_add(1, Ordering::Relaxed);
-    station_details.stats.accepted += 1;
-    station_details.stats.delay_sum_secs = station_details
-        .stats
-        .delay_sum_secs
-        .saturating_add(now_secs.saturating_sub(timestamp) as u64);
-
     // Determine write layers (dual-write for FLARM/OGNTRK)
     let write_layers = get_write_layers(layer);
-
-    // Hourly per-layer breakdown and global station stats
     let hour = ((now_secs / 3600) % 24) as usize;
-    for wl in &write_layers {
-        station_details.stats.hourly.entry(wl.name().to_string()).or_insert([0u64; 24])[hour] += 1;
-        state.station_global_stats.record_accepted(wl.name(), hour);
-    }
+
     let new_mask = station_details.layer_mask.unwrap_or(0) | layer_mask_from_set(&write_layers);
     station_details.layer_mask = Some(new_mask);
     station_details.layers = layers::layer_names_from_mask(new_mask);
@@ -772,6 +759,19 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
         return;
     }
+
+    // Packet passed all filters — count as accepted
+    state.packet_stats.count.fetch_add(1, Ordering::Relaxed);
+    station_details.stats.accepted += 1;
+    station_details.stats.delay_sum_secs = station_details
+        .stats
+        .delay_sum_secs
+        .saturating_add(now_secs.saturating_sub(timestamp) as u64);
+    for wl in &write_layers {
+        station_details.stats.hourly.entry(wl.name().to_string()).or_insert([0u64; 24])[hour] += 1;
+        state.station_global_stats.record_accepted(wl.name(), hour);
+    }
+    state.station_manager.update(&station_details);
 
     state.protocol_stats.record_accepted(&packet.dest_callsign, coarse_agl);
     for wl in &write_layers {
