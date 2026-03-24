@@ -1560,7 +1560,7 @@ pub async fn rollup_startup(
                 }
             }
 
-            if !all_accumulators.is_empty() || !hanging_buckets.is_empty() || !to_purge.is_empty() || migrated > 0 {
+            if !hanging_buckets.is_empty() || !to_purge.is_empty() || migrated > 0 {
                 let found: Vec<String> = all_accumulators.iter()
                     .map(|(t, b, l, f)| format!("{}/{}={:04x}({})", l.name(), t.name(), b.0, f))
                     .collect();
