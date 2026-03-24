@@ -84,9 +84,10 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `lastSeenAtPrevious` | `u32?` | Unix timestamp of the last packet received near `previous_location` |
 | `valid` | `bool` | Station is actively contributing to coverage data |
 | `layerMask` | `u8?` | Bitmask of protocol layers this station has received data for (see [Layer mask](#layer-mask)) |
-| `outputEpoch` | `u32?` | Unix timestamp of the last rollup that included this station |
-| `outputDate` | `string?` | Date string (`YYYY-MM-DD`) of the last rollup output |
-| `lastOutputFile` | `u32?` | Epoch of the last output file written for this station |
+| `outputEpoch` | `u32?` | Unix timestamp of the last rollup that produced arrow/coverage output for this station |
+| `outputDate` | `string?` | Date string (`YYYY-MM-DD`) of the last coverage output |
+| `lastOutputFile` | `u32?` | Epoch of the last arrow file written for this station |
+| `exportedAt` | `u64?` | Unix timestamp when the per-station day JSON was last written (updated every rollup cycle). More current than `outputEpoch` for the stats and beacon activity fields. **Per-station day files only** |
 | `stats` | `object` | Packet filtering statistics (see [Stats](#stats)) |
 | `beaconActivity` | `string?` | Daily beacon activity bitvector, hex-encoded (see [Beacon activity](#beacon-activity)). **Not included in `stations.json`** — only in per-station `{name}/{name}.json` files |
 | `beaconActivityDate` | `string?` | UTC date (`YYYY-MM-DD`) the beacon activity bitvector covers. **Not included in `stations.json`** — only in per-station files |
@@ -147,7 +148,9 @@ function isSlotActive(hex, slot) {
 }
 ```
 
-The bitvector resets when the UTC date changes. `beaconActivityDate` indicates which date the bitvector covers. If `beaconActivityDate` does not match the current UTC date, the bitvector is stale and should be treated as empty.
+**Day rotation:** When a rollup cycle detects that the UTC date has changed, the `beaconActivity` bitvectors for all known stations are cleared and `beaconActivityDate` is updated to the new date. This sweep happens at the first rollup after UTC midnight, so stations that had no traffic today still get a fresh (empty) bitvector. `beaconActivityDate` indicates which date the bitvector covers. If `beaconActivityDate` does not match the current UTC date, the bitvector is stale and should be treated as empty.
+
+**Update frequency:** The bitvector is written to the per-station day JSON on every rollup cycle (every 3 hours by default, configurable via `ROLLUP_PERIOD_HOURS`). Slots in the bitvector only reflect beacons received up to the time the file was last written (see `exportedAt` in [STATION.md](./STATION.md)). Slots after that point may appear inactive even if the station was beaconing during that time.
 
 A set bit means the station sent at least one beacon (Location or Status packet) during that 10-minute window. This can be used to visualise station uptime patterns.
 

@@ -163,7 +163,8 @@
             "location": "Location",
             "packet": "Packet",
             "beacon": "Beacon",
-            "output": "File output"
+            "output": "Map export",
+            "stats_export": "Stats export"
         },
         "cells": {
             "number": "{{count}} coverage cells",

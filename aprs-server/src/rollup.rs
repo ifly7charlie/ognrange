@@ -1322,9 +1322,11 @@ fn write_station_json(
         }
     };
 
+    let now_epoch = now.timestamp() as u64;
     if let Some(obj) = json.as_object_mut() {
         obj.insert("uptime".to_string(), serde_json::json!(uptime));
         obj.insert("arrowRecords".to_string(), serde_json::json!(arrow_records));
+        obj.insert("exportedAt".to_string(), serde_json::json!(now_epoch));
         if let Some(act) = day_activity {
             obj.insert("activity".to_string(), serde_json::to_value(act).unwrap_or_default());
         }
@@ -1396,10 +1398,10 @@ fn write_metadata_json(
 
 /// Startup rollup: check for any unflushed accumulators from a previous run.
 ///
-/// Scans each station DB for "current" accumulator meta keys. If found,
-/// the metadata contains the accumulator buckets that were active when the
-/// process last shut down. We migrate any legacy unprefixed keys, then
-/// roll up the hanging current data into day/month/year/yearnz.
+/// Scans each station DB for "current" accumulator meta keys. If the stored
+/// accumulators match the expected buckets (current + all destinations), the
+/// accumulator is still active and left in place. Otherwise, the hanging
+/// current data is rolled up into day/month/year/yearnz.
 /// Also purges orphaned data and old accumulators that don't match expected buckets.
 pub async fn rollup_startup(
     storage: &Storage,
@@ -1513,7 +1515,19 @@ pub async fn rollup_startup(
                         if layers.contains(&layer) {
                             if let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&val_bytes) {
                                 if let Some(acc) = parse_accumulators_from_meta(&meta) {
-                                    hanging_buckets.insert((bucket, layer), acc);
+                                    // Check if this is the still-active accumulator (same current
+                                    // bucket AND same destination buckets). The current bucket
+                                    // alone isn't unique — it encodes (day_of_month << 7) | period,
+                                    // which repeats across months.
+                                    let matches_expected = bucket == expected.current.bucket
+                                        && acc.day.bucket == expected.day.bucket
+                                        && acc.month.bucket == expected.month.bucket
+                                        && acc.year.bucket == expected.year.bucket
+                                        && acc.yearnz.bucket == expected.yearnz.bucket;
+
+                                    if !matches_expected {
+                                        hanging_buckets.insert((bucket, layer), acc);
+                                    }
                                 }
                             }
                         }

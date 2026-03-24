@@ -42,6 +42,7 @@ interface StationJson {
     };
     beaconActivity?: string;
     beaconActivityDate?: string;
+    exportedAt?: number;
     uptime?: number | null;
     arrowRecords?: number;
 }
@@ -98,7 +99,8 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
         outputEpoch: latest.outputEpoch,
         outputDate: latest.outputDate,
         lastOutputEpoch: latest.lastOutputEpoch,
-        lastOutputFile: latest.lastOutputFile
+        lastOutputFile: latest.lastOutputFile,
+        exportedAt: latest.exportedAt
     };
 
     // Max fields

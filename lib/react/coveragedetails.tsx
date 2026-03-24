@@ -228,19 +228,22 @@ export function CoverageDetails({
 
     const serverUptime = useMemo((): GlobalUptimeHistoryEntry[] | null => {
         if (!statsData) return null;
-        const entries: GlobalUptimeHistoryEntry[] = [...(statsData.globalUptimeHistory ?? [])];
+        // Start with all historical entries.  For today specifically, always replace any
+        // dated snapshot with the live data — dated snapshots are written hourly and have
+        // a stale slot count / activity bitvector for the rest of that hour.
+        const today = new Date().toISOString().slice(0, 10);
+        const entries: GlobalUptimeHistoryEntry[] = (statsData.globalUptimeHistory ?? []).filter(
+            (e) => e.date !== today
+        );
         if (statsData.globalUptime) {
             const liveDate = statsData.globalUptime.date;
-            if (!entries.some((e) => e.date === liveDate)) {
-                // Only include live data when today falls within the requested period
-                const periodStart = dateRange?.start || file;
-                const periodEnd = dateRange?.end || file;
-                const sb = periodStart ? dateBounds(periodStart) : null;
-                const eb = periodEnd ? dateBounds(periodEnd) : null;
-                const inRange = !sb || (liveDate >= sb.start && liveDate <= (eb?.end ?? sb.end));
-                if (inRange) {
-                    entries.push({date: liveDate, activity: statsData.globalUptime.activity, uptime: statsData.globalUptime.uptime});
-                }
+            const periodStart = dateRange?.start || file;
+            const periodEnd = dateRange?.end || file;
+            const sb = periodStart ? dateBounds(periodStart) : null;
+            const eb = periodEnd ? dateBounds(periodEnd) : null;
+            const inRange = !sb || (liveDate >= sb.start && liveDate <= (eb?.end ?? sb.end));
+            if (inRange) {
+                entries.push({date: liveDate, activity: statsData.globalUptime.activity, uptime: statsData.globalUptime.uptime});
             }
         }
         return entries.length > 0 ? entries : null;
@@ -347,14 +350,14 @@ export function CoverageDetails({
                 ) : null}
                 <ActivityDetails activity={stationData?.activity} />
                 <UptimeBar uptime={stationData?.uptime} />
-                <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} />
+                <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} exportedAt={stationData?.exportedAt} />
                 {serverUptimePercent != null && serverUptimePercent < 100 && (
                     <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
                 )}
                 <br />
                 {displayStats ? (
                     <>
-                        <b>{isRange ? t('statistics.title_range') : t('statistics.title', {when: formatEpoch(stationData.outputEpoch)})}</b>
+                        <b>{isRange ? t('statistics.title_range') : t('statistics.title', {when: formatEpoch(stationData.exportedAt ?? stationData.outputEpoch)})}</b>
                         <table>
                             <tbody>
                                 {Object.keys(displayStats).filter((key) => key !== 'ignoredPAW').map((key) => (
@@ -429,6 +432,12 @@ export function CoverageDetails({
                                     <tr key="output">
                                         <td>{t('times.output')}</td>
                                         <td>{formatEpoch(stationData.outputEpoch)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.exportedAt ? (
+                                    <tr key="stats_export">
+                                        <td>{t('times.stats_export')}</td>
+                                        <td>{formatEpoch(stationData.exportedAt)}</td>
                                     </tr>
                                 ) : null}
                             </tbody>

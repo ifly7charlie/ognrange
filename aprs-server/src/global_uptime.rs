@@ -131,8 +131,10 @@ impl GlobalUptime {
             inner.snapshot()
         };
 
-        // Snapshot is for a completed day — all 144 slots elapsed
-        let content = build_json(now, &snap, Some(144));
+        // Use 144 only for completed (previous) days; for today use the actual elapsed slot count.
+        let today = now.format("%Y-%m-%d").to_string();
+        let elapsed_override = if snap.date != today { Some(144) } else { None };
+        let content = build_json(now, &snap, elapsed_override);
         let stats_dir = format!("{}stats", *OUTPUT_PATH);
 
         // Always write .json.gz

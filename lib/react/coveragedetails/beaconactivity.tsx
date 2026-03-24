@@ -4,13 +4,15 @@ import {useTranslation} from 'next-i18next';
 import graphcolours from '../graphcolours';
 import {isSlotActive, SlotStrip, HourLabels} from './slotstrip';
 
-const SERVER_DOWN_COLOR = '#f4c87c';
+const INACTIVE_COLOR = '#e67e22';   // FLARM orange — server up, station not beaconing
+const SERVER_DOWN_COLOR = '#f4c87c'; // pale amber — server was down
+const FUTURE_COLOR = '#f5f5f5';      // near-white — slot not yet elapsed
 
 function Legend() {
     const {t} = useTranslation('common', {keyPrefix: 'details.beacon'});
     const items: [string, string][] = [
         [graphcolours[0], t('legend_active')],
-        ['#eee', t('legend_inactive')],
+        [INACTIVE_COLOR, t('legend_inactive')],
         [SERVER_DOWN_COLOR, t('legend_server_down')]
     ];
     return (
@@ -25,22 +27,31 @@ function Legend() {
     );
 }
 
-// currentSlot is 1-indexed (1–144); slot index i is future when i >= currentSlot
-function makeColorFn(serverHex?: string, currentSlot?: number): (slot: number, active: boolean) => string {
+// currentSlot is 1-indexed (1–144); slot index i is future when i >= currentSlot.
+// We also treat the in-progress slot (currentSlot - 1) as not-yet-elapsed: a missing
+// server bit there just means the slot isn't complete, not that the server was down.
+// exportedSlot is the last 0-indexed slot covered by the station JSON export — slots after
+// it may simply not have been written yet, so we treat them the same as future.
+function makeColorFn(serverHex?: string, currentSlot?: number, exportedSlot?: number): (slot: number, active: boolean) => string {
     return (slot: number, active: boolean) => {
-        if (currentSlot !== undefined && slot >= currentSlot) return '#cad5e1';
+        if (currentSlot !== undefined && slot >= currentSlot - 1) return FUTURE_COLOR;
+        if (exportedSlot !== undefined && slot > exportedSlot) return FUTURE_COLOR;
         if (active) return graphcolours[0];
         if (serverHex && !isSlotActive(serverHex, slot)) return SERVER_DOWN_COLOR;
-        return '#eee';
+        return INACTIVE_COLOR;
     };
 }
 
 /** Single-day beacon activity: horizontal strip of 144 slots */
-function SingleDayView({hex, date, serverUptimeHex, currentSlot}: {hex: string; date?: string; serverUptimeHex?: string; currentSlot?: number}) {
+function SingleDayView({hex, date, serverUptimeHex, currentSlot, exportedAt}: {hex: string; date?: string; serverUptimeHex?: string; currentSlot?: number; exportedAt?: number}) {
     const {t} = useTranslation('common', {keyPrefix: 'details.beacon'});
     const today = new Date().toISOString().slice(0, 10);
     const slotForDay = date === today ? currentSlot : undefined;
-    const colorFn = useMemo(() => makeColorFn(serverUptimeHex, slotForDay), [serverUptimeHex, slotForDay]);
+    // Compute the last slot covered by the export (only meaningful for today's data)
+    const exportedSlot = date === today && exportedAt != null
+        ? Math.floor((exportedAt % 86400) / 600)
+        : undefined;
+    const colorFn = useMemo(() => makeColorFn(serverUptimeHex, slotForDay, exportedSlot), [serverUptimeHex, slotForDay, exportedSlot]);
     return (
         <>
             <br />
@@ -106,13 +117,15 @@ export function BeaconActivity({
     date,
     days,
     serverUptime,
-    currentSlot
+    currentSlot,
+    exportedAt
 }: {
     data?: string;
     date?: string;
     days?: {date: string; bitvector: string}[];
     serverUptime?: {date: string; activity: string; uptime: number}[] | null;
     currentSlot?: number;
+    exportedAt?: number;
 }) {
     // Find matching server uptime entry for single-day view
     const serverUptimeHex = useMemo(() => {
@@ -125,7 +138,7 @@ export function BeaconActivity({
         return <MultiDayView days={days} serverUptime={serverUptime} currentSlot={currentSlot} />;
     }
     if (data) {
-        return <SingleDayView hex={data} date={date} serverUptimeHex={serverUptimeHex} currentSlot={currentSlot} />;
+        return <SingleDayView hex={data} date={date} serverUptimeHex={serverUptimeHex} currentSlot={currentSlot} exportedAt={exportedAt} />;
     }
     return null;
 }

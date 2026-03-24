@@ -133,7 +133,7 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
 
         if (!availableTypes.length) availableTypes.push('year');
         return {availableTypes, datesByType, partialDatesByType, missingLayersByType};
-    }, [data?.files, layers]);
+    }, [data, layers]);
 
     const dates = datesByType[currentType] || [];
     const latestMax = dates[dates.length - 1];

@@ -50,6 +50,7 @@ The file contains all `StationDetails` fields (see [STATIONS.md](./STATIONS.md#s
   "layerMask": 3,
   "outputEpoch": 1741968000,
   "outputDate": "2026-03-14",
+  "exportedAt": 1741969800,
   "stats": { ... },
   "beaconActivity": "ff7f00e0ff1f00000000000000000000000000",
   "beaconActivityDate": "2026-03-14",
@@ -75,9 +76,9 @@ All fields from `StationDetails` are included (see [STATIONS.md](./STATIONS.md#s
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `beaconActivity` | `string?` | Daily beacon activity bitvector, hex-encoded (see [STATIONS.md Beacon activity](./STATIONS.md#beacon-activity)) |
-| `beaconActivityDate` | `string?` | UTC date (`YYYY-MM-DD`) the beacon activity bitvector covers |
-| `uptime` | `f32?` | Percentage (0.0-100.0) of 10-minute slots active today. `null` if no beacon activity today |
+| `beaconActivity` | `string?` | Daily beacon activity bitvector, hex-encoded (see [STATIONS.md Beacon activity](./STATIONS.md#beacon-activity)). Updated every rollup cycle (3 hours by default); slots after `exportedAt` may not yet be reflected |
+| `beaconActivityDate` | `string?` | UTC date (`YYYY-MM-DD`) the beacon activity bitvector covers. Reset to the new date at the first rollup after UTC midnight |
+| `uptime` | `f32?` | Percentage (0.0-100.0) of 10-minute slots active relative to elapsed slots at write time (`exportedAt`). `null` if no beacon activity today |
 | `layers` | `string[]` | Array of protocol layer names this station has received data for, derived from `layerMask` (e.g. `["combined", "flarm"]`) |
 | `activity` | `object?` | Combined-layer day `RollupActivity` (see below). Only present if the station had combined-layer traffic |
 
