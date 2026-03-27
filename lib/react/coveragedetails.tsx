@@ -157,6 +157,7 @@ export function CoverageDetails({
     }, [key]);
     const {t} = useTranslation('common', {keyPrefix: 'details'});
     const {t: tLayer} = useTranslation('common', {keyPrefix: 'layers'});
+    const {t: tStats} = useTranslation('common', {keyPrefix: 'stats'});
 
     const updateExtraVisibility = useCallback((visible: boolean) => {
         if (!extraVisible && visible) {
@@ -469,13 +470,13 @@ export function CoverageDetails({
                             style={{fontWeight: statsView === 'protocol' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'protocol' ? '2px solid #4488cc' : 'none'}}
                             onClick={() => setStatsView('protocol')}
                         >
-                            {t('stats.tab_protocol')}
+                            {tStats('tab_protocol')}
                         </button>
                         <button
                             style={{fontWeight: statsView === 'stations' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'stations' ? '2px solid #4488cc' : 'none'}}
                             onClick={() => setStatsView('stations')}
                         >
-                            {t('stats.tab_stations')}
+                            {tStats('tab_stations')}
                         </button>
                     </div>
                     {statsView === 'protocol' && (

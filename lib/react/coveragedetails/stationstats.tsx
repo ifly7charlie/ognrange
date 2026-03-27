@@ -77,7 +77,7 @@ const EXCEPTION_KEYS: (keyof AprsPacketStats)[] = [
 ];
 
 function StationExceptionTable({stats}: {stats: AprsPacketStats}) {
-    const {t} = useTranslation('common', {keyPrefix: 'statistics'});
+    const {t} = useTranslation('common', {keyPrefix: 'details.statistics'});
 
     return (
         <table>
