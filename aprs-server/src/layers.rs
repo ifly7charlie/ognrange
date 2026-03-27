@@ -56,7 +56,7 @@ impl Layer {
         }
     }
 
-    /// DB key prefix per layer — sorted alphabetically for contiguous iteration
+    /// DB key prefix per layer - sorted alphabetically for contiguous iteration
     pub fn db_prefix(&self) -> &'static str {
         match self {
             Layer::Adsb => "a/",

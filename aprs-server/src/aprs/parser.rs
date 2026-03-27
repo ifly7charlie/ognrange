@@ -318,7 +318,7 @@ fn parse_longitude(s: &str) -> Option<f64> {
 ///
 /// Mirrors js-aprs-fap behaviour:
 /// - HHMMSSh: if the resulting timestamp is more than 65 minutes in the future,
-///   roll back by one day — the packet is from yesterday (delayed delivery).
+///   roll back by one day - the packet is from yesterday (delayed delivery).
 /// - DDHHMMz: try current month first; if that is more than 43400 s in the
 ///   future try the previous month (handles rollover near month boundaries).
 fn parse_timestamp(s: &str) -> Option<u32> {
@@ -334,7 +334,7 @@ fn parse_timestamp(s: &str) -> Option<u32> {
 
     match format_char {
         b'h' => {
-            // HHMMSSh format — UTC time, no date supplied.
+            // HHMMSSh format - UTC time, no date supplied.
             // If the time looks future by more than 65 min, it is from yesterday.
             let hh: u32 = s[..2].parse().ok()?;
             let mm: u32 = s[2..4].parse().ok()?;
@@ -356,7 +356,7 @@ fn parse_timestamp(s: &str) -> Option<u32> {
             Some(ts as u32)
         }
         b'z' => {
-            // DDHHMMz format — day-of-month + UTC time; no month or year supplied.
+            // DDHHMMz format - day-of-month + UTC time; no month or year supplied.
             // Try the current month; if that date is more than ~12 h in the future,
             // fall back to the previous month (packet just before month rollover).
             let dd: u32 = s[..2].parse().ok()?;

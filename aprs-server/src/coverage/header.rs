@@ -1,4 +1,4 @@
-//! CoverageHeader — key encoding for H3 cache and LevelDB databases.
+//! CoverageHeader - key encoding for H3 cache and LevelDB databases.
 //!
 //! DB key format: "{layer_prefix}{accumulator_hex}/{h3_index}"
 //!   e.g. "c/1042/8828308283fffff"
@@ -9,11 +9,11 @@
 use crate::layers::{layer_from_prefix, Layer};
 use crate::types::{prefix_with_zeros, to_base36, H3Index, H3LockKey, StationId};
 
-/// Accumulator bucket — 12-bit value encoding time period
+/// Accumulator bucket - 12-bit value encoding time period
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct AccumulatorBucket(pub u16);
 
-/// Accumulator type — what level of aggregation
+/// Accumulator type - what level of aggregation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum AccumulatorType {
@@ -70,7 +70,7 @@ impl AccumulatorTypeAndBucket {
     }
 }
 
-/// CoverageHeader — represents a key for H3 data in cache and database
+/// CoverageHeader - represents a key for H3 data in cache and database
 #[derive(Debug, Clone)]
 pub struct CoverageHeader {
     pub h3: H3Index,

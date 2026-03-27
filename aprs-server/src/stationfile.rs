@@ -23,9 +23,9 @@ use crate::station::{self, StationDetails, StationManager};
 /// Produce the master stations list files.
 ///
 /// Writes:
-/// - stations.json / stations.json.gz — stations with last_packet
-/// - stations.day.{date}.arrow[.gz] — Arrow file with station metadata + symlinks
-/// - stations-complete.json / stations-complete.json.gz — all stations
+/// - stations.json / stations.json.gz - stations with last_packet
+/// - stations.day.{date}.arrow[.gz] - Arrow file with station metadata + symlinks
+/// - stations-complete.json / stations-complete.json.gz - all stations
 pub fn produce_station_file(
     station_manager: &StationManager,
     accumulators: &Accumulators,
@@ -72,7 +72,7 @@ pub fn produce_station_file(
         Err(e) => error!("stations.json serialization error: {}", e),
     }
 
-    // 2. Arrow file — columns: id, name, lat, lng, valid, lastPacket, layerMask, activity, uptime
+    // 2. Arrow file - columns: id, name, lat, lng, valid, lastPacket, layerMask, activity, uptime
     let mut sorted = active_stations;
     sorted.sort_by_key(|s| s.id.0);
 

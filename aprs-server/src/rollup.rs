@@ -1,4 +1,4 @@
-//! Rollup — merging current accumulators into day/month/year archives
+//! Rollup - merging current accumulators into day/month/year archives
 //! and exporting to Apache Arrow files.
 //!
 //! This module handles the periodic aggregation of coverage data from
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use rusty_leveldb::LdbIterator;
 
-/// Global shutdown flag — checked by long-running DB iterations.
+/// Global shutdown flag - checked by long-running DB iterations.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 /// Signal all rollup tasks to stop iterating.
@@ -120,7 +120,7 @@ pub async fn rollup_all(
     let mut need_purge = false;
     let mut confirmed_moves: HashSet<StationId> = HashSet::new();
     // Tracks stations transitioning valid→invalid THIS rollup.
-    // Only these get their databases purged — already-invalid stations (from
+    // Only these get their databases purged - already-invalid stations (from
     // previous rollups) are excluded so a single new expiry doesn't sweep up
     // a large backlog of orphaned databases.
     let mut newly_invalid: HashSet<StationId> = HashSet::new();
@@ -143,7 +143,7 @@ pub async fn rollup_all(
                 .unwrap_or(0); // no timestamp → treat as recent (legacy data)
             if prev_age >= move_confirm_secs {
                 info!(
-                    "station {} confirming move — previous location last seen {} days ago",
+                    "station {} confirming move - previous location last seen {} days ago",
                     station.station,
                     prev_age / 86400
                 );
@@ -190,7 +190,7 @@ pub async fn rollup_all(
 
     // Safety: if >2% of stations became invalid, don't purge data (something is wrong).
     // Add all back to valid_stations so global rollup keeps their coverage, and clear
-    // newly_invalid so their metadata is NOT updated — they'll be re-evaluated next rollup
+    // newly_invalid so their metadata is NOT updated - they'll be re-evaluated next rollup
     // instead of being permanently orphaned with valid=false but intact databases.
     if invalid_count as f64 / (valid_stations.len().max(1) as f64) > 0.02 {
         warn!(
@@ -462,13 +462,13 @@ pub async fn rollup_all(
             }
             Ok(Err(e)) => {
                 let prog = progress.lock().map(|p| p.to_string()).unwrap_or_default();
-                error!("Rollup task panicked for {} ({}): {} — progress: {}", station_name, station_path, e, prog);
+                error!("Rollup task panicked for {} ({}): {} - progress: {}", station_name, station_path, e, prog);
                 total_stats.stations_skipped += 1;
             }
             Err(_) => {
                 cancel.store(true, Ordering::Relaxed);
                 let prog = progress.lock().map(|p| p.to_string()).unwrap_or_default();
-                error!("Rollup task timed out after {}s for {} ({}) — progress: {}",
+                error!("Rollup task timed out after {}s for {} ({}) - progress: {}",
                     station_timeout.as_secs(), station_name, station_path, prog);
                 // Wait for the task to actually finish so it releases its DB lock.
                 // The cancel flag should cause it to exit promptly, but give it a
@@ -480,10 +480,10 @@ pub async fn rollup_all(
                         info!("Timed-out task for {} finished after cancel", station_name);
                     }
                     Err(_) => {
-                        error!("Timed-out task for {} did not finish within {}s grace period — aborting",
+                        error!("Timed-out task for {} did not finish within {}s grace period - aborting",
                             station_name, grace.as_secs());
                         // handle is dropped here, but spawn_blocking tasks cannot be
-                        // aborted — they'll finish eventually. The lock will be held
+                        // aborted - they'll finish eventually. The lock will be held
                         // until then, but at least we've warned about it.
                     }
                 }
@@ -646,7 +646,7 @@ fn rollup_station_all_layers(
         }
     }
 
-    // Always flush — ensures memtable is written to SSTables so next open
+    // Always flush - ensures memtable is written to SSTables so next open
     // doesn't pay WAL replay cost (cheap if few/no layers completed)
     if let Ok(mut p) = progress.lock() {
         p.phase = "flush".to_string();
@@ -655,7 +655,7 @@ fn rollup_station_all_layers(
     db.flush().map_err(|e| format!("flush failed for {}: {}", station_name, e))?;
     let flush_elapsed = flush_start.elapsed();
 
-    // Skip compaction on cancel — it's expensive and not needed for correctness
+    // Skip compaction on cancel - it's expensive and not needed for correctness
     let compact_elapsed;
     if !cancelled() {
         if let Ok(mut p) = progress.lock() {
@@ -671,7 +671,7 @@ fn rollup_station_all_layers(
 
     let total_elapsed = station_start.elapsed();
     if total_elapsed.as_secs() >= 40 {
-        warn!("{}: slow station rollup {:?} — open={:?}, flush={:?}, compact={:?}, \
+        warn!("{}: slow station rollup {:?} - open={:?}, flush={:?}, compact={:?}, \
                read={}, written={}, deleted={}, arrow={}",
             station_name, total_elapsed, open_elapsed, flush_elapsed, compact_elapsed,
             total_stats.records_read, total_stats.records_written,
@@ -1005,7 +1005,7 @@ fn rollup_station_layer(
         let dest_counts: Vec<(&str, usize)> = destinations.iter()
             .map(|d| (d.acc_type.name(), d.dest_record_count))
             .collect();
-        warn!("{}/{}: slow layer {:?} — read_current={}recs/{:?}, \
+        warn!("{}/{}: slow layer {:?} - read_current={}recs/{:?}, \
                merge={:?}(dest={:?}), write={:?}({}puts/{}dels), purge={:?}, arrow={:?}({}recs)",
             station_name, layer.name(), layer_total,
             current_records.len(), t_read_current,
@@ -1055,7 +1055,7 @@ fn emit_dest_record(
                 }
             }
             None => {
-                // All stations removed — delete from DB
+                // All stations removed - delete from DB
                 deletes.push(key.to_string());
             }
         }
@@ -1463,7 +1463,7 @@ pub async fn rollup_startup(
             // Migrate all legacy unprefixed keys to prefixed format before scanning
             let migrated = migrate_legacy_keys(&mut db);
 
-            // Scan DB using seeking iterator (like TypeScript) — only reads meta keys,
+            // Scan DB using seeking iterator (like TypeScript) - only reads meta keys,
             // skips past data ranges to avoid reading all H3 records into memory.
             let mut hanging_buckets: HashMap<(AccumulatorBucket, Layer), Accumulators> = HashMap::new();
             // (type, bucket, layer, description) for purging
@@ -1499,7 +1499,7 @@ pub async fn rollup_startup(
                     let (_, seek_end) = CoverageHeader::db_search_range(acc_type, bucket, layer);
 
                     if !header.is_meta() {
-                        // Data entry without meta — orphaned, mark for purge
+                        // Data entry without meta - orphaned, mark for purge
                         to_purge.push((acc_type, bucket, layer,
                             format!("{}/{}/{:04x}(orphaned)", layer.name(), acc_type.name(), bucket.0)));
                         iter.seek(seek_end.as_bytes());
@@ -1513,7 +1513,7 @@ pub async fn rollup_startup(
                                 if let Some(acc) = parse_accumulators_from_meta(&meta) {
                                     // Check if this is the still-active accumulator (same current
                                     // bucket AND same destination buckets). The current bucket
-                                    // alone isn't unique — it encodes (day_of_month << 7) | period,
+                                    // alone isn't unique - it encodes (day_of_month << 7) | period,
                                     // which repeats across months.
                                     let matches_expected = bucket == expected.current.bucket
                                         && acc.day.bucket == expected.day.bucket
@@ -1603,7 +1603,7 @@ pub async fn rollup_startup(
                 }
             }
 
-            // Execute purges — single iterator pass for all ranges
+            // Execute purges - single iterator pass for all ranges
             if !to_purge.is_empty() {
                 let purge_desc: Vec<String> = to_purge.iter()
                     .map(|(_, _, _, desc)| desc.clone())
@@ -1633,7 +1633,7 @@ pub async fn rollup_startup(
                 .find(|s| s.station.as_str() == station_name);
 
             // Build set of existing destination files from the all_accumulators we already collected
-            // Also include expected accumulator files — a destination may not exist in the DB yet
+            // Also include expected accumulator files - a destination may not exist in the DB yet
             // (e.g. first bucket of a new day) but is still valid to roll up into.
             let all_dest_files: HashSet<String> = all_accumulators.iter()
                 .map(|(_, _, _, file)| file.clone())
@@ -1646,7 +1646,7 @@ pub async fn rollup_startup(
             for ((_bucket, layer), acc) in &hanging_buckets {
                 let (current_start, dest_files) = acc.describe();
 
-                // Check which destination buckets are missing — skip accumulator types
+                // Check which destination buckets are missing - skip accumulator types
                 // that aren't produced for this layer (e.g. ADSB doesn't produce Day)
                 let missing: Vec<&str> = [
                     ("day", &acc.day, AccumulatorType::Day),
@@ -1664,7 +1664,7 @@ pub async fn rollup_startup(
 
                 if !missing.is_empty() {
                     warn!(
-                        "{}: DROPPING hanging current accumulator {:04x}({}) for {} [{}]: {} missing — \
+                        "{}: DROPPING hanging current accumulator {:04x}({}) for {} [{}]: {} missing -\
                          rolling up would overwrite complete arrow files on disk",
                         station_name, acc.current.bucket.0, current_start, dest_files,
                         layer.name(), missing.join(",")
@@ -1700,7 +1700,7 @@ pub async fn rollup_startup(
                 ) {
                     Ok((stats, _day_activity, _day_arrow_count)) => {
                         info!(
-                            "{}: startup rollup complete {} — {} written, {} arrow, {} deleted",
+                            "{}: startup rollup complete {} -{} written, {} arrow, {} deleted",
                             station_name, layer.name(),
                             stats.records_written, stats.arrow_records, stats.records_deleted
                         );
@@ -1758,7 +1758,7 @@ pub async fn rollup_startup(
                 error!("Startup rollup task panicked: {}", e);
             }
             Err(_) => {
-                error!("Startup rollup task timed out after {}s — possible corrupt DB",
+                error!("Startup rollup task timed out after {}s - possible corrupt DB",
                     station_timeout.as_secs());
             }
         }
@@ -1767,7 +1767,7 @@ pub async fn rollup_startup(
     let elapsed = startup_start.elapsed().as_secs_f64();
     let speed = if elapsed > 0.0 { total_stations as f64 / elapsed } else { 0.0 };
     info!(
-        "startup:100% [{}/{}] {:.0}s elapsed, {:.1}/s — {} written, {} arrow, {} deleted, {} legacy migrated",
+        "startup:100% [{}/{}] {:.0}s elapsed, {:.1}/s -{} written, {} arrow, {} deleted, {} legacy migrated",
         total_stations, total_stations, elapsed, speed,
         total_rolled_up, total_arrow, total_deleted, total_migrated
     );
@@ -1814,7 +1814,7 @@ fn migrate_legacy_keys(db: &mut rusty_leveldb::DB) -> usize {
     };
     iter.seek(&[]);
 
-    // Check the first key — if it's already layer-prefixed the DB is migrated
+    // Check the first key - if it's already layer-prefixed the DB is migrated
     if let Some((first_key, _)) = iter.current() {
         if let Ok(s) = std::str::from_utf8(&first_key) {
             if is_layer_prefixed(s) {
@@ -1831,7 +1831,7 @@ fn migrate_legacy_keys(db: &mut rusty_leveldb::DB) -> usize {
             Err(_) => { if !iter.advance() { break; } continue; }
         };
 
-        // All keys should be legacy — if we hit a prefixed key something is wrong
+        // All keys should be legacy - if we hit a prefixed key something is wrong
         if is_layer_prefixed(&key_str) {
             error!("Legacy migration: unexpected prefixed key '{}' in legacy DB after migrating {} keys", key_str, migrated);
             break;
@@ -1843,7 +1843,7 @@ fn migrate_legacy_keys(db: &mut rusty_leveldb::DB) -> usize {
             None => { if !iter.advance() { break; } continue; }
         };
 
-        // Build the prefixed key — same transform for data and meta keys
+        // Build the prefixed key - same transform for data and meta keys
         let prefixed_key = header.db_key();
 
         batch.put(prefixed_key.as_bytes(), &val_bytes);

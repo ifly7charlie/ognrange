@@ -1,4 +1,4 @@
-//! APRS packet statistics — shared between per-station and global contexts.
+//! APRS packet statistics - shared between per-station and global contexts.
 //!
 //! `AprsPacketStats` tracks raw/accepted packet counts, exception counters,
 //! and per-layer hourly breakdowns. Recording methods are defined once here
@@ -51,7 +51,7 @@ pub struct AprsPacketStats {
 }
 
 // ---------------------------------------------------------------------------
-// Recording methods — used by both per-station (&mut self) and global
+// Recording methods - used by both per-station (&mut self) and global
 // (via StationGlobalStats::with_data)
 // ---------------------------------------------------------------------------
 
@@ -120,7 +120,7 @@ impl AprsPacketStats {
 }
 
 // ---------------------------------------------------------------------------
-// Display — used for periodic log output
+// Display - used for periodic log output
 // ---------------------------------------------------------------------------
 
 impl std::fmt::Display for AprsPacketStats {
@@ -162,7 +162,7 @@ impl std::fmt::Display for AprsPacketStats {
 }
 
 // ---------------------------------------------------------------------------
-// DailyStatsData — JSON output for daily files
+// DailyStatsData - JSON output for daily files
 // ---------------------------------------------------------------------------
 
 impl DailyStatsData for AprsPacketStats {

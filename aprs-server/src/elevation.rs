@@ -105,7 +105,7 @@ impl ElevationService {
                 info!("Mapbox elevation API probe succeeded");
             }
             Err(e) => {
-                warn!("Mapbox elevation API probe failed: {} — elevation lookups disabled", e);
+                warn!("Mapbox elevation API probe failed: {} - elevation lookups disabled", e);
                 self.enabled.store(false, Ordering::Relaxed);
             }
         }
@@ -227,7 +227,7 @@ impl ElevationService {
 
         let status = response.status();
         if status == reqwest::StatusCode::FORBIDDEN {
-            error!("MapBox API returns 403 — check NEXT_PUBLIC_SITEURL ACL on Mapbox");
+            error!("MapBox API returns 403 - check NEXT_PUBLIC_SITEURL ACL on Mapbox");
             return Err("MapBox 403 Forbidden".into());
         }
         if !status.is_success() {

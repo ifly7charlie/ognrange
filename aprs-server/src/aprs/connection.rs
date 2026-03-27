@@ -108,7 +108,7 @@ async fn connect_and_stream(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stream = TcpStream::connect(server_addr).await?;
 
-    // Enable TCP keepalive so the kernel detects dead connections —
+    // Enable TCP keepalive so the kernel detects dead connections -
     // without this, read_until hangs forever on a half-open connection
     let sock_ref = SockRef::from(&stream);
     let tcp_keepalive = socket2::TcpKeepalive::new()
@@ -139,7 +139,7 @@ async fn connect_and_stream(
 
     loop {
         tokio::select! {
-            // Incoming APRS data — read raw bytes to handle non-UTF-8
+            // Incoming APRS data - read raw bytes to handle non-UTF-8
             read_result = reader.read_until(b'\n', &mut raw_buf) => {
                 match read_result {
                     Ok(0) => {
@@ -184,7 +184,7 @@ async fn connect_and_stream(
                 had_traffic = false;
 
                 let keepalive = format!("# {} {}\r\n", siteurl, git_version);
-                // Timeout the write — on a half-open TCP connection write_all
+                // Timeout the write - on a half-open TCP connection write_all
                 // can block for minutes (kernel TCP retransmissions) which
                 // stalls this entire select loop including traffic checks
                 match tokio::time::timeout(

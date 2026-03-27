@@ -138,7 +138,7 @@ impl StationManager {
             case_insensitive,
         };
 
-        // Load synchronously first — opens and closes the DB
+        // Load synchronously first - opens and closes the DB
         if let Err(e) = manager.load_sync() {
             error!("Fatal: failed to open station database {}: {}", db_path, e);
             error!("Is another instance already running?");
@@ -404,9 +404,9 @@ impl StationManager {
     /// Check if a station has moved and update its location.
     ///
     /// Unified model for three scenarios:
-    /// - **Bouncing**: two stations sharing a callsign — both locations stay fresh
-    /// - **Moved**: test→production relocation — old location decays (handled in rollup)
-    /// - **Mobile**: receiver on a vehicle — consecutive new locations exceed threshold
+    /// - **Bouncing**: two stations sharing a callsign - both locations stay fresh
+    /// - **Moved**: test→production relocation - old location decays (handled in rollup)
+    /// - **Mobile**: receiver on a vehicle - consecutive new locations exceed threshold
     pub fn check_station_moved(
         &self,
         name: &StationName,
@@ -437,7 +437,7 @@ impl StationManager {
         let dist_previous = great_circle_distance(previous[0], previous[1], lat, lng);
         let threshold = *STATION_MOVE_THRESHOLD_KM;
 
-        // 1. At primary location — station is where we expect it
+        // 1. At primary location - station is where we expect it
         if dist_primary <= threshold {
             details.last_seen_at_primary = Some(timestamp);
             details.new_location_count = 0;
@@ -450,7 +450,7 @@ impl StationManager {
                 details.last_seen_at_previous = details.last_seen_at_primary;
             }
         }
-        // 2. At previous location — bouncing between two known locations
+        // 2. At previous location - bouncing between two known locations
         else if dist_previous <= threshold {
             details.last_seen_at_previous = Some(timestamp);
             details.bouncing = true;
@@ -460,7 +460,7 @@ impl StationManager {
                 details.mobile = false;
             }
         }
-        // 3. Neither location — new location
+        // 3. Neither location - new location
         else {
             details.new_location_count += 1;
 
@@ -473,7 +473,7 @@ impl StationManager {
                 // First new location: log once
                 warn!("{}", raw_packet);
                 warn!(
-                    "Station {} at {},{} ({:.1}km from primary) — pending confirmation",
+                    "Station {} at {},{} ({:.1}km from primary) - pending confirmation",
                     name, lat, lng, dist_primary
                 );
             }
@@ -666,9 +666,9 @@ mod tests {
     // Locations for movement tests
     // Victoria, Australia (-37.308, 142.988)
     const LOC_A: (f64, f64) = (-37.308, 142.988);
-    // Sydney, Australia (-33.918, 151.099) — ~824km from LOC_A
+    // Sydney, Australia (-33.918, 151.099) - ~824km from LOC_A
     const LOC_B: (f64, f64) = (-33.918, 151.099);
-    // Perth, Australia (-31.95, 115.86) — far from both A and B
+    // Perth, Australia (-31.95, 115.86) - far from both A and B
     const LOC_C: (f64, f64) = (-31.95, 115.86);
     // 500m north of LOC_A
     const LOC_D: (f64, f64) = (-37.3035, 142.988);
@@ -703,7 +703,7 @@ mod tests {
         // Establish at LOC_A
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
 
-        // Packet from LOC_B — new location, bouncing starts
+        // Packet from LOC_B - new location, bouncing starts
         mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw2");
         let s = get_station(&mgr, "TEST");
         assert!(s.bouncing);
@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(s.last_seen_at_primary, Some(Epoch(2000)));
         assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
 
-        // Back to LOC_A — hits "at previous" branch, both timestamps fresh
+        // Back to LOC_A - hits "at previous" branch, both timestamps fresh
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(3000), "raw3");
         let s = get_station(&mgr, "TEST");
         assert!(s.bouncing);
@@ -721,7 +721,7 @@ mod tests {
         assert_eq!(s.last_seen_at_previous, Some(Epoch(3000)));
         assert_eq!(s.new_location_count, 0);
 
-        // Many more alternating packets — all silently accepted
+        // Many more alternating packets - all silently accepted
         for i in 0..10 {
             let (loc, ts) = if i % 2 == 0 {
                 (LOC_B, 4000 + i * 100)
@@ -750,7 +750,7 @@ mod tests {
         assert!(s.bouncing);
         assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
 
-        // Only packets from LOC_B — last_seen_at_previous stays stale
+        // Only packets from LOC_B - last_seen_at_previous stays stale
         for i in 1..5 {
             mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000 + i * 1000), "raw_b");
         }
@@ -769,7 +769,7 @@ mod tests {
         // Establish at LOC_A
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
 
-        // Consecutive packets at new locations: B, C, D — all far from each other
+        // Consecutive packets at new locations: B, C, D - all far from each other
         mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw2");
         let s = get_station(&mgr, "TEST");
         assert!(!s.mobile);
@@ -825,7 +825,7 @@ mod tests {
         let s = get_station(&mgr, "TEST");
         assert!(s.mobile);
 
-        // Now the primary is LOC_D. Send 2 packets from LOC_D — station stops
+        // Now the primary is LOC_D. Send 2 packets from LOC_D - station stops
         mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(5000), "raw");
         let s = get_station(&mgr, "TEST");
         // First packet at primary clears mobile

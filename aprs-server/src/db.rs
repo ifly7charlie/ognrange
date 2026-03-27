@@ -40,7 +40,7 @@ impl TrackedDb {
         let (lock, condvar) = &*DB_OPEN;
         let mut count = lock.lock().unwrap();
         while *count >= *MAX_STATION_DBS {
-            tracing::warn!("DB open limit ({}) reached — waiting", *MAX_STATION_DBS);
+            tracing::warn!("DB open limit ({}) reached - waiting", *MAX_STATION_DBS);
             count = condvar.wait(count).unwrap();
         }
         *count += 1;
@@ -268,7 +268,7 @@ impl Storage {
                 Ok(db) => db,
                 Err(e) => {
                     error!(
-                        "Failed to open DB for {}: {} — {} databases currently open",
+                        "Failed to open DB for {}: {} - {} databases currently open",
                         station_path_str, e, *DB_OPEN.0.lock().unwrap()
                     );
                     return;

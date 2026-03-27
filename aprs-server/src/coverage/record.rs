@@ -1,4 +1,4 @@
-//! Binary coverage record format — stored in the H3 cache and on disk in LevelDB.
+//! Binary coverage record format - stored in the H3 cache and on disk in LevelDB.
 //!
 //! Layout matches the TypeScript CoverageRecord exactly for database compatibility.
 //!
@@ -128,7 +128,7 @@ enum RecordKind {
     },
 }
 
-/// Coverage record — stored in H3 cache and LevelDB.
+/// Coverage record - stored in H3 cache and LevelDB.
 #[derive(Debug, Clone)]
 pub struct CoverageRecord {
     inner: RecordKind,
@@ -714,5 +714,5 @@ mod tests {
         assert!(rec.remove_invalid_stations(&valid).is_none());
     }
 
-    // Tests for update_sum_gap removed — method was deleted
+    // Tests for update_sum_gap removed - method was deleted
 }

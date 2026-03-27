@@ -1,4 +1,4 @@
-//! Optional reject log — writes unprocessed packets to a file for debugging.
+//! Optional reject log - writes unprocessed packets to a file for debugging.
 //!
 //! Enabled by setting REJECT_LOG env var to a file path.
 //! Each line: `reason\traw_packet\n`

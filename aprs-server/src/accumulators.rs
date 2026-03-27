@@ -1,6 +1,6 @@
 //! Time-based accumulator bucket calculation.
 //!
-//! Mirrors the TypeScript `accumulators.ts` — computes unique bucket IDs
+//! Mirrors the TypeScript `accumulators.ts` - computes unique bucket IDs
 //! for current, day, month, year, and year-nz (Southern Hemisphere season)
 //! accumulator periods.
 

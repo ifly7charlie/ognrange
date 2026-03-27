@@ -1,4 +1,4 @@
-//! Protocol usage statistics — tracks per-TOCALL message counts,
+//! Protocol usage statistics - tracks per-TOCALL message counts,
 //! unique devices, and geographic distribution.
 //!
 //! Accumulates data independently in four periods (day, month, year, yearnz),
@@ -30,7 +30,7 @@ fn is_infrastructure(tocall: &str) -> bool {
 
 /// Map lat/lon to a region short code
 fn region_code(lat: f64, lon: f64) -> &'static str {
-    // Checked in order; first match wins. Overlaps are intentional —
+    // Checked in order; first match wins. Overlaps are intentional -
     // the order prioritises the more specific region.
     if lat >= 35.0 && lat <= 72.0 && lon >= -25.0 && lon <= 45.0 {
         "eu"
@@ -149,8 +149,8 @@ impl PeriodAccumulator {
     }
 }
 
-/// Internal mutable state — per-period accumulators keyed by type (Day, Month, Year, YearNz).
-/// Current is excluded — protocol stats don't track per-rollup periods.
+/// Internal mutable state - per-period accumulators keyed by type (Day, Month, Year, YearNz).
+/// Current is excluded - protocol stats don't track per-rollup periods.
 #[derive(Debug, Clone)]
 struct StatsInner {
     periods: HashMap<AccumulatorType, PeriodAccumulator>,
@@ -191,7 +191,7 @@ impl ProtocolStats {
             None => return Self::new(),
         };
 
-        // Detect old format (top-level startTime) — start fresh to avoid confusion
+        // Detect old format (top-level startTime) - start fresh to avoid confusion
         if parsed["startTime"].is_string() {
             info!("Protocol stats state is in old single-period format, starting fresh");
             return Self::new();
@@ -260,7 +260,7 @@ impl ProtocolStats {
         }
     }
 
-    /// Record a raw packet (before filtering) — region computed once, applied to all periods
+    /// Record a raw packet (before filtering) - region computed once, applied to all periods
     pub fn record_raw(&self, tocall: &str, flarm_num: u32, lat: f64, lon: f64) {
         if is_infrastructure(tocall) {
             return;
@@ -272,7 +272,7 @@ impl ProtocolStats {
         }
     }
 
-    /// Record an accepted packet for hourly-by-layer tracking — applied to all periods
+    /// Record an accepted packet for hourly-by-layer tracking - applied to all periods
     pub fn record_hourly(&self, layer: &str, hour: u32) {
         let mut inner = self.inner.lock().unwrap();
         for acc in inner.periods.values_mut() {
@@ -280,7 +280,7 @@ impl ProtocolStats {
         }
     }
 
-    /// Record an accepted packet (passed all filters) — band computed once, applied to all periods
+    /// Record an accepted packet (passed all filters) - band computed once, applied to all periods
     pub fn record_accepted(&self, tocall: &str, agl_m: u16) {
         if is_infrastructure(tocall) {
             return;
@@ -815,7 +815,7 @@ mod tests {
 
         {
             let mut inner = stats.inner.lock().unwrap();
-            // Simulate a day rotation — reset only the day accumulator
+            // Simulate a day rotation - reset only the day accumulator
             inner.periods.insert(AccumulatorType::Day, PeriodAccumulator::new());
         }
 
@@ -850,7 +850,7 @@ mod tests {
             inner.periods.insert(AccumulatorType::Day, PeriodAccumulator::new());
         }
 
-        // Record more data — goes to all periods including the fresh day
+        // Record more data - goes to all periods including the fresh day
         stats.record_raw("OGFLR", 0x333333, 48.0, 11.0);
 
         let inner = stats.inner.lock().unwrap();

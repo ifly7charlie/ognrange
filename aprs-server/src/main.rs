@@ -44,7 +44,7 @@ use types::{Epoch, H3Index, StationId, StationName};
 
 /// Aircraft tracking for gap calculation and stationary detection
 struct AircraftState {
-    /// H3 cells at resolution 10 — kept in insertion order (oldest first) for FIFO eviction
+    /// H3 cells at resolution 10 - kept in insertion order (oldest first) for FIFO eviction
     h3s: Vec<String>,
     packets: u32,
     seen: u32,
@@ -62,7 +62,7 @@ struct AppState {
     all_aircraft: Mutex<HashMap<(Layer, u32), AircraftState>>,
     aircraft_station: Mutex<HashMap<(Layer, u16, u32), u32>>,
     case_insensitive: bool,
-    /// Mutex to serialize cache flushes and rollups — rollup acquires this,
+    /// Mutex to serialize cache flushes and rollups - rollup acquires this,
     /// does a full flush, then rolls up, ensuring no concurrent DB access.
     flush_lock: Mutex<()>,
 }
@@ -114,7 +114,7 @@ async fn main() {
         || (std::path::Path::new("PACKAGE.JSON").exists()
             && std::path::Path::new("package.json").exists());
     if case_insensitive {
-        warn!("*** Case insensitive file system — data may be merged unexpectedly");
+        warn!("*** Case insensitive file system - data may be merged unexpectedly");
     }
 
     // Initialise core state
@@ -146,7 +146,7 @@ async fn main() {
     // Probe elevation API before starting
     state.elevation.probe().await;
 
-    // Startup rollup — migrate legacy keys and process hanging current accumulators
+    // Startup rollup - migrate legacy keys and process hanging current accumulators
     info!("Performing startup rollup...");
     {
         let acc = state.accumulators.read().await;
@@ -466,7 +466,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         .unwrap()
         .as_secs() as u32;
 
-    // Count packets with timestamps far in the future — logged for diagnostics,
+    // Count packets with timestamps far in the future - logged for diagnostics,
     // but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp > now_secs + *FUTURE_PACKET_CUTOFF_SECS {
         station_details.stats.record_ignored_future_timestamp();
@@ -474,7 +474,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         reject_log::log_reject("future_timestamp", raw);
     }
 
-    // Count packets with timestamps older than STALE_PACKET_CUTOFF_SECS — logged for
+    // Count packets with timestamps older than STALE_PACKET_CUTOFF_SECS - logged for
     // diagnostics, but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp < now_secs.saturating_sub(*STALE_PACKET_CUTOFF_SECS) {
         station_details.stats.record_ignored_stale_timestamp();
@@ -520,7 +520,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
             station_details.stats.record_ignored_stationary();
             state.global_stats.with_data(|d| d.record_ignored_stationary());
             state.station_manager.update(&station_details);
-            // Update aircraft seen time (always succeeds — entry created above)
+            // Update aircraft seen time (always succeeds - entry created above)
             let mut all_aircraft = state.all_aircraft.lock().await;
             if let Some(aircraft) = all_aircraft.get_mut(&(layer, flarm_num)) {
                 aircraft.seen = timestamp;
@@ -650,7 +650,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         return;
     }
 
-    // Packet passed all filters — count as accepted
+    // Packet passed all filters - count as accepted
     let delay = now_secs.saturating_sub(timestamp) as u64;
     station_details.stats.record_delay(delay);
     for wl in &write_layers {
@@ -698,7 +698,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Write to each target layer
     for write_layer in &write_layers {
-        // Station database: (station_name, 0) — h3 at station cell level
+        // Station database: (station_name, 0) - h3 at station cell level
         h3_cache
             .update(
                 &h3_station,
@@ -714,7 +714,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
             )
             .await;
 
-        // Global database: (global, station_id) — h3 at global cell level
+        // Global database: (global, station_id) - h3 at global cell level
         h3_cache
             .update(
                 &h3_global,
@@ -871,7 +871,7 @@ async fn rollup_timer(state: Arc<AppState>) {
 
         // Let any in-flight packet finish writing to cache.
         // One packet processor task; bucket-read to last cache update
-        // is pure CPU + uncontended mutex — well under 1ms. 5ms is generous.
+        // is pure CPU + uncontended mutex - well under 1ms. 5ms is generous.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
         // Flush all cached H3 data. Uses old accumulators so data lands
@@ -881,7 +881,7 @@ async fn rollup_timer(state: Arc<AppState>) {
             .flush(&state.storage, &state.station_manager, &old_acc, true)
             .await;
 
-        // Rollup — all cached data is on disk. Hold flush_lock through
+        // Rollup - all cached data is on disk. Hold flush_lock through
         // rollup so periodic flushes cannot open station DBs that rollup
         // already has open (which causes LockErrors).
         let rollup_stats = rollup::rollup_all(

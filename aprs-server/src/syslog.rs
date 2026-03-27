@@ -21,7 +21,7 @@ fn level_to_priority(level: &Level) -> libc::c_int {
 /// Uses libc `openlog`/`syslog`/`closelog` directly for portability
 /// across Linux and FreeBSD (avoids platform-specific socket paths).
 pub struct SyslogLayer {
-    /// Kept alive because openlog stores the pointer — must not drop.
+    /// Kept alive because openlog stores the pointer - must not drop.
     _ident: CString,
 }
 

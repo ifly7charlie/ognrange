@@ -57,7 +57,7 @@ impl std::fmt::Display for PreStationStats {
 pub struct StationGlobalStats {
     acc: DailyAccumulator<AprsPacketStats>,
 
-    // Pre-station counters — packets rejected before a station is identified.
+    // Pre-station counters - packets rejected before a station is identified.
     // These are global-only (not in per-station AprsPacketStats).
     pub raw_count: AtomicU64,
     pub invalid_packet: AtomicU64,
