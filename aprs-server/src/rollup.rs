@@ -1700,7 +1700,7 @@ pub async fn rollup_startup(
                 ) {
                     Ok((stats, _day_activity, _day_arrow_count)) => {
                         info!(
-                            "{}: startup rollup complete {} -{} written, {} arrow, {} deleted",
+                            "{}: startup rollup complete {} - {} written, {} arrow, {} deleted",
                             station_name, layer.name(),
                             stats.records_written, stats.arrow_records, stats.records_deleted
                         );
@@ -1767,7 +1767,7 @@ pub async fn rollup_startup(
     let elapsed = startup_start.elapsed().as_secs_f64();
     let speed = if elapsed > 0.0 { total_stations as f64 / elapsed } else { 0.0 };
     info!(
-        "startup:100% [{}/{}] {:.0}s elapsed, {:.1}/s -{} written, {} arrow, {} deleted, {} legacy migrated",
+        "startup:100% [{}/{}] {:.0}s elapsed, {:.1}/s - {} written, {} arrow, {} deleted, {} legacy migrated",
         total_stations, total_stations, elapsed, speed,
         total_rolled_up, total_arrow, total_deleted, total_migrated
     );
