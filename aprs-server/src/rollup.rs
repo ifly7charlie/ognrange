@@ -575,7 +575,11 @@ fn rollup_station_all_layers(
     cancel: &AtomicBool,
 ) -> Result<RollupStats, String> {
     let station_start = std::time::Instant::now();
-    let mut db = match TrackedDb::open(station_path, true) {
+    let has_adsb = station_meta
+        .map(|m| m.stats.hourly.contains_key("adsb"))
+        .unwrap_or(false);
+    let cache_bytes = if has_adsb { 16 * 1024 * 1024 } else { 8 * 1024 * 1024 };
+    let mut db = match TrackedDb::open(station_path, true, cache_bytes) {
         Ok(db) => db,
         Err(e) => {
             return Err(format!("Failed to open DB {}: {}", station_path, e));
@@ -771,23 +775,32 @@ fn rollup_station_layer(
     let dest_total: usize = dest_record_counts.iter().map(|(_, n)| n).sum();
     set_phase("merge", &format!("{}cur+{}dest", current_records.len(), dest_total));
     let t_merge_start = std::time::Instant::now();
-    for (current_key, current_value) in &current_records {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok((stats, None, None));
-        }
-        let current_record = match CoverageRecord::from_bytes(current_value) {
-            Some(r) => r,
-            None => continue,
-        };
+    // Update activity for each destination
+    let h3source = current_records.len() as u32;
+    let period_start = Epoch(accumulators.current.effective_start.0);
+    let period_end = Epoch(period_start.0 + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
+    let now = Epoch(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32);
 
-        // Extract the H3 index from the current key
-        let current_h3 = match extract_h3_from_db_key(current_key) {
-            Some(h3) => h3,
-            None => continue,
-        };
+    // Process each destination accumulator one at a time
+    for dest in &mut destinations {
+        for (current_key, current_value) in &current_records {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok((stats, None, None));
+            }
+            let current_record = match CoverageRecord::from_bytes(current_value) {
+                Some(r) => r,
+                None => continue,
+            };
 
-        // Process each destination accumulator
-        for dest in &mut destinations {
+            // Extract the H3 index from the current key
+            let current_h3 = match extract_h3_from_db_key(current_key) {
+                Some(h3) => h3,
+                None => continue,
+            };
+
             // Advance past keys that are before the current H3
             loop {
                 let should_emit = match dest.current() {
@@ -842,10 +855,7 @@ fn rollup_station_layer(
             }
         }
 
-    }
-
-    // Drain remaining destination records (past end of current)
-    for dest in &mut destinations {
+        // Drain remaining destination records (past end of current)
         while dest.pos < dest.records.len() {
             if let Some((key, value)) = emit_at_pos(dest, is_global, valid_stations) {
                 match value {
@@ -855,18 +865,7 @@ fn rollup_station_layer(
             }
             dest.advance();
         }
-    }
 
-    // Update activity for each destination
-    let h3source = current_records.len() as u32;
-    let period_start = Epoch(accumulators.current.effective_start.0);
-    let period_end = Epoch(period_start.0 + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
-    let now = Epoch(std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32);
-
-    for dest in &mut destinations {
         update_activity(&mut dest.activity, h3source, period_start, period_end, now);
     }
 
@@ -1455,7 +1454,7 @@ pub async fn rollup_startup(
             };
 
             // Open DB once for all operations on this station
-            let mut db = match TrackedDb::open(&station_path, true) {
+            let mut db = match TrackedDb::open(&station_path, true, 8 * 1024 * 1024) {
                 Ok(db) => db,
                 Err(e) => {
                     error!("Startup rollup: failed to open DB {}: {}", station_path, e);

@@ -36,7 +36,7 @@ pub struct TrackedDb {
 
 impl TrackedDb {
     /// Open a LevelDB database, blocking if the global open limit is reached.
-    pub fn open(path: &str, create_if_missing: bool) -> Result<Self, rusty_leveldb::Status> {
+    pub fn open(path: &str, create_if_missing: bool, block_cache_bytes: usize) -> Result<Self, rusty_leveldb::Status> {
         let (lock, condvar) = &*DB_OPEN;
         let mut count = lock.lock().unwrap();
         while *count >= *MAX_STATION_DBS {
@@ -49,6 +49,7 @@ impl TrackedDb {
         let mut opts = rusty_leveldb::Options::default();
         opts.create_if_missing = create_if_missing;
         opts.max_open_files = 40;
+        opts.block_cache_capacity_bytes = block_cache_bytes;
         match rusty_leveldb::DB::open(path, opts) {
             Ok(db) => Ok(TrackedDb { db: Some(db) }),
             Err(e) => {
@@ -263,7 +264,7 @@ impl Storage {
         let records_owned: Vec<(String, Vec<u8>)> = records.to_vec();
 
         tokio::task::spawn_blocking(move || {
-            let mut db = match TrackedDb::open(&station_path_str, true) {
+            let mut db = match TrackedDb::open(&station_path_str, true, 8 * 1024 * 1024) {
                 Ok(db) => db,
                 Err(e) => {
                     error!(
