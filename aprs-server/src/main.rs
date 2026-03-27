@@ -12,6 +12,7 @@ mod layers;
 mod protocol_stats;
 mod reject_log;
 mod rollup;
+mod packet_stats;
 mod stats_accumulator;
 mod station;
 mod station_stats;
@@ -23,7 +24,7 @@ mod types;
 mod syslog;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -41,91 +42,6 @@ use station::StationManager;
 use db::Storage;
 use types::{Epoch, H3Index, StationId, StationName};
 
-/// Global packet statistics
-#[derive(Debug, Default)]
-struct PacketStats {
-    invalid_packet: AtomicU64,
-    ignored_station: AtomicU64,
-    ignored_paw: AtomicU64,
-    ignored_tracker: AtomicU64,
-    ignored_protocol: AtomicU64,
-    invalid_tracker: AtomicU64,
-    invalid_timestamp: AtomicU64,
-    ignored_stationary: AtomicU64,
-    ignored_signal0: AtomicU64,
-    ignored_h3stationary: AtomicU64,
-    ignored_elevation: AtomicU64,
-    ignored_future_timestamp: AtomicU64,
-    ignored_stale_timestamp: AtomicU64,
-    count: AtomicU64,
-    raw_count: AtomicU64,
-}
-
-impl PacketStats {
-    fn snapshot(&self) -> PacketStatsSnapshot {
-        PacketStatsSnapshot {
-            invalid_packet: self.invalid_packet.load(Ordering::Relaxed),
-            ignored_station: self.ignored_station.load(Ordering::Relaxed),
-            ignored_paw: self.ignored_paw.load(Ordering::Relaxed),
-            ignored_tracker: self.ignored_tracker.load(Ordering::Relaxed),
-            ignored_protocol: self.ignored_protocol.load(Ordering::Relaxed),
-            invalid_tracker: self.invalid_tracker.load(Ordering::Relaxed),
-            invalid_timestamp: self.invalid_timestamp.load(Ordering::Relaxed),
-            ignored_stationary: self.ignored_stationary.load(Ordering::Relaxed),
-            ignored_signal0: self.ignored_signal0.load(Ordering::Relaxed),
-            ignored_h3stationary: self.ignored_h3stationary.load(Ordering::Relaxed),
-            ignored_elevation: self.ignored_elevation.load(Ordering::Relaxed),
-            ignored_future_timestamp: self.ignored_future_timestamp.load(Ordering::Relaxed),
-            ignored_stale_timestamp: self.ignored_stale_timestamp.load(Ordering::Relaxed),
-            count: self.count.load(Ordering::Relaxed),
-            raw_count: self.raw_count.load(Ordering::Relaxed),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize)]
-struct PacketStatsSnapshot {
-    invalid_packet: u64,
-    ignored_station: u64,
-    ignored_paw: u64,
-    ignored_tracker: u64,
-    ignored_protocol: u64,
-    invalid_tracker: u64,
-    invalid_timestamp: u64,
-    ignored_stationary: u64,
-    ignored_signal0: u64,
-    ignored_h3stationary: u64,
-    ignored_elevation: u64,
-    ignored_future_timestamp: u64,
-    ignored_stale_timestamp: u64,
-    count: u64,
-    raw_count: u64,
-}
-
-impl std::fmt::Display for PacketStatsSnapshot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut parts = Vec::new();
-        if self.ignored_station > 0 { parts.push(format!("station:{}", self.ignored_station)); }
-        if self.ignored_protocol > 0 { parts.push(format!("protocol:{}", self.ignored_protocol)); }
-        if self.ignored_stationary > 0 { parts.push(format!("stationary:{}", self.ignored_stationary)); }
-        if self.ignored_h3stationary > 0 { parts.push(format!("h3stationary:{}", self.ignored_h3stationary)); }
-        if self.ignored_signal0 > 0 { parts.push(format!("signal0:{}", self.ignored_signal0)); }
-        if self.ignored_tracker > 0 { parts.push(format!("relayed:{}", self.ignored_tracker)); }
-        if self.ignored_paw > 0 { parts.push(format!("paw:{}", self.ignored_paw)); }
-        if self.ignored_elevation > 0 { parts.push(format!("elevation:{}", self.ignored_elevation)); }
-        if self.ignored_future_timestamp > 0 { parts.push(format!("future_ts:{}", self.ignored_future_timestamp)); }
-        if self.ignored_stale_timestamp > 0 { parts.push(format!("stale_ts:{}", self.ignored_stale_timestamp)); }
-        if self.invalid_packet > 0 { parts.push(format!("invalid:{}", self.invalid_packet)); }
-        if self.invalid_tracker > 0 { parts.push(format!("bad_tracker:{}", self.invalid_tracker)); }
-        if self.invalid_timestamp > 0 { parts.push(format!("bad_ts:{}", self.invalid_timestamp)); }
-        if parts.is_empty() {
-            write!(f, "no rejects")
-        } else {
-            write!(f, "rejected: {}", parts.join(", "))
-        }
-    }
-}
-
 /// Aircraft tracking for gap calculation and stationary detection
 struct AircraftState {
     /// H3 cells at resolution 10 — kept in insertion order (oldest first) for FIFO eviction
@@ -139,9 +55,8 @@ struct AppState {
     h3_cache: H3Cache,
     storage: Storage,
     elevation: elevation::ElevationService,
-    packet_stats: PacketStats,
     protocol_stats: protocol_stats::ProtocolStats,
-    station_global_stats: station_stats::StationGlobalStats,
+    global_stats: station_stats::StationGlobalStats,
     global_uptime: global_uptime::GlobalUptime,
     accumulators: RwLock<accumulators::Accumulators>,
     all_aircraft: Mutex<HashMap<(Layer, u32), AircraftState>>,
@@ -215,9 +130,8 @@ async fn main() {
         h3_cache: H3Cache::new(),
         storage: Storage::new(),
         elevation: elevation::ElevationService::new(),
-        packet_stats: PacketStats::default(),
         protocol_stats: protocol_stats::ProtocolStats::load(),
-        station_global_stats: station_stats::StationGlobalStats::load(),
+        global_stats: station_stats::StationGlobalStats::load(),
         global_uptime: global_uptime::GlobalUptime::new(),
         accumulators: RwLock::new(acc),
         all_aircraft: Mutex::new(HashMap::new()),
@@ -285,7 +199,7 @@ async fn main() {
     drop(_flush_guard);
 
     state.protocol_stats.save_state();
-    state.station_global_stats.save_state();
+    state.global_stats.save_state();
     state.global_uptime.clear_current_slot();
     state.station_manager.close();
     info!("Shutdown complete");
@@ -368,7 +282,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
         match event {
             aprs::connection::AprsEvent::Packet(raw) => {
                 state
-                    .packet_stats
+                    .global_stats
                     .raw_count
                     .fetch_add(1, Ordering::Relaxed);
 
@@ -385,7 +299,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                             // Extract and validate flarm ID (last 6 hex chars of source callsign)
                             let source = &packet.source_callsign;
                             if source.len() < 6 {
-                                state.packet_stats.invalid_tracker.fetch_add(1, Ordering::Relaxed);
+                                state.global_stats.with_data(|d| d.record_invalid_tracker());
                                 reject_log::log_reject("invalid_tracker", &raw);
                                 continue;
                             }
@@ -393,7 +307,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                             let flarm_num = match u32::from_str_radix(flarm_hex, 16) {
                                 Ok(n) => n,
                                 Err(_) => {
-                                    state.packet_stats.invalid_tracker.fetch_add(1, Ordering::Relaxed);
+                                    state.global_stats.with_data(|d| d.record_invalid_tracker());
                                     reject_log::log_reject("invalid_flarm_hex", &raw);
                                     continue;
                                 }
@@ -453,7 +367,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                                     }
                                     _ => {
                                         state
-                                            .packet_stats
+                                            .global_stats
                                             .invalid_packet
                                             .fetch_add(1, Ordering::Relaxed);
                                         reject_log::log_reject("invalid_packet_type", &raw);
@@ -472,7 +386,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                 }
             }
             aprs::connection::AprsEvent::ServerMessage(msg) => {
-                let raw_count = state.packet_stats.raw_count.load(Ordering::Relaxed);
+                let raw_count = state.global_stats.raw_count.load(Ordering::Relaxed);
                 info!("{} # {}", msg, raw_count);
                 state.global_uptime.record_keepalive(&msg);
             }
@@ -496,7 +410,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     // Check ignore list
     if ignore_station::ignore_station(station_name.as_str()) {
         state
-            .packet_stats
+            .global_stats
             .ignored_station
             .fetch_add(1, Ordering::Relaxed);
         reject_log::log_reject("ignored_station", raw);
@@ -508,7 +422,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         Some(l) => l,
         None => {
             state
-                .packet_stats
+                .global_stats
                 .ignored_protocol
                 .fetch_add(1, Ordering::Relaxed);
             reject_log::log_reject("ignored_protocol", raw);
@@ -520,7 +434,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     if let Some(ref enabled) = *ENABLED_LAYERS {
         if !enabled.contains(&layer) {
             state
-                .packet_stats
+                .global_stats
                 .ignored_protocol
                 .fetch_add(1, Ordering::Relaxed);
             reject_log::log_reject("disabled_layer", raw);
@@ -533,17 +447,14 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         Some(d) => d,
         None => return,
     };
-    station_details.stats.count += 1;
-    state.station_global_stats.record_raw();
+    station_details.stats.record_raw();
+    state.global_stats.with_data(|d| d.record_raw());
 
     let timestamp = match packet.timestamp {
         Some(ts) => ts,
         None => {
-            state
-                .packet_stats
-                .invalid_timestamp
-                .fetch_add(1, Ordering::Relaxed);
-            station_details.stats.invalid_timestamp += 1;
+            station_details.stats.record_invalid_timestamp();
+            state.global_stats.with_data(|d| d.record_invalid_timestamp());
             state.station_manager.update(&station_details);
             reject_log::log_reject("invalid_timestamp", raw);
             return;
@@ -558,22 +469,16 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     // Count packets with timestamps far in the future — logged for diagnostics,
     // but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp > now_secs + *FUTURE_PACKET_CUTOFF_SECS {
-        state
-            .packet_stats
-            .ignored_future_timestamp
-            .fetch_add(1, Ordering::Relaxed);
-        station_details.stats.ignored_future_timestamp += 1;
+        station_details.stats.record_ignored_future_timestamp();
+        state.global_stats.with_data(|d| d.record_ignored_future_timestamp());
         reject_log::log_reject("future_timestamp", raw);
     }
 
     // Count packets with timestamps older than STALE_PACKET_CUTOFF_SECS — logged for
     // diagnostics, but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp < now_secs.saturating_sub(*STALE_PACKET_CUTOFF_SECS) {
-        state
-            .packet_stats
-            .ignored_stale_timestamp
-            .fetch_add(1, Ordering::Relaxed);
-        station_details.stats.ignored_stale_timestamp += 1;
+        station_details.stats.record_ignored_stale_timestamp();
+        state.global_stats.with_data(|d| d.record_ignored_stale_timestamp());
         reject_log::log_reject("stale_timestamp", raw);
     }
 
@@ -581,11 +486,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     if layer == Layer::Ogntrk {
         if let Some(first_digi) = packet.digipeaters.first() {
             if !first_digi.callsign.starts_with("qA") {
-                state
-                    .packet_stats
-                    .ignored_tracker
-                    .fetch_add(1, Ordering::Relaxed);
-                station_details.stats.ignored_tracker += 1;
+                station_details.stats.record_ignored_tracker();
+                state.global_stats.with_data(|d| d.record_ignored_tracker());
                 state.station_manager.update(&station_details);
                 reject_log::log_reject("ogntrk_relay", raw);
                 return;
@@ -615,11 +517,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         let raw_rot = extract_rotation(comment);
         let raw_vc = extract_vertical_speed(comment);
         if raw_rot == 0.0 && raw_vc < 30.0 {
-            state
-                .packet_stats
-                .ignored_stationary
-                .fetch_add(1, Ordering::Relaxed);
-            station_details.stats.ignored_stationary += 1;
+            station_details.stats.record_ignored_stationary();
+            state.global_stats.with_data(|d| d.record_ignored_stationary());
             state.station_manager.update(&station_details);
             // Update aircraft seen time (always succeeds — entry created above)
             let mut all_aircraft = state.all_aircraft.lock().await;
@@ -648,11 +547,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
 
         if signal == 0 {
-            state
-                .packet_stats
-                .ignored_signal0
-                .fetch_add(1, Ordering::Relaxed);
-            station_details.stats.ignored_signal0 += 1;
+            station_details.stats.record_ignored_signal0();
+            state.global_stats.with_data(|d| d.record_ignored_signal0());
             state.station_manager.update(&station_details);
             reject_log::log_reject("signal_zero", raw);
             return;
@@ -706,11 +602,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
             let s = aircraft.h3s.len() as u32;
             if s > 0 && aircraft.packets / s > 90 {
-                state
-                    .packet_stats
-                    .ignored_h3stationary
-                    .fetch_add(1, Ordering::Relaxed);
-                station_details.stats.ignored_h3stationary += 1;
+                station_details.stats.record_ignored_h3stationary();
+                state.global_stats.with_data(|d| d.record_ignored_h3stationary());
                 state.station_manager.update(&station_details);
                 return;
             }
@@ -748,11 +641,8 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Filter bogus altitude data
     if (layer == Layer::Adsb && coarse_agl > 4500) || coarse_agl > 10000 {
-        state
-            .packet_stats
-            .ignored_elevation
-            .fetch_add(1, Ordering::Relaxed);
-        station_details.stats.ignored_elevation += 1;
+        station_details.stats.record_ignored_elevation();
+        state.global_stats.with_data(|d| d.record_ignored_elevation());
         state.station_manager.update(&station_details);
         if layer != Layer::Adsb {
             reject_log::log_reject("altitude_too_high", raw);
@@ -761,16 +651,17 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     }
 
     // Packet passed all filters — count as accepted
-    state.packet_stats.count.fetch_add(1, Ordering::Relaxed);
-    station_details.stats.accepted += 1;
-    station_details.stats.delay_sum_secs = station_details
-        .stats
-        .delay_sum_secs
-        .saturating_add(now_secs.saturating_sub(timestamp) as u64);
+    let delay = now_secs.saturating_sub(timestamp) as u64;
+    station_details.stats.record_delay(delay);
     for wl in &write_layers {
-        station_details.stats.hourly.entry(wl.name().to_string()).or_insert([0u64; 24])[hour] += 1;
-        state.station_global_stats.record_accepted(wl.name(), hour);
+        station_details.stats.record_accepted(wl.name(), hour);
     }
+    state.global_stats.with_data(|d| {
+        d.record_delay(delay);
+        for wl in &write_layers {
+            d.record_accepted(wl.name(), hour);
+        }
+    });
     state.station_manager.update(&station_details);
 
     state.protocol_stats.record_accepted(&packet.dest_callsign, coarse_agl);
@@ -790,10 +681,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         Ok(c) => c,
         Err(e) => {
             error!("Invalid coordinates {},{}: {}", lat, lng, e);
-            state
-                .packet_stats
-                .ignored_elevation
-                .fetch_add(1, Ordering::Relaxed);
+            state.global_stats.with_data(|d| d.record_ignored_elevation());
             reject_log::log_reject("invalid_coordinates", raw);
             return;
         }
@@ -905,9 +793,10 @@ async fn periodic_tasks(state: Arc<AppState>) {
             state.station_manager.flush_all();
         }
 
-        let stats = state.packet_stats.snapshot();
-        let packets = stats.count - last_count;
-        let raw_packets = stats.raw_count - last_raw_count;
+        let (stats, pre) = state.global_stats.snapshot();
+        let packets = stats.accepted - last_count;
+        let raw_count = pre.raw_count;
+        let raw_packets = raw_count - last_raw_count;
         let pps = packets as f64 / flush_secs;
         let raw_pps = raw_packets as f64 / flush_secs;
         let h3_total = flush_stats.total;
@@ -920,8 +809,8 @@ async fn periodic_tasks(state: Arc<AppState>) {
             state.station_manager.next_station_id() - 1
         );
         info!(
-            "valid: {} ({:.1}/s), total: {} ({:.1}/s), {}",
-            packets, pps, raw_packets, raw_pps, stats
+            "valid: {} ({:.1}/s), total: {} ({:.1}/s), {}{}",
+            packets, pps, raw_packets, raw_pps, stats, pre
         );
         info!(
             "h3s: {} delta {} ({:.0}%): expired {} ({:.0}%), written {} ({:.0}%)[{} stations] {:.1}% {:.1}/s {}:1",
@@ -938,8 +827,8 @@ async fn periodic_tasks(state: Arc<AppState>) {
             if flush_stats.written > 0 { packets / flush_stats.written as u64 } else { 0 }
         );
 
-        last_count = stats.count;
-        last_raw_count = stats.raw_count;
+        last_count = stats.accepted;
+        last_raw_count = raw_count;
         last_h3_total = h3_total;
     }
 }
@@ -995,7 +884,7 @@ async fn rollup_timer(state: Arc<AppState>) {
         // Rollup — all cached data is on disk. Hold flush_lock through
         // rollup so periodic flushes cannot open station DBs that rollup
         // already has open (which causes LockErrors).
-        rollup::rollup_all(
+        let rollup_stats = rollup::rollup_all(
             &state.storage,
             &state.station_manager,
             &old_acc,
@@ -1005,10 +894,19 @@ async fn rollup_timer(state: Arc<AppState>) {
         .await;
         drop(flush_guard);
 
+        // Record global H3 cell counts from this rollup cycle
+        if !rollup_stats.global_h3_counts.is_empty() {
+            state.global_stats.with_data(|d| {
+                for (layer, acc_type, count) in &rollup_stats.global_h3_counts {
+                    d.record_h3_count(acc_type, layer, *count);
+                }
+            });
+        }
+
         // Write protocol and station stats after rollup completes (hourly)
         state.protocol_stats.write_stats(&old_acc, &new_acc);
         if write_outputs {
-            state.station_global_stats.write_and_maybe_reset(&old_acc, &new_acc);
+            state.global_stats.write_and_maybe_reset(&old_acc, &new_acc);
             state.global_uptime.write_snapshot(&old_acc.day.file);
         }
     }

@@ -13,8 +13,9 @@ use tracing::{error, info, warn};
 use crate::bitvec::{bitvec_to_hex, hex_to_bitvec, slot_from_timestamp};
 use crate::config::{DB_PATH, STATION_MOVE_THRESHOLD_KM};
 use crate::db::TrackedDb;
-use crate::stats_accumulator::DailyStatsData;
 use crate::types::{Epoch, StationId, StationName};
+
+pub use crate::packet_stats::AprsPacketStats;
 
 /// Message sent to the DB writer thread
 enum DbWrite {
@@ -25,83 +26,6 @@ enum DbWrite {
 
 // Re-export compute_uptime for external callers (rollup etc.)
 pub use crate::bitvec::compute_uptime;
-
-/// Per-station and global APRS packet statistics.
-///
-/// Tracks raw/accepted packet counts, exception counters, and per-layer hourly
-/// breakdowns. Used identically for both per-station (`StationDetails.stats`)
-/// and the global aggregate (`StationGlobalStats`).
-///
-/// Resets daily: stats in the status DB are replaced with a fresh default each
-/// time the day rolls over. Historical data is preserved in dated daily files.
-///
-/// Backward-compat: old DB/JSON entries may have `count` instead of `accepted`;
-/// the API normalises this on read.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct AprsPacketStats {
-    /// All packets seen by this station before any filtering
-    pub count: u64,
-    /// Packets that passed all filters and were written to coverage data
-    pub accepted: u64,
-    /// Sum of packet ages at receipt (server receive time − packet timestamp) in seconds,
-    /// for accepted packets only. Divide by `accepted` to get mean packet age.
-    pub delay_sum_secs: u64,
-    pub ignored_tracker: u32,
-    pub invalid_tracker: u32,
-    pub invalid_timestamp: u32,
-    pub ignored_stationary: u32,
-    pub ignored_signal0: u32,
-    #[serde(rename = "ignoredPAW")]
-    pub ignored_paw: u32,
-    pub ignored_h3stationary: u32,
-    pub ignored_elevation: u32,
-    pub ignored_future_timestamp: u32,
-    pub ignored_stale_timestamp: u32,
-    /// Accepted packet counts by layer and hour-of-day (0–23).
-    /// e.g. `{"flarm": [0, 12, 5, ...], "adsb": [...]}`
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub hourly: HashMap<String, [u64; 24]>,
-}
-
-impl DailyStatsData for AprsPacketStats {
-    fn to_output_json(&self, start_time: &chrono::DateTime<chrono::Utc>) -> String {
-        let now = chrono::Utc::now();
-        let uptime = (now - *start_time).num_seconds().max(0) as u64;
-
-        // Build hourly map sorted by layer name
-        let mut hourly = serde_json::Map::new();
-        let mut hourly_sorted: Vec<_> = self.hourly.iter().collect();
-        hourly_sorted.sort_by_key(|(k, _)| (*k).clone());
-        for (layer, counts) in hourly_sorted {
-            let arr: Vec<serde_json::Value> =
-                counts.iter().map(|&c| serde_json::Value::from(c)).collect();
-            hourly.insert(layer.clone(), serde_json::Value::Array(arr));
-        }
-
-        let output = serde_json::json!({
-            "generated": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "startTime": start_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "uptimeSeconds": uptime,
-            "count": self.count,
-            "accepted": self.accepted,
-            "delaySumSecs": self.delay_sum_secs,
-            "ignoredTracker": self.ignored_tracker,
-            "invalidTracker": self.invalid_tracker,
-            "invalidTimestamp": self.invalid_timestamp,
-            "ignoredStationary": self.ignored_stationary,
-            "ignoredSignal0": self.ignored_signal0,
-            "ignoredPAW": self.ignored_paw,
-            "ignoredH3stationary": self.ignored_h3stationary,
-            "ignoredElevation": self.ignored_elevation,
-            "ignoredFutureTimestamp": self.ignored_future_timestamp,
-            "ignoredStaleTimestamp": self.ignored_stale_timestamp,
-            "hourly": hourly,
-        });
-
-        serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())
-    }
-}
 
 /// Deserialize an `Option<[f64; 2]>` that tolerates nulls inside the array.
 /// JSON like `[null, null]` or `[52.1, null]` becomes `None` instead of a parse error.

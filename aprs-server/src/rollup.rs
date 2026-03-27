@@ -43,7 +43,8 @@ use crate::coverage::header::{
 };
 use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
 use crate::layers::{is_layer_prefixed, Layer};
-use crate::station::{AprsPacketStats, StationDetails, StationManager};
+use crate::packet_stats::AprsPacketStats;
+use crate::station::{StationDetails, StationManager};
 use crate::db::{self, Storage, TrackedDb};
 use crate::types::{Epoch, H3Index, StationId, StationName};
 
@@ -56,6 +57,8 @@ pub struct RollupStats {
     pub records_deleted: usize,
     pub arrow_records: usize,
     pub elapsed_ms: u64,
+    /// Per-(layer, acc_type) H3 cell counts from the global station rollup.
+    pub global_h3_counts: Vec<(String, String, usize)>,
 }
 
 /// Live progress for a single rollup task, readable from outside the blocking thread.
@@ -436,6 +439,7 @@ pub async fn rollup_all(
                 total_stats.records_written += stats.records_written;
                 total_stats.records_deleted += stats.records_deleted;
                 total_stats.arrow_records += stats.arrow_records;
+                total_stats.global_h3_counts.extend(stats.global_h3_counts);
                 // Update output_epoch/output_date (mirrors TS rollup.ts:207-208)
                 // Also reset per-station stats on day rotation (after write_station_json captured them).
                 if station_name != "global" {
@@ -619,6 +623,7 @@ fn rollup_station_all_layers(
                 total_stats.records_written += stats.records_written;
                 total_stats.records_deleted += stats.records_deleted;
                 total_stats.arrow_records += stats.arrow_records;
+                total_stats.global_h3_counts.extend(stats.global_h3_counts);
                 if let Some(act) = day_activity {
                     combined_day_activity = Some(act);
                 }
@@ -978,6 +983,15 @@ fn rollup_station_layer(
             )?
         };
         stats.arrow_records += arrow_count;
+
+        // Track per-layer per-accumulator H3 counts for global station
+        if is_global {
+            stats.global_h3_counts.push((
+                layer.name().to_string(),
+                dest.acc_type.name().to_string(),
+                arrow_count,
+            ));
+        }
 
         // For the combined-layer Day dest on non-global stations, skip write_metadata_json:
         // write_station_json (called by the parent) writes the same filename with full details
