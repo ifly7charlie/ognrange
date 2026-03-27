@@ -180,7 +180,6 @@ impl H3Cache {
             "startUtc": now_utc,
             "accumulators": accumulators,
             "currentAccumulator": accumulators.current.bucket,
-            "allStarts": [{"start": now_secs, "startUtc": now_utc}],
         });
         let meta_bytes = serde_json::to_vec(&meta_json).unwrap_or_default();
 

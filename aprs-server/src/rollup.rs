@@ -540,29 +540,16 @@ struct RollupAccumulator {
     acc_type: AccumulatorType,
     bucket: AccumulatorBucket,
     file: String,
-    /// Current records from this accumulator, sorted by key
-    records: Vec<(String, Vec<u8>)>,
-    /// Current position in the records iterator
-    pos: usize,
+    /// DB key range for this destination
+    range_start: String,
+    range_end: String,
     /// Arrow rows collected
     arrow_station_rows: Vec<ArrowStation>,
     arrow_global_rows: Vec<ArrowGlobal>,
     /// Activity tracking (loaded from DB meta, updated after rollup)
     activity: RollupActivity,
-}
-
-impl RollupAccumulator {
-    fn current(&self) -> Option<(&str, &[u8])> {
-        if self.pos < self.records.len() {
-            Some((&self.records[self.pos].0, &self.records[self.pos].1))
-        } else {
-            None
-        }
-    }
-
-    fn advance(&mut self) {
-        self.pos += 1;
-    }
+    /// Number of destination records seen during merge (for logging)
+    dest_record_count: usize,
 }
 
 /// Per-station rollup: open the DB once, roll up all layers, flush and close.
@@ -747,15 +734,9 @@ fn rollup_station_layer(
     .filter(|(acc_type, _)| crate::layers::should_produce(layer, *acc_type))
     .collect();
 
-    let t_dest_start = std::time::Instant::now();
-    let mut dest_record_counts: Vec<(&str, usize)> = Vec::new();
     let mut destinations: Vec<RollupAccumulator> = Vec::with_capacity(dest_entries.len());
     for (acc_type, entry) in &dest_entries {
-        set_phase("read_dest", acc_type.name());
         let (start, end) = CoverageHeader::db_search_range(*acc_type, entry.bucket, layer);
-        let records = db::read_range(db, &start, &end, Some(cancel));
-        dest_record_counts.push((acc_type.name(), records.len()));
-
         let meta_key = CoverageHeader::accumulator_meta(*acc_type, entry.bucket, layer).db_key();
         let activity = load_activity_from_db(db, &meta_key);
 
@@ -763,24 +744,22 @@ fn rollup_station_layer(
             acc_type: *acc_type,
             bucket: entry.bucket,
             file: entry.file.clone(),
-            records,
-            pos: 0,
+            range_start: start,
+            range_end: end,
             arrow_station_rows: Vec::new(),
             arrow_global_rows: Vec::new(),
             activity,
+            dest_record_count: 0,
         });
     }
-    let t_read_dest = t_dest_start.elapsed();
 
     // Batch of DB put/delete operations to apply at the end
     let mut puts: Vec<(String, Vec<u8>)> = Vec::new();
     let mut deletes: Vec<String> = Vec::new();
 
     // Walk the current accumulator and merge into each destination
-    let dest_total: usize = dest_record_counts.iter().map(|(_, n)| n).sum();
-    set_phase("merge", &format!("{}cur+{}dest", current_records.len(), dest_total));
+    set_phase("merge", &format!("{}cur", current_records.len()));
     let t_merge_start = std::time::Instant::now();
-    // Update activity for each destination
     let h3source = current_records.len() as u32;
     let period_start = Epoch(accumulators.current.effective_start.0);
     let period_end = Epoch(period_start.0 + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
@@ -789,8 +768,22 @@ fn rollup_station_layer(
         .unwrap_or_default()
         .as_secs() as u32);
 
-    // Process each destination accumulator one at a time
+    // Process each destination accumulator one at a time, iterating the DB directly
     for dest in &mut destinations {
+        let mut iter = db.new_iter().map_err(|e| format!("new_iter failed: {}", e))?;
+        iter.seek(dest.range_start.as_bytes());
+        let range_end = dest.range_end.clone();
+
+        // Read current iterator position if within range
+        fn read_iter(iter: &rusty_leveldb::DBIterator, end: &[u8]) -> Option<(String, Vec<u8>)> {
+            iter.current().and_then(|(k, v)| {
+                if k.as_ref() >= end { return None; }
+                std::str::from_utf8(&k).ok().map(|s| (s.to_string(), v.to_vec()))
+            })
+        }
+
+        let mut iter_entry = read_iter(&iter, range_end.as_bytes());
+
         for (current_key, current_value) in &current_records {
             if cancel.load(Ordering::Relaxed) {
                 return Ok((stats, None, None));
@@ -800,44 +793,35 @@ fn rollup_station_layer(
                 None => continue,
             };
 
-            // Extract the H3 index from the current key
             let current_h3 = match extract_h3_from_db_key(current_key) {
                 Some(h3) => h3,
                 None => continue,
             };
 
-            // Advance past keys that are before the current H3
-            loop {
-                let should_emit = match dest.current() {
-                    Some((dest_key, _)) => {
-                        let dest_h3 = extract_h3_from_db_key(dest_key).unwrap_or_default();
-                        dest_h3 < current_h3
-                    }
-                    None => false,
+            // Emit destination records whose H3 is before the current H3
+            while let Some((ref dest_key, ref dest_value)) = iter_entry {
+                let dest_h3 = match extract_h3_from_db_key(dest_key) {
+                    Some(h3) => h3,
+                    None => { iter.advance(); iter_entry = read_iter(&iter, range_end.as_bytes()); continue; }
                 };
-                if !should_emit { break; }
-                if let Some((key, value)) = emit_at_pos(dest, is_global, valid_stations) {
-                    match value {
-                        Some(v) => puts.push((key, v)),
-                        None => deletes.push(key),
-                    }
-                }
-                dest.advance();
+                if dest_h3 >= current_h3 { break; }
+
+                dest.dest_record_count += 1;
+                emit_dest_record(dest_key, dest_value, dest, is_global, valid_stations, &mut puts, &mut deletes);
+                iter.advance();
+                iter_entry = read_iter(&iter, range_end.as_bytes());
             }
 
             // Check if destination has a matching H3
             let dest_key_for_h3 = make_dest_key(dest.acc_type, dest.bucket, layer, &current_h3);
 
-            // Check for matching H3 — copy values out before advancing
-            let merged = {
-                let matches = match dest.current() {
-                    Some((dk, _)) => extract_h3_from_db_key(dk) == Some(current_h3.clone()),
-                    None => false,
-                };
+            let merged = if let Some((ref dest_key, ref dest_value)) = iter_entry {
+                let matches = extract_h3_from_db_key(dest_key) == Some(current_h3.clone());
                 if matches {
-                    let dest_value = dest.records[dest.pos].1.clone();
-                    dest.advance();
-                    let dest_record = CoverageRecord::from_bytes(&dest_value);
+                    dest.dest_record_count += 1;
+                    let dest_record = CoverageRecord::from_bytes(dest_value);
+                    iter.advance();
+                    iter_entry = read_iter(&iter, range_end.as_bytes());
                     match dest_record {
                         Some(dr) => dr.rollup(&current_record, valid_stations),
                         None => Some(current_record.clone()),
@@ -845,6 +829,8 @@ fn rollup_station_layer(
                 } else {
                     Some(current_record.clone())
                 }
+            } else {
+                Some(current_record.clone())
             };
 
             if let Some(ref merged_record) = merged {
@@ -861,16 +847,14 @@ fn rollup_station_layer(
         }
 
         // Drain remaining destination records (past end of current)
-        while dest.pos < dest.records.len() {
-            if let Some((key, value)) = emit_at_pos(dest, is_global, valid_stations) {
-                match value {
-                    Some(v) => puts.push((key, v)),
-                    None => deletes.push(key),
-                }
-            }
-            dest.advance();
+        while let Some((ref dest_key, ref dest_value)) = iter_entry {
+            dest.dest_record_count += 1;
+            emit_dest_record(dest_key, dest_value, dest, is_global, valid_stations, &mut puts, &mut deletes);
+            iter.advance();
+            iter_entry = read_iter(&iter, range_end.as_bytes());
         }
 
+        drop(iter);
         update_activity(&mut dest.activity, h3source, period_start, period_end, now);
     }
 
@@ -1018,12 +1002,14 @@ fn rollup_station_layer(
 
     let layer_total = layer_t0.elapsed();
     if layer_total.as_secs() >= 20 {
-        warn!("{}/{}: slow layer {:?} — read_current={}recs/{:?}, read_dest={:?}/{:?}, \
-               merge={:?}, write={:?}({}puts/{}dels), purge={:?}, arrow={:?}({}recs)",
+        let dest_counts: Vec<(&str, usize)> = destinations.iter()
+            .map(|d| (d.acc_type.name(), d.dest_record_count))
+            .collect();
+        warn!("{}/{}: slow layer {:?} — read_current={}recs/{:?}, \
+               merge={:?}(dest={:?}), write={:?}({}puts/{}dels), purge={:?}, arrow={:?}({}recs)",
             station_name, layer.name(), layer_total,
             current_records.len(), t_read_current,
-            dest_record_counts, t_read_dest,
-            t_merge,
+            t_merge, dest_counts,
             t_write, puts.len(), deletes.len() + current_records.len(),
             t_purge,
             t_arrow, stats.arrow_records);
@@ -1032,32 +1018,32 @@ fn rollup_station_layer(
     Ok((stats, day_activity, combined_day_arrow_count))
 }
 
-/// Emit the record at dest.pos to arrow output, optionally filtering stations.
-/// Also writes back to DB if station filtering changed the record (matching TypeScript behaviour).
-/// Returns a DB mutation if the record was changed or deleted by station filtering.
-fn emit_at_pos(
+/// Emit a destination record to arrow output, optionally filtering stations.
+/// Pushes DB mutations to puts/deletes if station filtering changed the record.
+fn emit_dest_record(
+    key: &str,
+    value: &[u8],
     dest: &mut RollupAccumulator,
     is_global: bool,
     valid_stations: Option<&HashSet<StationId>>,
-) -> Option<(String, Option<Vec<u8>>)> {
-    let (ref key, ref value) = dest.records[dest.pos];
+    puts: &mut Vec<(String, Vec<u8>)>,
+    deletes: &mut Vec<String>,
+) {
     let record = match CoverageRecord::from_bytes(value) {
         Some(r) => r,
-        None => return None,
+        None => return,
     };
 
     let h3 = match extract_h3_from_db_key(key) {
         Some(h3) => h3,
-        None => return None,
+        None => return,
     };
-
-    let db_key = key.clone();
 
     if let Some(valid) = valid_stations {
         match record.remove_invalid_stations(valid) {
             Some(filtered) => {
                 let filtered_bytes = filtered.to_bytes();
-                let changed = filtered_bytes.as_slice() != value.as_slice();
+                let changed = filtered_bytes.as_slice() != value;
                 let (lo, hi) = H3Index(h3).split_long();
                 if is_global {
                     dest.arrow_global_rows.push(filtered.to_arrow_global(lo, hi));
@@ -1065,14 +1051,12 @@ fn emit_at_pos(
                     dest.arrow_station_rows.push(filtered.to_arrow_station(lo, hi));
                 }
                 if changed {
-                    Some((db_key, Some(filtered_bytes)))
-                } else {
-                    None
+                    puts.push((key.to_string(), filtered_bytes));
                 }
             }
             None => {
                 // All stations removed — delete from DB
-                Some((db_key, None))
+                deletes.push(key.to_string());
             }
         }
     } else {
@@ -1082,7 +1066,6 @@ fn emit_at_pos(
         } else {
             dest.arrow_station_rows.push(record.to_arrow_station(lo, hi));
         }
-        None
     }
 }
 
@@ -1695,8 +1678,8 @@ pub async fn rollup_startup(
                 }
 
                 info!(
-                    "{}: rolling up hanging current accumulator {:04x}({}) into {}",
-                    station_name, acc.current.bucket.0, current_start, dest_files
+                    "{}/{}: rolling up hanging current accumulator {:04x}({}) into {}",
+                    station_name, layer.name(), acc.current.bucket.0, current_start, dest_files
                 );
 
                 let layer_suffix = layer.file_suffix();

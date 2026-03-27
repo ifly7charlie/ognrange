@@ -332,32 +332,9 @@ impl Storage {
     }
 }
 
-const MAX_ALL_STARTS: usize = 250;
-
-/// Merge a new meta JSON with existing meta JSON, appending to allStarts
-/// and capping at MAX_ALL_STARTS entries. Matches saveAccumulatorMetadata in TypeScript.
-fn merge_meta_json(existing: Option<&[u8]>, new_data: &[u8]) -> Vec<u8> {
-    let mut new_meta: serde_json::Value = match serde_json::from_slice(new_data) {
-        Ok(v) => v,
-        Err(_) => return new_data.to_vec(),
-    };
-
-    if let Some(existing_bytes) = existing {
-        if let Ok(existing_meta) = serde_json::from_slice::<serde_json::Value>(existing_bytes) {
-            if let Some(existing_starts) = existing_meta.get("allStarts").and_then(|v| v.as_array()) {
-                if let Some(new_starts) = new_meta.get("allStarts").and_then(|v| v.as_array()).cloned() {
-                    let mut merged: Vec<serde_json::Value> = existing_starts.clone();
-                    merged.extend(new_starts);
-                    if merged.len() > MAX_ALL_STARTS {
-                        merged.drain(..merged.len() - MAX_ALL_STARTS);
-                    }
-                    new_meta["allStarts"] = serde_json::Value::Array(merged);
-                }
-            }
-        }
-    }
-
-    serde_json::to_vec(&new_meta).unwrap_or_else(|_| new_data.to_vec())
+/// Merge a new meta JSON with existing meta JSON.
+fn merge_meta_json(_existing: Option<&[u8]>, new_data: &[u8]) -> Vec<u8> {
+    new_data.to_vec()
 }
 
 /// Build and merge accumulator metadata JSON, matching saveAccumulatorMetadata in TypeScript.
@@ -371,26 +348,6 @@ pub fn build_accumulator_meta(
     let now_secs = now.timestamp() as u32;
     let now_utc = now.to_rfc3339();
 
-    let new_start = serde_json::json!({"start": now_secs, "startUtc": now_utc});
-
-    let mut all_starts: Vec<serde_json::Value> = if let Some(existing_bytes) = existing {
-        if let Ok(existing_meta) = serde_json::from_slice::<serde_json::Value>(existing_bytes) {
-            existing_meta.get("allStarts")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-
-    all_starts.push(new_start);
-    if all_starts.len() > MAX_ALL_STARTS {
-        all_starts.drain(..all_starts.len() - MAX_ALL_STARTS);
-    }
-
     let mut meta = if let Some(existing_bytes) = existing {
         serde_json::from_slice::<serde_json::Value>(existing_bytes)
             .unwrap_or_else(|_| serde_json::json!({}))
@@ -402,7 +359,6 @@ pub fn build_accumulator_meta(
     meta["startUtc"] = serde_json::json!(now_utc);
     meta["accumulators"] = accumulators.clone();
     meta["currentAccumulator"] = serde_json::json!(current_bucket);
-    meta["allStarts"] = serde_json::Value::Array(all_starts);
 
     serde_json::to_vec(&meta).unwrap_or_default()
 }
