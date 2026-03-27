@@ -73,14 +73,30 @@ async function main() {
     if (args.summary) {
         let currentCount = 0;
         let currentAcc = '';
+        let currentKeyBytes = 0;
+        let currentValueBytes = 0;
+        let totalCount = 0;
+        let totalKeyBytes = 0;
+        let totalValueBytes = 0;
 
         const flush = () => {
             if (currentCount > 0) {
-                console.log(`${currentAcc}    ${currentCount} h3 keys`);
+                const avgKey = (currentKeyBytes / currentCount).toFixed(1);
+                const avgVal = (currentValueBytes / currentCount).toFixed(1);
+                console.log(`${currentAcc}    ${currentCount} h3 keys    avg key=${avgKey}B  avg val=${avgVal}B`);
             }
         };
 
+        const stats = db.getProperty('leveldb.stats');
+        console.log(stats);
+
         for await (const [key, value] of db.iterator()) {
+            const keyBytes = Buffer.byteLength(key);
+            const valueBytes = value.byteLength;
+            totalCount++;
+            totalKeyBytes += keyBytes;
+            totalValueBytes += valueBytes;
+
             const hr = new CoverageHeader(key);
             const isLegacy = hr.layer === 'combined' && !key.startsWith('c/');
             const layerLabel = isLegacy ? 'LEGACY' : hr.layer;
@@ -89,6 +105,8 @@ async function main() {
                 flush();
                 currentCount = 0;
                 currentAcc = '';
+                currentKeyBytes = 0;
+                currentValueBytes = 0;
                 const meta = JSON.parse(String(value));
                 const file = meta?.accumulators?.[hr.typeName]?.file ?? '';
                 const start = meta?.startUtc ?? '';
@@ -98,11 +116,21 @@ async function main() {
                     flush();
                     currentCount = 0;
                     currentAcc = acc;
+                    currentKeyBytes = 0;
+                    currentValueBytes = 0;
                 }
                 currentCount++;
+                currentKeyBytes += keyBytes;
+                currentValueBytes += valueBytes;
             }
         }
         flush();
+
+        if (totalCount > 0) {
+            const avgKey = (totalKeyBytes / totalCount).toFixed(1);
+            const avgVal = (totalValueBytes / totalCount).toFixed(1);
+            console.log(`\nTotal: ${totalCount} records    avg key=${avgKey}B  avg val=${avgVal}B    total key=${totalKeyBytes}B  total val=${totalValueBytes}B`);
+        }
         await db.close();
         return;
     }
