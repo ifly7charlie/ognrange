@@ -434,6 +434,7 @@ function displayStatus() {
 }
 
 class AprsLocationPacket extends aprsPacket {
+    //
     id: string | number = '';
     timestamp: number = 0;
     sourceCallsign: string = '';
@@ -624,7 +625,7 @@ async function processPacket(packet: AprsLocationPacket) {
         const agl = Math.round(Math.min(Math.max(altitude - gl, 0), 55000));
 
         // Packet for station marks it for dumping next time round
-        stationDetails.lastPacket = Math.max(packet.timestamp, stationDetails.lastPacket ?? 0) as Epoch;
+        stationDetails.lastPacket = Math.max(Date.now(), stationDetails.lastPacket ?? 0) as Epoch;
 
         // What hexagon are we working with
         const h3id = h3.latLngToCell(packet.latitude, packet.longitude, H3_STATION_CELL_LEVEL);

@@ -618,10 +618,21 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     station_details.layer_mask = Some(new_mask);
     station_details.layers = layers::layer_names_from_mask(new_mask);
 
-    // Update last packet time
+    // Update last packet time — use receive time (wall clock) not packet timestamp,
+    // because rollup's "no traffic" skip compares this against accumulator boundaries
+    // which are wall-clock-based. Using the APRS timestamp (which can lag) would cause
+    // stations to be falsely skipped when packets arrive just after a boundary with
+    // timestamps from just before it.
     station_details.last_packet = Some(Epoch(
         station_details
             .last_packet
+            .map(|e| e.0.max(now_secs))
+            .unwrap_or(now_secs),
+    ));
+    // Also track the APRS packet timestamp for display/export purposes
+    station_details.last_packet_packet_time = Some(Epoch(
+        station_details
+            .last_packet_packet_time
             .map(|e| e.0.max(timestamp))
             .unwrap_or(timestamp),
     ));
@@ -838,19 +849,24 @@ async fn periodic_tasks(state: Arc<AppState>) {
 async fn rollup_timer(state: Arc<AppState>) {
     let mut last_hourly_write: i64 = chrono::Utc::now().timestamp() / 3600;
     loop {
-        let delay = accumulators::next_rollup_delay();
-        tokio::time::sleep(delay).await;
-
+        // Check if the bucket is already stale (e.g. startup crossed a boundary).
+        // If so, rollup immediately instead of sleeping to the next boundary -
+        // otherwise data from the new period gets merged into the old bucket,
+        // which is wrong at day boundaries.
         let now = chrono::Utc::now();
         let new_acc = accumulators::what_accumulators(now);
-
-        let old_acc = {
+        let needs_rollup = {
             let current = state.accumulators.read().await;
-            if current.current.bucket == new_acc.current.bucket {
-                continue; // bucket hasn't changed
-            }
-            current.clone()
+            current.current.bucket != new_acc.current.bucket
         };
+
+        if !needs_rollup {
+            let delay = accumulators::next_rollup_delay();
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+
+        let old_acc = state.accumulators.read().await.clone();
 
         // Write JSON files and stats once per hour (or always if rollup period >= 1h)
         let current_hour = now.timestamp() / 3600;

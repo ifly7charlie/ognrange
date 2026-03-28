@@ -55,6 +55,8 @@ pub struct StationDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_packet: Option<Epoch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_packet_packet_time: Option<Epoch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_location: Option<Epoch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_beacon: Option<Epoch>,
@@ -302,6 +304,7 @@ impl StationManager {
             primary_location: None,
             previous_location: None,
             last_packet: None,
+            last_packet_packet_time: None,
             last_location: None,
             last_beacon: None,
             status: None,
@@ -560,6 +563,7 @@ impl StationManager {
             primary_location: None,
             previous_location: None,
             last_packet: None,
+            last_packet_packet_time: None,
             last_location: None,
             last_beacon: None,
             status: None,
@@ -617,6 +621,7 @@ mod tests {
             primary_location: None,
             previous_location: None,
             last_packet: None,
+            last_packet_packet_time: None,
             last_location: None,
             last_beacon: None,
             status: None,

@@ -1669,11 +1669,11 @@ pub async fn rollup_startup(
                         station_name, acc.current.bucket.0, current_start, dest_files,
                         layer.name(), missing.join(",")
                     );
-                    // Delete the current meta key so it won't hang again
-                    let meta_key = CoverageHeader::accumulator_meta(
+                    // Delete the current meta key AND data so it won't hang or orphan again
+                    let (start, end) = CoverageHeader::db_search_range_with_meta(
                         AccumulatorType::Current, acc.current.bucket, *layer,
-                    ).db_key();
-                    let _ = db.delete(meta_key.as_bytes());
+                    );
+                    db::delete_range(&mut db, &start, &end);
                     continue;
                 }
 
@@ -1717,16 +1717,17 @@ pub async fn rollup_startup(
                 }
             }
 
-            // Delete the current meta keys now that rollup is done
-            let mut batch = rusty_leveldb::WriteBatch::default();
+            // Delete the current data AND meta keys for all hanging accumulators.
+            // rollup_station_layer already deletes both on success, so this is a
+            // no-op for completed rollups. But if rollup was canceled mid-loop
+            // (shutdown signal), some accumulators may have had their rollup skipped
+            // — deleting the full range here prevents orphaned data persisting
+            // across restarts (meta deleted but data left behind).
             for (bucket, layer) in hanging_buckets.keys() {
-                let meta_key = CoverageHeader::accumulator_meta(
+                let (start, end) = CoverageHeader::db_search_range_with_meta(
                     AccumulatorType::Current, *bucket, *layer,
-                ).db_key();
-                batch.delete(meta_key.as_bytes());
-            }
-            if let Err(e) = db.write(batch, true) {
-                error!("Failed to delete meta keys for {}: {}", station_name, e);
+                );
+                db::delete_range(&mut db, &start, &end);
             }
             if let Err(e) = db.flush() {
                 error!("Failed to flush DB for {}: {}", station_name, e);
