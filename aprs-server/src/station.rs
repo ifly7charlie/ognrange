@@ -214,7 +214,6 @@ impl StationManager {
                             + s.invalid_timestamp as u64
                             + s.ignored_stationary as u64
                             + s.ignored_signal0 as u64
-                            + s.ignored_paw as u64
                             + s.ignored_h3stationary as u64
                             + s.ignored_elevation as u64
                             + s.ignored_future_timestamp as u64
@@ -356,6 +355,12 @@ impl StationManager {
             .write()
             .unwrap()
             .insert(details.station.clone(), details.clone());
+    }
+
+    /// Remove all stations except those matching a predicate.
+    pub fn retain(&self, f: impl Fn(&StationName) -> bool) {
+        let mut stations = self.stations.write().unwrap();
+        stations.retain(|name, _| f(name));
     }
 
     /// Persist all in-memory station state to the DB.

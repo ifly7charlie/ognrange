@@ -20,7 +20,7 @@ function aggregateStatsFiles(
 ): AprsPacketStatsJson {
     let count = 0, accepted = 0, delaySumSecs = 0;
     let ignoredTracker = 0, invalidTracker = 0, invalidTimestamp = 0;
-    let ignoredStationary = 0, ignoredSignal0 = 0, ignoredPAW = 0;
+    let ignoredStationary = 0, ignoredSignal0 = 0;
     let ignoredH3stationary = 0, ignoredElevation = 0;
     let ignoredFutureTimestamp = 0, ignoredStaleTimestamp = 0;
     const hourly: Record<string, number[]> = {};
@@ -40,7 +40,6 @@ function aggregateStatsFiles(
         invalidTimestamp += stats.invalidTimestamp ?? 0;
         ignoredStationary += stats.ignoredStationary ?? 0;
         ignoredSignal0 += stats.ignoredSignal0 ?? 0;
-        ignoredPAW += stats.ignoredPAW ?? 0;
         ignoredH3stationary += stats.ignoredH3stationary ?? 0;
         ignoredElevation += stats.ignoredElevation ?? 0;
         ignoredFutureTimestamp += stats.ignoredFutureTimestamp ?? 0;
@@ -60,7 +59,7 @@ function aggregateStatsFiles(
         uptimeSeconds: totalUptime,
         count, accepted, delaySumSecs,
         ignoredTracker, invalidTracker, invalidTimestamp,
-        ignoredStationary, ignoredSignal0, ignoredPAW,
+        ignoredStationary, ignoredSignal0,
         ignoredH3stationary, ignoredElevation,
         ignoredFutureTimestamp, ignoredStaleTimestamp,
         hourly

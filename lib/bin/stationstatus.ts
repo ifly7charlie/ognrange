@@ -34,7 +34,6 @@ export interface StationDetails {
         count: number; // all packets before any filtering
         accepted: number; // packets written to coverage data (was: count)
         delaySumSecs: number; // sum of packet ages at receipt (server time − packet timestamp) in seconds, accepted only; divide by `accepted` for mean
-        ignoredPAW: number; // we ignore from PAW devices
         ignoredTracker: number; //  OGNTRK or not sent to qA first (ie repeated)
         invalidTracker: number; // invalid flarmid
         invalidTimestamp: number; // no timestamp in message
@@ -59,7 +58,6 @@ function emptyStats() {
         invalidTimestamp: 0,
         ignoredStationary: 0,
         ignoredSignal0: 0,
-        ignoredPAW: 0,
         ignoredH3stationary: 0,
         ignoredElevation: 0,
         ignoredFutureTimestamp: 0,

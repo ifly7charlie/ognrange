@@ -20,7 +20,6 @@ export interface AprsPacketStats {
     invalidTimestamp: number;
     ignoredStationary: number;
     ignoredSignal0: number;
-    ignoredPAW: number;
     ignoredH3stationary: number;
     ignoredElevation: number;
     ignoredFutureTimestamp: number;

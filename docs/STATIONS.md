@@ -47,7 +47,6 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
       "invalidTimestamp": 0,
       "ignoredStationary": 450,
       "ignoredSignal0": 3,
-      "ignoredPAW": 0,
       "ignoredH3stationary": 120,
       "ignoredElevation": 5,
       "count": 85000
@@ -106,7 +105,6 @@ Per-station packet filtering counters. These accumulate over the lifetime of the
 | `invalidTimestamp` | Packets with invalid or out-of-range timestamps |
 | `ignoredStationary` | Packets ignored because the aircraft was stationary |
 | `ignoredSignal0` | Packets ignored due to zero signal strength |
-| `ignoredPAW` | PilotAware packets ignored |
 | `ignoredH3stationary` | Packets ignored because the H3 cell hasn't changed |
 | `ignoredElevation` | Packets ignored due to elevation filter (bad altitude data) |
 | `count` | Total packets accepted for coverage recording |

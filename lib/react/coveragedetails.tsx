@@ -361,7 +361,7 @@ export function CoverageDetails({
                         <b>{isRange ? t('statistics.title_range') : t('statistics.title', {when: formatEpoch(stationData.exportedAt ?? stationData.outputEpoch)})}</b>
                         <table>
                             <tbody>
-                                {Object.keys(displayStats).filter((key) => key !== 'ignoredPAW').map((key) => (
+                                {Object.keys(displayStats).map((key) => (
                                     <tr key={key}>
                                         <td>{t(`statistics.${key}`)}</td>
                                         <td>{displayStats[key]}</td>

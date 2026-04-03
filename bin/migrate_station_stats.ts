@@ -34,7 +34,6 @@ const STAT_FIELDS = [
     'invalidTimestamp',
     'ignoredStationary',
     'ignoredSignal0',
-    'ignoredPAW',
     'ignoredH3stationary',
     'ignoredElevation',
     'ignoredFutureTimestamp',
@@ -174,6 +173,9 @@ async function processStation(stationDir: string): Promise<void> {
             rejected += delta[f];
         }
         stats.count = accepted + rejected;
+
+        // Remove vestigial field
+        delete stats.ignoredPAW;
 
         if (!stats.hourly) {
             stats.hourly = {};

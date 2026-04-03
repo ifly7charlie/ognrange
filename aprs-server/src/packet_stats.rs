@@ -33,8 +33,6 @@ pub struct AprsPacketStats {
     pub invalid_timestamp: u32,
     pub ignored_stationary: u32,
     pub ignored_signal0: u32,
-    #[serde(rename = "ignoredPAW")]
-    pub ignored_paw: u32,
     pub ignored_h3stationary: u32,
     pub ignored_elevation: u32,
     pub ignored_future_timestamp: u32,
@@ -192,7 +190,6 @@ impl DailyStatsData for AprsPacketStats {
             "invalidTimestamp": self.invalid_timestamp,
             "ignoredStationary": self.ignored_stationary,
             "ignoredSignal0": self.ignored_signal0,
-            "ignoredPAW": self.ignored_paw,
             "ignoredH3stationary": self.ignored_h3stationary,
             "ignoredElevation": self.ignored_elevation,
             "ignoredFutureTimestamp": self.ignored_future_timestamp,

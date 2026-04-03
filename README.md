@@ -196,7 +196,6 @@ invalidTimestamp: packet doesn't have a reasonable timestamp
 ignoredSignal0: means there is no signal strength in the received packet
 ignoredStationary: means that a device isn't moving, repeated packets are ignored
 ignoredH3stationary: means that a device is moving but only between a very small number of locations (eg due to poor GPS reception - indoors etc)
-ignoredPAW: Unused
 ignoredElevation: Unable to do elevation lookup of packet - probably means lat/lng is not valid
 count: total number of packets
 ```

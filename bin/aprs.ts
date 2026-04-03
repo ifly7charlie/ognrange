@@ -97,7 +97,6 @@ if (!existsSync('package.json')) {
 let packetStats = {
     invalidPacket: 0, // packet couldn't be parsed
     ignoredStation: 0, //
-    ignoredPAW: 0,
     ignoredTracker: 0,
     ignoredProtocol: 0,
     invalidTracker: 0,

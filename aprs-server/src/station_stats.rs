@@ -28,7 +28,6 @@ pub struct PreStationStats {
     pub invalid_packet: u64,
     pub ignored_station: u64,
     pub ignored_protocol: u64,
-    pub ignored_paw: u64,
 }
 
 impl std::fmt::Display for PreStationStats {
@@ -39,9 +38,6 @@ impl std::fmt::Display for PreStationStats {
         }
         if self.ignored_protocol > 0 {
             parts.push(format!("protocol:{}", self.ignored_protocol));
-        }
-        if self.ignored_paw > 0 {
-            parts.push(format!("paw:{}", self.ignored_paw));
         }
         if self.invalid_packet > 0 {
             parts.push(format!("invalid:{}", self.invalid_packet));
@@ -63,7 +59,6 @@ pub struct StationGlobalStats {
     pub invalid_packet: AtomicU64,
     pub ignored_station: AtomicU64,
     pub ignored_protocol: AtomicU64,
-    pub ignored_paw: AtomicU64,
 }
 
 impl StationGlobalStats {
@@ -75,7 +70,6 @@ impl StationGlobalStats {
             invalid_packet: AtomicU64::new(0),
             ignored_station: AtomicU64::new(0),
             ignored_protocol: AtomicU64::new(0),
-            ignored_paw: AtomicU64::new(0),
         }
     }
 
@@ -88,7 +82,6 @@ impl StationGlobalStats {
             invalid_packet: AtomicU64::new(0),
             ignored_station: AtomicU64::new(0),
             ignored_protocol: AtomicU64::new(0),
-            ignored_paw: AtomicU64::new(0),
         }
     }
 
@@ -108,7 +101,6 @@ impl StationGlobalStats {
             invalid_packet: self.invalid_packet.load(Ordering::Relaxed),
             ignored_station: self.ignored_station.load(Ordering::Relaxed),
             ignored_protocol: self.ignored_protocol.load(Ordering::Relaxed),
-            ignored_paw: self.ignored_paw.load(Ordering::Relaxed),
         };
         (stats, pre)
     }

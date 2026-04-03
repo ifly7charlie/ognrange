@@ -136,7 +136,6 @@
             "invalidTimestamp": "Invalid Timestamp",
             "ignoredStationary": "Ignored (Stationary)",
             "ignoredSignal0": "Ignored (No signal strength)",
-            "ignoredPAW": "Ignored (PAW/fake signal strength)",
             "ignoredH3stationary": "Ignored (Mostly Stationary)",
             "ignoredElevation": "Ignored (Corrupt elevation)",
             "ignoredFutureTimestamp": "Ignored (Future timestamp)",
