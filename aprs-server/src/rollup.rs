@@ -22,6 +22,42 @@ fn is_shutdown() -> bool {
     SHUTDOWN.load(Ordering::Relaxed)
 }
 
+/// Warn when a station rollup task exceeds this fraction of the rollup period.
+const SLOW_TASK_WARN_FRACTION: f64 = 0.75;
+/// After the first slow-task warning, repeat with progress every this many seconds.
+const SLOW_TASK_REPEAT_WARN_SECS: u64 = 300;
+/// Startup rollup tasks: first warning and repeat interval.
+const STARTUP_TASK_WARN_SECS: u64 = 300;
+
+/// True while a rollup (periodic or startup) is running. The rollup timer
+/// checks this before swapping accumulators so a slow rollup causes the
+/// boundary to be skipped (and later collapsed into one catch-up rollup)
+/// rather than two rollups overlapping.
+static ROLLUP_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn rollup_in_progress() -> bool {
+    ROLLUP_IN_PROGRESS.load(Ordering::Acquire)
+}
+
+/// RAII guard for ROLLUP_IN_PROGRESS - Drop-based release so an aborted
+/// rollup future still clears the flag.
+struct RollupGuard;
+
+impl RollupGuard {
+    fn try_acquire() -> Option<Self> {
+        ROLLUP_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+            .then_some(RollupGuard)
+    }
+}
+
+impl Drop for RollupGuard {
+    fn drop(&mut self) {
+        ROLLUP_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
 use arrow::array::{
     ArrayRef, StringArray, UInt16Array, UInt32Array, UInt8Array,
 };
@@ -88,6 +124,37 @@ impl std::fmt::Display for RollupProgress {
     }
 }
 
+/// Await a rollup task with no timeout, logging a warning (with live progress)
+/// when it runs long. First warning fires at `first_warn` after `started`,
+/// then repeats every `repeat_warn`. Only returns when the task completes
+/// or panics - tasks are never abandoned (spawn_blocking threads cannot be
+/// aborted; abandoning one leaves it writing the DB concurrently with the
+/// next rollup).
+async fn await_with_warnings<T>(
+    mut handle: tokio::task::JoinHandle<T>,
+    label: &str,
+    progress: &std::sync::Mutex<RollupProgress>,
+    started: std::time::Instant,
+    first_warn: std::time::Duration,
+    repeat_warn: std::time::Duration,
+) -> Result<T, tokio::task::JoinError> {
+    let mut next_warn = started + first_warn;
+    loop {
+        let sleep_for = next_warn.saturating_duration_since(std::time::Instant::now());
+        tokio::select! {
+            res = &mut handle => return res,
+            _ = tokio::time::sleep(sleep_for) => {
+                let prog = progress.lock().map(|p| p.to_string()).unwrap_or_default();
+                warn!(
+                    "rollup task {} still running after {:.0}s - progress: {}",
+                    label, started.elapsed().as_secs_f64(), prog
+                );
+                next_warn = std::time::Instant::now() + repeat_warn;
+            }
+        }
+    }
+}
+
 /// Perform a full rollup: merge current → day/month/year/yearnz.
 /// Caller must flush the H3 cache before calling this.
 pub async fn rollup_all(
@@ -97,6 +164,14 @@ pub async fn rollup_all(
     new_accumulators: Option<&Accumulators>,
     write_json: bool,
 ) -> RollupStats {
+    // Defense in depth: the rollup timer is strictly sequential and checks
+    // rollup_in_progress() before swapping accumulators, so this should never
+    // fire - but if a second entry point ever appears, skip rather than overlap.
+    let Some(_rollup_guard) = RollupGuard::try_acquire() else {
+        warn!("rollup already in progress - skipping this rollup cycle");
+        return RollupStats::default();
+    };
+
     let start = std::time::Instant::now();
 
     info!("--------[ accumulator rotation ]--------");
@@ -238,12 +313,8 @@ pub async fn rollup_all(
         moved_count,
     );
 
-    // Determine which layers to process
-    let layers: Vec<Layer> = if let Some(ref enabled) = *crate::config::ENABLED_LAYERS {
-        enabled.iter().copied().collect()
-    } else {
-        crate::layers::ALL_LAYERS.to_vec()
-    };
+    // Determine which layers to process, in rollup order (lowest traffic first)
+    let layers = crate::layers::rollup_layers(crate::config::ENABLED_LAYERS.as_ref());
 
     // Which non-current accumulators retired (bucket changed)?
     let retired_accumulators: Vec<(AccumulatorType, AccumulatorBucket)> = if let Some(new_acc) = new_accumulators {
@@ -294,8 +365,6 @@ pub async fn rollup_all(
         ));
     }
 
-    let total_stations = station_entries.len();
-
     // --- Concurrent rollup with MAX_SIMULTANEOUS_ROLLUPS ---
     let max_concurrent = *MAX_SIMULTANEOUS_ROLLUPS;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
@@ -304,7 +373,7 @@ pub async fn rollup_all(
     let layers = Arc::new(layers);
     let retired_accumulators = Arc::new(retired_accumulators);
 
-    let mut tasks: Vec<(String, String, Arc<std::sync::Mutex<RollupProgress>>, Arc<AtomicBool>, tokio::task::JoinHandle<RollupStats>)> = Vec::new();
+    let mut tasks: Vec<(String, String, Arc<std::sync::Mutex<RollupProgress>>, std::time::Instant, tokio::task::JoinHandle<RollupStats>)> = Vec::new();
     let mut skipped_no_traffic: usize = 0;
 
     for (station_name, _is_global_hint, station_meta) in station_entries {
@@ -391,8 +460,7 @@ pub async fn rollup_all(
         let task_station_path = station_path.clone();
         let progress = Arc::new(std::sync::Mutex::new(RollupProgress::default()));
         let task_progress = progress.clone();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let task_cancel = cancel.clone();
+        let spawned_at = std::time::Instant::now();
 
         let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit; // released when task completes
@@ -408,7 +476,7 @@ pub async fn rollup_all(
                 station_meta.as_ref(),
                 &task_progress,
                 &retired,
-                &task_cancel,
+                &SHUTDOWN, // cancel only on process exit
             ) {
                 Ok(stats) => stats,
                 Err(e) => {
@@ -418,23 +486,28 @@ pub async fn rollup_all(
             };
             station_stats
         });
-        tasks.push((task_station_name, task_station_path, progress, cancel, handle));
+        tasks.push((task_station_name, task_station_path, progress, spawned_at, handle));
     }
 
     // Produce the master stations list (runs while station rollups are in progress)
     crate::stationfile::produce_station_file(station_manager, old_accumulators);
 
-    // Collect results with per-station timeout
+    // Collect results - no timeout: tasks are awaited to completion, with a
+    // warning (including live progress) when one runs past 75% of the rollup
+    // period, repeated every SLOW_TASK_REPEAT_WARN_SECS so a hang stays
+    // visible in the logs.
     let mut total_stats = RollupStats::default();
     total_stats.stations_processed = tasks.len();
-    let station_timeout = std::time::Duration::from_secs(300); // 5 minutes per station
+    let first_warn = std::time::Duration::from_secs_f64(
+        *ROLLUP_PERIOD_MINUTES * 60.0 * SLOW_TASK_WARN_FRACTION,
+    );
+    let repeat_warn = std::time::Duration::from_secs(SLOW_TASK_REPEAT_WARN_SECS);
     let total_tasks = tasks.len();
     let mut completed_count = 0usize;
 
-    for (station_name, station_path, progress, cancel, handle) in tasks {
-        tokio::pin!(handle);
-        match tokio::time::timeout(station_timeout, &mut handle).await {
-            Ok(Ok(stats)) => {
+    for (station_name, station_path, progress, spawned_at, handle) in tasks {
+        match await_with_warnings(handle, &station_name, &progress, spawned_at, first_warn, repeat_warn).await {
+            Ok(stats) => {
                 total_stats.records_read += stats.records_read;
                 total_stats.records_written += stats.records_written;
                 total_stats.records_deleted += stats.records_deleted;
@@ -460,33 +533,9 @@ pub async fn rollup_all(
                     }
                 }
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 let prog = progress.lock().map(|p| p.to_string()).unwrap_or_default();
                 error!("Rollup task panicked for {} ({}): {} - progress: {}", station_name, station_path, e, prog);
-                total_stats.stations_skipped += 1;
-            }
-            Err(_) => {
-                cancel.store(true, Ordering::Relaxed);
-                let prog = progress.lock().map(|p| p.to_string()).unwrap_or_default();
-                error!("Rollup task timed out after {}s for {} ({}) - progress: {}",
-                    station_timeout.as_secs(), station_name, station_path, prog);
-                // Wait for the task to actually finish so it releases its DB lock.
-                // The cancel flag should cause it to exit promptly, but give it a
-                // generous grace period to flush/close. If it still doesn't finish,
-                // abort it to prevent the lock from being held into the next cycle.
-                let grace = std::time::Duration::from_secs(30);
-                match tokio::time::timeout(grace, handle).await {
-                    Ok(_) => {
-                        info!("Timed-out task for {} finished after cancel", station_name);
-                    }
-                    Err(_) => {
-                        error!("Timed-out task for {} did not finish within {}s grace period - aborting",
-                            station_name, grace.as_secs());
-                        // handle is dropped here, but spawn_blocking tasks cannot be
-                        // aborted - they'll finish eventually. The lock will be held
-                        // until then, but at least we've warned about it.
-                    }
-                }
                 total_stats.stations_skipped += 1;
             }
         }
@@ -680,9 +729,29 @@ fn rollup_station_all_layers(
     Ok(total_stats)
 }
 
+/// Pre-read, normalized current-accumulator data feeding a single rollup merge:
+/// records sorted by H3 (duplicate H3s already merged), plus the DB keys to
+/// delete once the merge commits. Allows multiple hanging current buckets that
+/// share a destination set to be rolled up in one destination walk (startup).
+struct CurrentSource {
+    /// (h3 hex, record), sorted by H3, duplicate H3s pre-merged
+    records: Vec<(String, CoverageRecord)>,
+    /// raw current data keys to delete on commit
+    delete_data_keys: Vec<String>,
+    /// current meta keys to delete on commit
+    delete_meta_keys: Vec<String>,
+    /// raw record count read from the DB (before any dedup)
+    records_read: usize,
+    /// earliest period start across the source buckets
+    period_start: Epoch,
+    /// latest period end across the source buckets
+    period_end: Epoch,
+}
+
 /// Per-layer rollup within an already-open DB.
 /// Returns (stats, day_activity) where day_activity is the combined-layer Day RollupActivity
 /// (if this layer is Combined and has a Day accumulator).
+#[allow(clippy::too_many_arguments)]
 fn rollup_station_layer(
     db: &mut rusty_leveldb::DB,
     _station_path: &str,
@@ -697,8 +766,90 @@ fn rollup_station_layer(
     cancel: &AtomicBool,
     progress: &std::sync::Mutex<RollupProgress>,
 ) -> Result<(RollupStats, Option<RollupActivity>, Option<usize>), String> {
-    let mut stats = RollupStats::default();
     let layer_t0 = std::time::Instant::now();
+
+    if let Ok(mut p) = progress.lock() {
+        p.phase = "read_current".to_string();
+        p.detail.clear();
+    }
+
+    // Read all "current" accumulator records for this layer
+    let (current_start, current_end) = CoverageHeader::db_search_range(
+        AccumulatorType::Current,
+        accumulators.current.bucket,
+        layer,
+    );
+    let current_records = db::read_range(db, &current_start, &current_end, Some(cancel));
+    let records_read = current_records.len();
+    let t_read_current = layer_t0.elapsed();
+
+    if is_shutdown() || cancel.load(Ordering::Relaxed) || current_records.is_empty() {
+        let stats = RollupStats { records_read, ..Default::default() };
+        return Ok((stats, None, None));
+    }
+
+    // Normalize: keys within a single bucket range are already H3-sorted.
+    // Unparseable records are skipped from the merge but still deleted.
+    let mut records: Vec<(String, CoverageRecord)> = Vec::with_capacity(current_records.len());
+    let mut delete_data_keys: Vec<String> = Vec::with_capacity(current_records.len());
+    for (key, value) in current_records {
+        if let (Some(h3), Some(record)) =
+            (extract_h3_from_db_key(&key), CoverageRecord::from_bytes(&value))
+        {
+            records.push((h3, record));
+        }
+        delete_data_keys.push(key);
+    }
+
+    let period_start = Epoch(accumulators.current.effective_start.0);
+    let period_end = Epoch(period_start.0 + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
+    let current_meta_key = CoverageHeader::accumulator_meta(
+        AccumulatorType::Current, accumulators.current.bucket, layer,
+    ).db_key();
+
+    let source = CurrentSource {
+        records,
+        delete_data_keys,
+        delete_meta_keys: vec![current_meta_key],
+        records_read,
+        period_start,
+        period_end,
+    };
+
+    rollup_layer_core(
+        db, station_name, accumulators, layer, layer_suffix,
+        valid_stations, is_global, station_meta, retired_accumulators,
+        cancel, progress, &source, layer_t0, t_read_current,
+    )
+}
+
+/// Core of the per-layer rollup: merge a CurrentSource into the destination
+/// accumulators of `accumulators`, write arrow output, then commit the DB batch.
+///
+/// Ordering is deliberate (crash consistency): arrow files are written and
+/// atomically renamed BEFORE the destructive WriteBatch that deletes the
+/// current accumulator. An abort or crash anywhere before the commit leaves
+/// the current accumulator intact, so the next rollup (or startup mop-up)
+/// reproduces the identical merge and rewrites the same arrow files.
+/// "DB cleared but arrow never written" cannot happen.
+#[allow(clippy::too_many_arguments)]
+fn rollup_layer_core(
+    db: &mut rusty_leveldb::DB,
+    station_name: &str,
+    accumulators: &Accumulators,
+    layer: Layer,
+    layer_suffix: &str,
+    valid_stations: Option<&HashSet<StationId>>,
+    is_global: bool,
+    station_meta: Option<&crate::station::StationDetails>,
+    retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
+    cancel: &AtomicBool,
+    progress: &std::sync::Mutex<RollupProgress>,
+    source: &CurrentSource,
+    layer_t0: std::time::Instant,
+    t_read_current: std::time::Duration,
+) -> Result<(RollupStats, Option<RollupActivity>, Option<usize>), String> {
+    let mut stats = RollupStats { records_read: source.records_read, ..Default::default() };
 
     // Helper to update progress phase + detail
     let set_phase = |phase: &str, detail: &str| {
@@ -707,21 +858,6 @@ fn rollup_station_layer(
             p.detail = detail.to_string();
         }
     };
-
-    // Read all "current" accumulator records for this layer
-    set_phase("read_current", "");
-    let (current_start, current_end) = CoverageHeader::db_search_range(
-        AccumulatorType::Current,
-        accumulators.current.bucket,
-        layer,
-    );
-    let current_records = db::read_range(db, &current_start, &current_end, Some(cancel));
-    stats.records_read = current_records.len();
-    let t_read_current = layer_t0.elapsed();
-
-    if is_shutdown() || cancel.load(Ordering::Relaxed) || current_records.is_empty() {
-        return Ok((stats, None, None));
-    }
 
     // Set up rollup destination accumulators
     let dest_entries: Vec<(AccumulatorType, &AccumulatorEntry)> = vec![
@@ -757,16 +893,28 @@ fn rollup_station_layer(
     let mut puts: Vec<(String, Vec<u8>)> = Vec::new();
     let mut deletes: Vec<String> = Vec::new();
 
-    // Walk the current accumulator and merge into each destination
-    set_phase("merge", &format!("{}cur", current_records.len()));
+    // Walk the current accumulator and merge into each destination.
+    // Everything in this phase is in-memory (puts/deletes/arrow rows are
+    // buffered) - any early return here is non-destructive.
+    set_phase("merge", &format!("{}cur", source.records.len()));
     let t_merge_start = std::time::Instant::now();
-    let h3source = current_records.len() as u32;
-    let period_start = Epoch(accumulators.current.effective_start.0);
-    let period_end = Epoch(period_start.0 + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
+    let h3source = source.records.len() as u32;
     let now = Epoch(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as u32);
+
+    // Non-destructive bail-out for shutdown mid-merge: nothing was committed,
+    // so zero the counters that only reflect buffered (uncommitted) work.
+    macro_rules! cancel_bail {
+        () => {
+            if cancel.load(Ordering::Relaxed) {
+                stats.records_written = 0;
+                stats.global_h3_counts.clear();
+                return Ok((stats, None, None));
+            }
+        };
+    }
 
     // Process each destination accumulator one at a time, iterating the DB directly
     for dest in &mut destinations {
@@ -784,27 +932,17 @@ fn rollup_station_layer(
 
         let mut iter_entry = read_iter(&iter, range_end.as_bytes());
 
-        for (current_key, current_value) in &current_records {
-            if cancel.load(Ordering::Relaxed) {
-                return Ok((stats, None, None));
-            }
-            let current_record = match CoverageRecord::from_bytes(current_value) {
-                Some(r) => r,
-                None => continue,
-            };
-
-            let current_h3 = match extract_h3_from_db_key(current_key) {
-                Some(h3) => h3,
-                None => continue,
-            };
+        for (current_h3, current_record) in &source.records {
+            cancel_bail!();
 
             // Emit destination records whose H3 is before the current H3
             while let Some((ref dest_key, ref dest_value)) = iter_entry {
+                cancel_bail!();
                 let dest_h3 = match extract_h3_from_db_key(dest_key) {
                     Some(h3) => h3,
                     None => { iter.advance(); iter_entry = read_iter(&iter, range_end.as_bytes()); continue; }
                 };
-                if dest_h3 >= current_h3 { break; }
+                if dest_h3.as_str() >= current_h3.as_str() { break; }
 
                 dest.dest_record_count += 1;
                 emit_dest_record(dest_key, dest_value, dest, is_global, valid_stations, &mut puts, &mut deletes);
@@ -813,17 +951,17 @@ fn rollup_station_layer(
             }
 
             // Check if destination has a matching H3
-            let dest_key_for_h3 = make_dest_key(dest.acc_type, dest.bucket, layer, &current_h3);
+            let dest_key_for_h3 = make_dest_key(dest.acc_type, dest.bucket, layer, current_h3);
 
             let merged = if let Some((ref dest_key, ref dest_value)) = iter_entry {
-                let matches = extract_h3_from_db_key(dest_key) == Some(current_h3.clone());
+                let matches = extract_h3_from_db_key(dest_key).as_deref() == Some(current_h3.as_str());
                 if matches {
                     dest.dest_record_count += 1;
                     let dest_record = CoverageRecord::from_bytes(dest_value);
                     iter.advance();
                     iter_entry = read_iter(&iter, range_end.as_bytes());
                     match dest_record {
-                        Some(dr) => dr.rollup(&current_record, valid_stations),
+                        Some(dr) => dr.rollup(current_record, valid_stations),
                         None => Some(current_record.clone()),
                     }
                 } else {
@@ -848,6 +986,7 @@ fn rollup_station_layer(
 
         // Drain remaining destination records (past end of current)
         while let Some((ref dest_key, ref dest_value)) = iter_entry {
+            cancel_bail!();
             dest.dest_record_count += 1;
             emit_dest_record(dest_key, dest_value, dest, is_global, valid_stations, &mut puts, &mut deletes);
             iter.advance();
@@ -855,72 +994,16 @@ fn rollup_station_layer(
         }
 
         drop(iter);
-        update_activity(&mut dest.activity, h3source, period_start, period_end, now);
+        update_activity(&mut dest.activity, h3source, source.period_start, source.period_end, now);
     }
 
     let t_merge = t_merge_start.elapsed();
 
-    // Build a single WriteBatch for all DB mutations
-    let mut batch = rusty_leveldb::WriteBatch::default();
-
-    // Puts: merged destination records
-    for (key, value) in &puts {
-        batch.put(key.as_bytes(), value);
-    }
-
-    // Update accumulator metadata (matching saveAccumulatorMetadata in TypeScript)
-    let acc_json = serde_json::to_value(accumulators).unwrap_or_default();
-    for dest in &destinations {
-        let meta_key = CoverageHeader::accumulator_meta(dest.acc_type, dest.bucket, layer).db_key();
-        let existing = db.get(meta_key.as_bytes());
-        let mut meta_bytes = crate::db::build_accumulator_meta(
-            existing.as_deref(),
-            &acc_json,
-            accumulators.current.bucket.0,
-        );
-        // Merge activity into the meta
-        if let Ok(mut meta) = serde_json::from_slice::<serde_json::Value>(&meta_bytes) {
-            meta["activity"] = serde_json::to_value(&dest.activity).unwrap_or_default();
-            if let Ok(bytes) = serde_json::to_vec(&meta) {
-                meta_bytes = bytes;
-            }
-        }
-        batch.put(meta_key.as_bytes(), &meta_bytes);
-    }
-
-    // Deletes: station-filtered records that were emptied or updated
-    for key in &deletes {
-        batch.delete(key.as_bytes());
-    }
-
-    // Delete the current accumulator records we already read
-    for (key, _) in &current_records {
-        batch.delete(key.as_bytes());
-    }
-    stats.records_deleted = current_records.len();
-
-    // Delete the current meta key
-    let current_meta_key = CoverageHeader::accumulator_meta(
-        AccumulatorType::Current, accumulators.current.bucket, layer
-    ).db_key();
-    batch.delete(current_meta_key.as_bytes());
-
-    set_phase("write_batch", &format!("{}puts/{}dels", puts.len(), deletes.len() + current_records.len()));
-    let t_write_start = std::time::Instant::now();
-    db.write(batch, true).map_err(|e| format!("write batch failed for {}: {}", station_name, e))?;
-    let t_write = t_write_start.elapsed();
-
-    // Purge retired accumulators (matching TypeScript rollupdatabase.ts:407-416).
-    // When a bucket changes (e.g. day rolls over), purge old bucket's data and meta.
-    set_phase("purge", &format!("{} retired", retired_accumulators.len()));
-    let t_purge_start = std::time::Instant::now();
-    for (acc_type, old_bucket) in retired_accumulators {
-        let (start, end) = CoverageHeader::db_search_range_with_meta(*acc_type, *old_bucket, layer);
-        db::delete_range(db, &start, &end);
-    }
-    let t_purge = t_purge_start.elapsed();
-
-    // Write arrow files and metadata for each destination
+    // --- Arrow phase: write output files BEFORE any destructive DB mutation.
+    // The files are written to .working and atomically renamed, so an abort
+    // never damages the previous file; and because the current accumulator is
+    // still in the DB, a crash from here until the batch commit is fully
+    // recoverable (the next rollup/startup reproduces the identical merge).
     set_phase("arrow", "");
     let t_arrow_start = std::time::Instant::now();
     let output_dir = crate::config::output_dir(station_name);
@@ -943,6 +1026,10 @@ fn rollup_station_layer(
     let mut combined_day_arrow_count: Option<usize> = None;
 
     for dest in &destinations {
+        // Shutdown mid-arrow: nothing destructive has happened yet. Files
+        // already written this iteration get idempotently rewritten next time.
+        cancel_bail!();
+
         if dest.file.is_empty() {
             continue;
         }
@@ -1000,19 +1087,80 @@ fn rollup_station_layer(
 
     let t_arrow = t_arrow_start.elapsed();
 
+    // --- Destructive phase: single WriteBatch for all DB mutations.
+    // Arrow output is durably on disk; from here the merge is committed.
+    let mut batch = rusty_leveldb::WriteBatch::default();
+
+    // Puts: merged destination records
+    for (key, value) in &puts {
+        batch.put(key.as_bytes(), value);
+    }
+
+    // Update accumulator metadata (matching saveAccumulatorMetadata in TypeScript)
+    let acc_json = serde_json::to_value(accumulators).unwrap_or_default();
+    for dest in &destinations {
+        let meta_key = CoverageHeader::accumulator_meta(dest.acc_type, dest.bucket, layer).db_key();
+        let existing = db.get(meta_key.as_bytes());
+        let mut meta_bytes = crate::db::build_accumulator_meta(
+            existing.as_deref(),
+            &acc_json,
+            accumulators.current.bucket.0,
+        );
+        // Merge activity into the meta
+        if let Ok(mut meta) = serde_json::from_slice::<serde_json::Value>(&meta_bytes) {
+            meta["activity"] = serde_json::to_value(&dest.activity).unwrap_or_default();
+            if let Ok(bytes) = serde_json::to_vec(&meta) {
+                meta_bytes = bytes;
+            }
+        }
+        batch.put(meta_key.as_bytes(), &meta_bytes);
+    }
+
+    // Deletes: station-filtered records that were emptied or updated
+    for key in &deletes {
+        batch.delete(key.as_bytes());
+    }
+
+    // Delete the current accumulator records we already read, and their meta keys
+    for key in &source.delete_data_keys {
+        batch.delete(key.as_bytes());
+    }
+    for key in &source.delete_meta_keys {
+        batch.delete(key.as_bytes());
+    }
+    stats.records_deleted = source.delete_data_keys.len();
+
+    // Last chance to bail non-destructively: after this the batch commits.
+    cancel_bail!();
+
+    set_phase("write_batch", &format!("{}puts/{}dels", puts.len(), deletes.len() + source.delete_data_keys.len()));
+    let t_write_start = std::time::Instant::now();
+    db.write(batch, true).map_err(|e| format!("write batch failed for {}: {}", station_name, e))?;
+    let t_write = t_write_start.elapsed();
+
+    // Purge retired accumulators (matching TypeScript rollupdatabase.ts:407-416).
+    // When a bucket changes (e.g. day rolls over), purge old bucket's data and meta.
+    set_phase("purge", &format!("{} retired", retired_accumulators.len()));
+    let t_purge_start = std::time::Instant::now();
+    for (acc_type, old_bucket) in retired_accumulators {
+        let (start, end) = CoverageHeader::db_search_range_with_meta(*acc_type, *old_bucket, layer);
+        db::delete_range(db, &start, &end);
+    }
+    let t_purge = t_purge_start.elapsed();
+
     let layer_total = layer_t0.elapsed();
     if layer_total.as_secs() >= 20 {
         let dest_counts: Vec<(&str, usize)> = destinations.iter()
             .map(|d| (d.acc_type.name(), d.dest_record_count))
             .collect();
         warn!("{}/{}: slow layer {:?} - read_current={}recs/{:?}, \
-               merge={:?}(dest={:?}), write={:?}({}puts/{}dels), purge={:?}, arrow={:?}({}recs)",
+               merge={:?}(dest={:?}), arrow={:?}({}recs), write={:?}({}puts/{}dels), purge={:?}",
             station_name, layer.name(), layer_total,
-            current_records.len(), t_read_current,
+            source.records_read, t_read_current,
             t_merge, dest_counts,
-            t_write, puts.len(), deletes.len() + current_records.len(),
-            t_purge,
-            t_arrow, stats.arrow_records);
+            t_arrow, stats.arrow_records,
+            t_write, puts.len(), deletes.len() + source.delete_data_keys.len(),
+            t_purge);
     }
 
     Ok((stats, day_activity, combined_day_arrow_count))
@@ -1406,13 +1554,15 @@ pub async fn rollup_startup(
 ) {
     info!("Startup rollup: checking for unflushed accumulators...");
 
+    // Defensive only: main awaits startup before spawning the rollup timer.
+    let _rollup_guard = RollupGuard::try_acquire();
+    if _rollup_guard.is_none() {
+        warn!("startup rollup: another rollup appears to be in progress");
+    }
+
     let all_station_details = station_manager.all_stations_with_global();
 
-    let layers: Vec<Layer> = if let Some(ref enabled) = *crate::config::ENABLED_LAYERS {
-        enabled.iter().copied().collect()
-    } else {
-        crate::layers::ALL_LAYERS.to_vec()
-    };
+    let layers = crate::layers::rollup_layers(crate::config::ENABLED_LAYERS.as_ref());
 
     let total_stations = all_station_details.len();
     let startup_start = std::time::Instant::now();
@@ -1436,6 +1586,10 @@ pub async fn rollup_startup(
         let total = total_stations;
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let expected = expected_accumulators.clone();
+        let task_station_name = station_name.clone();
+        let progress = Arc::new(std::sync::Mutex::new(RollupProgress::default()));
+        let task_progress = progress.clone();
+        let spawned_at = std::time::Instant::now();
 
         let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -1643,20 +1797,52 @@ pub async fn rollup_startup(
                     .map(|e| e.file.clone()))
                 .collect();
 
-            for ((_bucket, layer), acc) in &hanging_buckets {
-                let (current_start, dest_files) = acc.describe();
+            // Group hanging currents by (layer, destination set): every member
+            // of a group merges into the same day/month/year/yearnz buckets, so
+            // they can be combined in memory and rolled up with a single
+            // destination walk + arrow rewrite (the dominant cost - destinations
+            // are typically far larger than the hanging currents).
+            let mut groups: HashMap<(Layer, String), Vec<(AccumulatorBucket, Accumulators)>> =
+                HashMap::new();
+            for ((bucket, layer), acc) in &hanging_buckets {
+                let dest_key = format!(
+                    "{:04x}/{}|{:04x}/{}|{:04x}/{}|{:04x}/{}",
+                    acc.day.bucket.0, acc.day.file,
+                    acc.month.bucket.0, acc.month.file,
+                    acc.year.bucket.0, acc.year.file,
+                    acc.yearnz.bucket.0, acc.yearnz.file,
+                );
+                groups.entry((*layer, dest_key)).or_default().push((*bucket, acc.clone()));
+            }
 
-                // Check which destination buckets are missing - skip accumulator types
-                // that aren't produced for this layer (e.g. ADSB doesn't produce Day)
+            'groups: for ((layer, _), mut members) in groups {
+                // Shutdown: leave remaining groups intact - they'll be
+                // re-detected and rolled up on the next startup.
+                if is_shutdown() {
+                    break;
+                }
+
+                // Sort so the newest member describes the group (meta written
+                // to the destinations records its current bucket).
+                members.sort_by_key(|(_, acc)| acc.current.effective_start.0);
+                let descriptor = members.last().expect("group is never empty").1.clone();
+                let (_, dest_files) = descriptor.describe();
+                let buckets_desc: Vec<String> = members.iter()
+                    .map(|(b, _)| format!("{:04x}", b.0))
+                    .collect();
+
+                // Check which destination buckets are missing - skip accumulator
+                // types that aren't produced for this layer (e.g. ADSB doesn't
+                // produce Day). Members share destinations, so check once.
                 let missing: Vec<&str> = [
-                    ("day", &acc.day, AccumulatorType::Day),
-                    ("month", &acc.month, AccumulatorType::Month),
-                    ("year", &acc.year, AccumulatorType::Year),
-                    ("yearnz", &acc.yearnz, AccumulatorType::YearNz),
+                    ("day", &descriptor.day, AccumulatorType::Day),
+                    ("month", &descriptor.month, AccumulatorType::Month),
+                    ("year", &descriptor.year, AccumulatorType::Year),
+                    ("yearnz", &descriptor.yearnz, AccumulatorType::YearNz),
                 ].iter()
                     .filter(|(_, entry, acc_type)| {
                         !entry.file.is_empty()
-                            && crate::layers::should_produce(*layer, *acc_type)
+                            && crate::layers::should_produce(layer, *acc_type)
                             && !all_dest_files.contains(&entry.file)
                     })
                     .map(|(name, _, _)| *name)
@@ -1664,39 +1850,109 @@ pub async fn rollup_startup(
 
                 if !missing.is_empty() {
                     warn!(
-                        "{}: DROPPING hanging current accumulator {:04x}({}) for {} [{}]: {} missing -\
+                        "{}: DROPPING {} hanging current accumulator(s) [{}] for {} [{}]: {} missing -\
                          rolling up would overwrite complete arrow files on disk",
-                        station_name, acc.current.bucket.0, current_start, dest_files,
+                        station_name, members.len(), buckets_desc.join(","), dest_files,
                         layer.name(), missing.join(",")
                     );
-                    // Delete the current meta key AND data so it won't hang or orphan again
-                    let (start, end) = CoverageHeader::db_search_range_with_meta(
-                        AccumulatorType::Current, acc.current.bucket, *layer,
+                    // Delete the current meta keys AND data so they won't hang again
+                    for (bucket, _) in &members {
+                        let (start, end) = CoverageHeader::db_search_range_with_meta(
+                            AccumulatorType::Current, *bucket, layer,
+                        );
+                        db::delete_range(&mut db, &start, &end);
+                    }
+                    continue;
+                }
+
+                // Read every member's current records and merge them by H3.
+                // BTreeMap keeps records H3-sorted as the merge walk requires.
+                let mut merged: std::collections::BTreeMap<String, CoverageRecord> =
+                    std::collections::BTreeMap::new();
+                let mut delete_data_keys: Vec<String> = Vec::new();
+                let mut delete_meta_keys: Vec<String> = Vec::new();
+                let mut records_read = 0usize;
+                let mut period_start = u32::MAX;
+                let mut period_end = 0u32;
+
+                for (bucket, acc) in &members {
+                    let (start, end) = CoverageHeader::db_search_range(
+                        AccumulatorType::Current, *bucket, layer,
                     );
-                    db::delete_range(&mut db, &start, &end);
+                    let records = db::read_range(&mut db, &start, &end, Some(&SHUTDOWN));
+                    if is_shutdown() {
+                        // Possibly-partial read: leave this group untouched.
+                        continue 'groups;
+                    }
+                    records_read += records.len();
+                    for (key, value) in records {
+                        if let (Some(h3), Some(record)) =
+                            (extract_h3_from_db_key(&key), CoverageRecord::from_bytes(&value))
+                        {
+                            merged.entry(h3)
+                                .and_modify(|existing| {
+                                    if let Some(m) = existing.rollup(&record, None) {
+                                        *existing = m;
+                                    }
+                                })
+                                .or_insert(record);
+                        }
+                        delete_data_keys.push(key);
+                    }
+                    delete_meta_keys.push(CoverageHeader::accumulator_meta(
+                        AccumulatorType::Current, *bucket, layer,
+                    ).db_key());
+                    let es = acc.current.effective_start.0;
+                    period_start = period_start.min(es);
+                    period_end = period_end.max(es + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
+                }
+
+                if merged.is_empty() {
+                    // Nothing mergeable (meta-only or unparseable hanging
+                    // currents) - purge them directly so they don't hang again
+                    // on every startup.
+                    let mut batch = rusty_leveldb::WriteBatch::default();
+                    for key in delete_data_keys.iter().chain(delete_meta_keys.iter()) {
+                        batch.delete(key.as_bytes());
+                    }
+                    if let Err(e) = db.write(batch, true) {
+                        error!("{}: failed to purge empty hanging currents: {}", station_name, e);
+                    }
                     continue;
                 }
 
                 info!(
-                    "{}/{}: rolling up hanging current accumulator {:04x}({}) into {}",
-                    station_name, layer.name(), acc.current.bucket.0, current_start, dest_files
+                    "{}/{}: rolling up {} hanging current accumulator(s) [{}] ({} records) into {}",
+                    station_name, layer.name(), members.len(), buckets_desc.join(","),
+                    merged.len(), dest_files
                 );
 
+                let source = CurrentSource {
+                    records: merged.into_iter().collect(),
+                    delete_data_keys,
+                    delete_meta_keys,
+                    records_read,
+                    period_start: Epoch(period_start),
+                    period_end: Epoch(period_end),
+                };
+
                 let layer_suffix = layer.file_suffix();
-                let startup_progress = std::sync::Mutex::new(RollupProgress::default());
-                match rollup_station_layer(
+                let group_t0 = std::time::Instant::now();
+                match rollup_layer_core(
                     &mut db,
-                    &station_path,
                     &station_name,
-                    acc,
-                    *layer,
+                    &descriptor,
+                    layer,
                     layer_suffix,
                     None,
                     is_global,
                     station_meta,
                     &[], // no retired accumulators during startup
-                    &SHUTDOWN, // use global shutdown for startup rollup
-                    &startup_progress,
+                    &SHUTDOWN, // cancel only on process exit
+                    &task_progress,
+                    &source,
+                    group_t0,
+                    std::time::Duration::ZERO,
                 ) {
                     Ok((stats, _day_activity, _day_arrow_count)) => {
                         info!(
@@ -1717,18 +1973,6 @@ pub async fn rollup_startup(
                 }
             }
 
-            // Delete the current data AND meta keys for all hanging accumulators.
-            // rollup_station_layer already deletes both on success, so this is a
-            // no-op for completed rollups. But if rollup was canceled mid-loop
-            // (shutdown signal), some accumulators may have had their rollup skipped
-            // — deleting the full range here prevents orphaned data persisting
-            // across restarts (meta deleted but data left behind).
-            for (bucket, layer) in hanging_buckets.keys() {
-                let (start, end) = CoverageHeader::db_search_range_with_meta(
-                    AccumulatorType::Current, *bucket, *layer,
-                );
-                db::delete_range(&mut db, &start, &end);
-            }
             if let Err(e) = db.flush() {
                 error!("Failed to flush DB for {}: {}", station_name, e);
             }
@@ -1738,7 +1982,7 @@ pub async fn rollup_startup(
             (migrated, rolled_up, arrow, deleted)
         });
 
-        tasks.push(handle);
+        tasks.push((task_station_name, progress, spawned_at, handle));
     }
 
     let mut total_migrated = 0usize;
@@ -1746,21 +1990,21 @@ pub async fn rollup_startup(
     let mut total_arrow = 0usize;
     let mut total_deleted = 0usize;
 
-    let station_timeout = std::time::Duration::from_secs(300);
-    for handle in tasks {
-        match tokio::time::timeout(station_timeout, handle).await {
-            Ok(Ok((migrated, rolled_up, arrow, deleted))) => {
+    // No timeout: every task is awaited to completion so normal operation
+    // never starts while a startup task is still writing (spawn_blocking
+    // threads cannot be aborted - abandoning one leaves it running
+    // concurrently with the rollup timer). Long tasks warn periodically.
+    let warn_interval = std::time::Duration::from_secs(STARTUP_TASK_WARN_SECS);
+    for (station_name, progress, spawned_at, handle) in tasks {
+        match await_with_warnings(handle, &station_name, &progress, spawned_at, warn_interval, warn_interval).await {
+            Ok((migrated, rolled_up, arrow, deleted)) => {
                 total_migrated += migrated;
                 total_rolled_up += rolled_up;
                 total_arrow += arrow;
                 total_deleted += deleted;
             }
-            Ok(Err(e)) => {
-                error!("Startup rollup task panicked: {}", e);
-            }
-            Err(_) => {
-                error!("Startup rollup task timed out after {}s - possible corrupt DB",
-                    station_timeout.as_secs());
+            Err(e) => {
+                error!("Startup rollup task panicked for {}: {}", station_name, e);
             }
         }
     }
@@ -1914,7 +2158,7 @@ mod tests {
             yearnz: AccumulatorEntry { bucket: AccumulatorBucket(0x5000), file: "2025nz".into(), effective_start: Epoch(0) },
         };
 
-        let (stats, _) = rollup_station_layer(
+        let (stats, _, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
             &std::sync::Mutex::new(RollupProgress::default()),
@@ -1956,7 +2200,7 @@ mod tests {
             rusty_leveldb::DB::open(&station_path, opts).unwrap()
         };
 
-        let (stats, _) = rollup_station_layer(
+        let (stats, _, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
             &std::sync::Mutex::new(RollupProgress::default()),
@@ -1975,6 +2219,115 @@ mod tests {
         let day_data = db.get(day_key.as_bytes()).expect("day record should exist");
         let day_rec = CoverageRecord::from_bytes(&day_data).unwrap();
         assert_eq!(day_rec.count(), 2);
+    }
+
+    fn test_accumulators() -> Accumulators {
+        Accumulators {
+            current: AccumulatorEntry { bucket: AccumulatorBucket(0x042), file: String::new(), effective_start: Epoch(0) },
+            day: AccumulatorEntry { bucket: AccumulatorBucket(0x1001), file: "2026-03-12".into(), effective_start: Epoch(0) },
+            month: AccumulatorEntry { bucket: AccumulatorBucket(0x3003), file: "2026-03".into(), effective_start: Epoch(0) },
+            year: AccumulatorEntry { bucket: AccumulatorBucket(0x4000), file: "2026".into(), effective_start: Epoch(0) },
+            yearnz: AccumulatorEntry { bucket: AccumulatorBucket(0x5000), file: "2025nz".into(), effective_start: Epoch(0) },
+        }
+    }
+
+    #[test]
+    fn test_rollup_cancelled_preserves_current() {
+        // A cancelled rollup must leave the current accumulator fully intact -
+        // no destination records, no deletions - so it can be retried later.
+        let tmp = tempfile::tempdir().unwrap();
+        let station_path = tmp.path().join("station_db").to_string_lossy().to_string();
+        let key = "c/0042/8828308283fffff";
+
+        let mut db = {
+            let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
+            let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
+            let mut rec = CoverageRecord::new(BufferType::Station);
+            rec.update(1000, 500, 2, 28, 5);
+            db.put(key.as_bytes(), &rec.to_bytes()).unwrap();
+            db.flush().unwrap();
+            db
+        };
+
+        let accumulators = test_accumulators();
+        let cancel = AtomicBool::new(true);
+        let (stats, _, _) = rollup_station_layer(
+            &mut db, &station_path, "test_station", &accumulators,
+            Layer::Combined, ".combined", None, false, None, &[], &cancel,
+            &std::sync::Mutex::new(RollupProgress::default()),
+        ).unwrap();
+
+        assert_eq!(stats.records_written, 0);
+        assert_eq!(stats.records_deleted, 0);
+        // Current record untouched, no destination records created
+        assert!(db.get(key.as_bytes()).is_some());
+        let day_key = make_dest_key(
+            AccumulatorType::Day, AccumulatorBucket(0x1001),
+            Layer::Combined, "8828308283fffff",
+        );
+        assert!(db.get(day_key.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn test_rollup_layer_core_merges_multiple_current_buckets() {
+        // Simulates the startup grouping path: two hanging current buckets that
+        // share a destination set are pre-merged in memory and rolled up with a
+        // single destination walk; both buckets' records are deleted on commit.
+        let tmp = tempfile::tempdir().unwrap();
+        let station_path = tmp.path().join("station_db").to_string_lossy().to_string();
+
+        let h3 = "8828308283fffff";
+        let key_a = "c/0042/8828308283fffff";
+        let key_b = "c/0043/8828308283fffff";
+
+        let mut rec_a = CoverageRecord::new(BufferType::Station);
+        rec_a.update(1000, 500, 2, 28, 5);
+        rec_a.update(900, 400, 1, 32, 3);
+        let mut rec_b = CoverageRecord::new(BufferType::Station);
+        rec_b.update(800, 300, 1, 30, 4);
+
+        let mut db = {
+            let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
+            let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
+            db.put(key_a.as_bytes(), &rec_a.to_bytes()).unwrap();
+            db.put(key_b.as_bytes(), &rec_b.to_bytes()).unwrap();
+            db.flush().unwrap();
+            db
+        };
+
+        // Pre-merge the duplicate H3 as the startup group loop does
+        let merged = rec_a.rollup(&rec_b, None).expect("merge should produce a record");
+        let source = CurrentSource {
+            records: vec![(h3.to_string(), merged)],
+            delete_data_keys: vec![key_a.to_string(), key_b.to_string()],
+            delete_meta_keys: Vec::new(),
+            records_read: 2,
+            period_start: Epoch(0),
+            period_end: Epoch(3600),
+        };
+
+        let accumulators = test_accumulators();
+        // Distinct station name: arrow output paths are derived from it, and a
+        // name shared with other tests would race on the .working temp files.
+        let (stats, _, _) = rollup_layer_core(
+            &mut db, "test_station_multi", &accumulators, Layer::Combined, ".combined",
+            None, false, None, &[], &SHUTDOWN,
+            &std::sync::Mutex::new(RollupProgress::default()),
+            &source, std::time::Instant::now(), std::time::Duration::ZERO,
+        ).unwrap();
+
+        // Merged into 4 destinations; both source buckets' records deleted
+        assert_eq!(stats.records_written, 4);
+        assert_eq!(stats.records_deleted, 2);
+        assert!(db.get(key_a.as_bytes()).is_none());
+        assert!(db.get(key_b.as_bytes()).is_none());
+
+        let day_key = make_dest_key(
+            AccumulatorType::Day, AccumulatorBucket(0x1001),
+            Layer::Combined, h3,
+        );
+        let day_rec = CoverageRecord::from_bytes(&db.get(day_key.as_bytes()).unwrap()).unwrap();
+        assert_eq!(day_rec.count(), 3);
     }
 
     #[test]

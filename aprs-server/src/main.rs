@@ -849,10 +849,28 @@ async fn periodic_tasks(state: Arc<AppState>) {
 async fn rollup_timer(state: Arc<AppState>) {
     let mut last_hourly_write: i64 = chrono::Utc::now().timestamp() / 3600;
     loop {
-        // Check if the bucket is already stale (e.g. startup crossed a boundary).
-        // If so, rollup immediately instead of sleeping to the next boundary -
-        // otherwise data from the new period gets merged into the old bucket,
-        // which is wrong at day boundaries.
+        // Never start (or swap accumulators for) a new rollup while one is
+        // still running. Checked BEFORE the swap below so a skipped boundary
+        // never strands an already-swapped-out current bucket. With the
+        // strictly sequential loop this only fires if a rollup is launched
+        // from elsewhere (e.g. a future second entry point).
+        if rollup::rollup_in_progress() {
+            warn!("rollup still in progress - delaying boundary check; missed boundaries collapse into one catch-up rollup");
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+        }
+
+        // Check if the bucket is already stale (e.g. startup crossed a boundary,
+        // or the previous rollup overran one or more boundaries). If so, rollup
+        // immediately instead of sleeping to the next boundary - otherwise data
+        // from the new period gets merged into the old bucket, which is wrong
+        // at day boundaries.
+        //
+        // Catch-up collapses: buckets only change when this loop swaps them, so
+        // however many boundaries were missed, all data since the last swap is
+        // in the single old current bucket and one old->now rollup covers it.
+        // retired_accumulators (computed in rollup_all from old vs new) handles
+        // any day/month/year rotations that happened during the gap.
         let now = chrono::Utc::now();
         let new_acc = accumulators::what_accumulators(now);
         let needs_rollup = {

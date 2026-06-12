@@ -101,6 +101,30 @@ pub const ALL_LAYERS: &[Layer] = &[
     Layer::Ogntrk,
 ];
 
+/// Layer processing order for rollups: roughly lowest -> highest expected
+/// traffic, so cheap layers complete (and free their current accumulators)
+/// before the expensive ones. Must contain every layer in ALL_LAYERS.
+pub const ROLLUP_LAYER_ORDER: &[Layer] = &[
+    Layer::Ogntrk,
+    Layer::Safesky,
+    Layer::Paw,
+    Layer::Fanet,
+    Layer::Adsl,
+    Layer::Flarm,
+    Layer::Combined,
+    Layer::Adsb,
+];
+
+/// Layers to roll up, in ROLLUP_LAYER_ORDER, filtered by the enabled set.
+/// Gives a deterministic order even when ENABLED_LAYERS (a HashSet) is used.
+pub fn rollup_layers(enabled: Option<&HashSet<Layer>>) -> Vec<Layer> {
+    ROLLUP_LAYER_ORDER
+        .iter()
+        .copied()
+        .filter(|l| enabled.is_none_or(|e| e.contains(l)))
+        .collect()
+}
+
 /// Whether a specific accumulator type should be produced for this layer.
 /// ADSB daily output is suppressed to reduce data volume (presence-only, high volume).
 /// if this is changed don't forget to update the frontend shouldProduceOutput in lib/common/layers.ts
@@ -199,5 +223,33 @@ pub fn parse_enabled_layers(env_value: Option<&str>) -> Option<HashSet<Layer>> {
         None
     } else {
         Some(layers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rollup_layer_order_is_permutation_of_all_layers() {
+        assert_eq!(ROLLUP_LAYER_ORDER.len(), ALL_LAYERS.len());
+        let all: HashSet<Layer> = ALL_LAYERS.iter().copied().collect();
+        let order: HashSet<Layer> = ROLLUP_LAYER_ORDER.iter().copied().collect();
+        assert_eq!(all, order, "ROLLUP_LAYER_ORDER must cover every layer in ALL_LAYERS");
+    }
+
+    #[test]
+    fn rollup_layers_none_returns_full_order() {
+        assert_eq!(rollup_layers(None), ROLLUP_LAYER_ORDER.to_vec());
+    }
+
+    #[test]
+    fn rollup_layers_preserves_order_for_enabled_subset() {
+        let enabled: HashSet<Layer> =
+            [Layer::Combined, Layer::Flarm, Layer::Ogntrk].into_iter().collect();
+        assert_eq!(
+            rollup_layers(Some(&enabled)),
+            vec![Layer::Ogntrk, Layer::Flarm, Layer::Combined]
+        );
     }
 }

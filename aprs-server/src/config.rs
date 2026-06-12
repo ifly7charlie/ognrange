@@ -126,14 +126,28 @@ pub static GIT_REF: Lazy<Option<String>> = Lazy::new(|| {
 });
 
 pub fn git_version() -> String {
-    if let Some(ref r) = *GIT_REF {
-        return r.clone();
+    let raw = if let Some(ref r) = *GIT_REF {
+        r.clone()
+    } else {
+        std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    };
+
+    // aprsc tokenizes the login line by whitespace and expects `vers <app> <version>`
+    // as two separate tokens. Whitespace inside the version would consume the next
+    // keyword (e.g. `filter`) and cause the server to reject the connection.
+    let sanitized: String = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-");
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
     }
-    std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
 }
