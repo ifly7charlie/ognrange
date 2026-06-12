@@ -85,20 +85,32 @@ impl Drop for TrackedDb {
 /// Read key-value pairs within a key range from an open DB.
 /// Checks `shutdown` flag (if provided) to exit early.
 /// Guards against stuck iterators.
+///
+/// Returns None when the read FAILED (iterator creation error or a stuck
+/// iterator) - the results would be incomplete and must not be used to make
+/// destructive decisions (an empty/partial read is indistinguishable from an
+/// empty range). A shutdown-flag exit still returns Some(partial) - callers
+/// already check the flag and bail non-destructively.
 pub fn read_range(
     db: &mut rusty_leveldb::DB,
     start_key: &str,
     end_key: &str,
     shutdown: Option<&AtomicBool>,
-) -> Vec<(String, Vec<u8>)> {
+) -> Option<Vec<(String, Vec<u8>)>> {
     let mut iter = match db.new_iter() {
         Ok(iter) => iter,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            error!(
+                "db_read_range: failed to create iterator for {}..{}: {}",
+                start_key, end_key, e
+            );
+            return None;
+        }
     };
     iter.seek(start_key.as_bytes());
     let end_bytes = end_key.as_bytes();
     let mut results = Vec::new();
-    let mut prev_key: Option<Vec<u8>> = None;
+    let mut prev_key = None;
     let mut scanned: usize = 0;
     while let Some((key_bytes, val_bytes)) = iter.current() {
         if let Some(flag) = shutdown {
@@ -115,15 +127,16 @@ pub fn read_range(
         }
         scanned += 1;
         if let Some(ref pk) = prev_key {
-            if pk.as_slice() == key_bytes.as_ref() {
+            if *pk == key_bytes {
                 error!(
-                    "db_read_range: iterator stuck at key {:?} after {} keys, aborting",
-                    String::from_utf8_lossy(&key_bytes), scanned
+                    "db_read_range: iterator stuck at key {:?} after {} keys ({}..{}), read failed",
+                    String::from_utf8_lossy(&key_bytes), scanned, start_key, end_key
                 );
-                break;
+                return None;
             }
         }
-        prev_key = Some(key_bytes.to_vec());
+        // Bytes clone is a cheap refcount bump, not a copy
+        prev_key = Some(key_bytes.clone());
         if let Ok(key_str) = std::str::from_utf8(&key_bytes) {
             if key_str >= start_key {
                 results.push((key_str.to_string(), val_bytes.to_vec()));
@@ -133,7 +146,7 @@ pub fn read_range(
             break;
         }
     }
-    results
+    Some(results)
 }
 
 /// Delete all keys within a range from an open DB (data + meta).
@@ -162,22 +175,28 @@ pub fn delete_ranges(
 
     let mut iter = match db.new_iter() {
         Ok(iter) => iter,
-        Err(_) => return 0,
+        Err(e) => {
+            error!(
+                "delete_ranges: failed to create iterator ({} ranges, first {}..{}): {} - nothing deleted",
+                sorted_ranges.len(), sorted_ranges[0].0, sorted_ranges[0].1, e
+            );
+            return 0;
+        }
     };
 
-    let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+    let mut keys_to_delete = Vec::new();
 
     for (start_key, end_key) in &sorted_ranges {
         iter.seek(start_key.as_bytes());
         let end_bytes = end_key.as_bytes();
-        let mut prev_key: Option<Vec<u8>> = None;
+        let mut prev_key = None;
 
         while let Some((key_bytes, _val_bytes)) = iter.current() {
             if key_bytes.as_ref() >= end_bytes {
                 break;
             }
             if let Some(ref pk) = prev_key {
-                if pk.as_slice() == key_bytes.as_ref() {
+                if *pk == key_bytes {
                     error!(
                         "delete_ranges: iterator stuck at key {:?}, aborting range",
                         String::from_utf8_lossy(&key_bytes)
@@ -185,9 +204,10 @@ pub fn delete_ranges(
                     break;
                 }
             }
-            prev_key = Some(key_bytes.to_vec());
+            // Bytes clones are cheap refcount bumps, not copies
+            prev_key = Some(key_bytes.clone());
             if key_bytes.as_ref() >= start_key.as_bytes() {
-                keys_to_delete.push(key_bytes.to_vec());
+                keys_to_delete.push(key_bytes);
             }
             if !iter.advance() {
                 break;
@@ -200,10 +220,13 @@ pub fn delete_ranges(
     if count > 0 {
         let mut batch = rusty_leveldb::WriteBatch::default();
         for key in &keys_to_delete {
-            batch.delete(key);
+            batch.delete(key.as_ref());
         }
         if let Err(e) = db.write(batch, true) {
-            error!("delete_ranges failed: {}", e);
+            // Batch is atomic: on error nothing was deleted. Return 0 so
+            // callers don't log a successful purge that never happened.
+            error!("delete_ranges: batch delete of {} keys failed: {}", count, e);
+            return 0;
         }
     }
     count

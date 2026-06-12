@@ -50,6 +50,10 @@ interface StationJson {
 // Match per-station daily JSON files: {station}.day.YYYY-MM-DD.json or with layer suffix
 const dailyFilePattern = /\.day\.(\d{4}-\d{2}-\d{2})(?:\.\w+)?\.json$/;
 
+// Valid file/date tokens: dot-separated segments of [A-Za-z0-9-], e.g. "2026-03-12",
+// "day.2026-03-12.flarm", "month.2026-03". Structurally excludes path separators and ".."
+const fileParamPattern = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$/;
+
 /** Check if the requested file resolves to the same target as {station}.json (the latest symlink) */
 function isLatestFile(stationDir: string, stationName: string, file: string): boolean {
     try {
@@ -228,6 +232,13 @@ export default async function handler(req, res) {
 
     // Determine which file to look up — prefer explicit file param, fall back to dateStart
     const fileParam = file || dateStart;
+
+    // fileParam is interpolated into a filesystem path below — reject anything
+    // that isn't a plain dot-separated token (no path separators, no "..")
+    if (fileParam && !fileParamPattern.test(fileParam)) {
+        res.status(400).json({error: 'invalid file parameter'});
+        return;
+    }
 
     if (!dateStart || dateStart === dateEnd) {
         if (fileParam && !isLatestFile(stationDir, stationName, fileParam)) {

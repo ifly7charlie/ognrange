@@ -462,6 +462,7 @@ pub async fn rollup_all(
         let task_progress = progress.clone();
         let spawned_at = std::time::Instant::now();
 
+        let new_current_bucket = new_accumulators.map(|na| na.current.bucket);
         let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit; // released when task completes
 
@@ -477,6 +478,7 @@ pub async fn rollup_all(
                 &task_progress,
                 &retired,
                 &SHUTDOWN, // cancel only on process exit
+                new_current_bucket,
             ) {
                 Ok(stats) => stats,
                 Err(e) => {
@@ -602,6 +604,7 @@ struct RollupAccumulator {
 }
 
 /// Per-station rollup: open the DB once, roll up all layers, flush and close.
+#[allow(clippy::too_many_arguments)]
 fn rollup_station_all_layers(
     station_path: &str,
     station_name: &str,
@@ -613,6 +616,7 @@ fn rollup_station_all_layers(
     progress: &std::sync::Mutex<RollupProgress>,
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
     cancel: &AtomicBool,
+    new_current_bucket: Option<AccumulatorBucket>,
 ) -> Result<RollupStats, String> {
     let station_start = std::time::Instant::now();
     let has_adsb = station_meta
@@ -632,6 +636,87 @@ fn rollup_station_all_layers(
     let mut combined_day_activity: Option<RollupActivity> = None;
     let mut combined_day_arrow_count: usize = 0;
 
+    // Self-healing: scan the DB's Current metas (cheap seek-only pass) so any
+    // bucket stranded by an earlier failed cycle is rolled up with this one.
+    // Requires knowing the NEW live bucket - it legitimately has data without
+    // meta mid-cycle (the boundary flush drains the mixed-bucket cache but
+    // writes meta for the old accumulators only) and must never be touched.
+    let mut hanging_by_layer: HashMap<Layer, Vec<(AccumulatorBucket, Accumulators)>> =
+        HashMap::new();
+    let mut all_dest_files: HashSet<String> = HashSet::new();
+    if let Some(new_bucket) = new_current_bucket {
+        if let Ok(mut p) = progress.lock() {
+            p.phase = "scan".to_string();
+        }
+        if let Some(scan) = scan_station_db(&mut db, layers) {
+            let old_bucket = accumulators.current.bucket;
+
+            for (bucket, layer, acc) in scan.current_metas {
+                if bucket != old_bucket && bucket != new_bucket {
+                    hanging_by_layer.entry(layer).or_default().push((bucket, acc));
+                } else if bucket == old_bucket
+                    && (acc.day.bucket != accumulators.day.bucket
+                        || acc.month.bucket != accumulators.month.bucket
+                        || acc.year.bucket != accumulators.year.bucket
+                        || acc.yearnz.bucket != accumulators.yearnz.bucket)
+                {
+                    // Current bucket ids encode (day_of_month << 7) | period and
+                    // recur monthly. A live-bucket meta pointing at different
+                    // destinations means a month-old stranded bucket has
+                    // collided with the live one - its stale data is about to
+                    // merge into the live rollup. Healing should keep hangs far
+                    // younger than a month, so this firing means healing failed.
+                    warn!(
+                        "{}/{}: live current bucket {:04x} meta has stale destinations \
+                         (meta day={:04x}/month={:04x} vs live day={:04x}/month={:04x}) - \
+                         month-old stranded data is merging into the live rollup",
+                        station_name, layer.name(), bucket.0,
+                        acc.day.bucket.0, acc.month.bucket.0,
+                        accumulators.day.bucket.0, accumulators.month.bucket.0
+                    );
+                }
+            }
+
+            // Purge Current-type leftovers with no usable meta (orphaned data
+            // or unparseable meta - no destination provenance, can't be rolled
+            // up). Destination-type anomalies are left to the startup scan.
+            let to_purge: Vec<&(AccumulatorType, AccumulatorBucket, Layer, String)> =
+                scan.to_purge.iter()
+                    .filter(|(t, b, _, _)| {
+                        *t == AccumulatorType::Current && *b != old_bucket && *b != new_bucket
+                    })
+                    .collect();
+            if !to_purge.is_empty() {
+                let desc: Vec<String> = to_purge.iter().map(|(_, _, _, d)| d.clone()).collect();
+                let ranges: Vec<(String, String)> = to_purge.iter()
+                    .map(|(t, b, l, _)| CoverageHeader::db_search_range_with_meta(*t, *b, *l))
+                    .collect();
+                // Permanent destruction of unrecoverable data - warn level,
+                // matching the DROPPING path. purged == 0 means the delete
+                // failed (error-logged by db) and the purge will repeat.
+                let purged = db::delete_ranges(&mut db, &ranges);
+                warn!("{}: purged {} keys from {} unrecoverable current accumulators: {}",
+                    station_name, purged, to_purge.len(), desc.join(", "));
+            }
+
+            if !hanging_by_layer.is_empty() {
+                // Destination files known to the DB, plus the live ones (which
+                // may not exist in the DB yet) - used by the DROP check.
+                all_dest_files = scan.dest_metas.into_iter().map(|(_, _, _, f)| f)
+                    .chain(
+                        [&accumulators.day, &accumulators.month, &accumulators.year, &accumulators.yearnz]
+                            .iter()
+                            .filter(|e| !e.file.is_empty())
+                            .map(|e| e.file.clone()),
+                    )
+                    .collect();
+            }
+        } else {
+            // Without the scan, stranded buckets stay invisible this cycle
+            warn!("{}: accumulator meta scan failed - self-healing skipped this cycle", station_name);
+        }
+    }
+
     for layer in layers {
         if cancelled() {
             break;
@@ -641,11 +726,11 @@ fn rollup_station_all_layers(
             p.phase = "rollup".to_string();
         }
         let layer_start = std::time::Instant::now();
-        let layer_suffix = layer.file_suffix();
-        match rollup_station_layer(
-            &mut db, station_path, station_name, accumulators,
-            *layer, layer_suffix, valid_stations, is_global, station_meta,
-            retired_accumulators, cancel, progress,
+        let hangs = hanging_by_layer.get(layer).map(|v| v.as_slice()).unwrap_or(&[]);
+        match rollup_current_buckets(
+            &mut db, station_name, *layer, Some(accumulators), hangs,
+            &all_dest_files, valid_stations, is_global, station_meta,
+            retired_accumulators, cancel, progress, "heal",
         ) {
             Ok((stats, day_activity, day_arrow_count)) => {
                 let layer_elapsed = layer_start.elapsed();
@@ -749,8 +834,11 @@ struct CurrentSource {
 }
 
 /// Per-layer rollup within an already-open DB.
+/// Single-bucket convenience wrapper over rollup_current_buckets (test-only;
+/// production paths go through rollup_current_buckets with hanging detection).
 /// Returns (stats, day_activity) where day_activity is the combined-layer Day RollupActivity
 /// (if this layer is Combined and has a Day accumulator).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn rollup_station_layer(
     db: &mut rusty_leveldb::DB,
@@ -758,7 +846,7 @@ fn rollup_station_layer(
     station_name: &str,
     accumulators: &Accumulators,
     layer: Layer,
-    layer_suffix: &str,
+    _layer_suffix: &str,
     valid_stations: Option<&HashSet<StationId>>,
     is_global: bool,
     station_meta: Option<&crate::station::StationDetails>,
@@ -766,61 +854,308 @@ fn rollup_station_layer(
     cancel: &AtomicBool,
     progress: &std::sync::Mutex<RollupProgress>,
 ) -> Result<(RollupStats, Option<RollupActivity>, Option<usize>), String> {
-    let layer_t0 = std::time::Instant::now();
+    rollup_current_buckets(
+        db, station_name, layer, Some(accumulators), &[], &HashSet::new(),
+        valid_stations, is_global, station_meta, retired_accumulators,
+        cancel, progress, "rollup",
+    )
+}
 
-    if let Ok(mut p) = progress.lock() {
-        p.phase = "read_current".to_string();
-        p.detail.clear();
-    }
-
-    // Read all "current" accumulator records for this layer
-    let (current_start, current_end) = CoverageHeader::db_search_range(
-        AccumulatorType::Current,
-        accumulators.current.bucket,
-        layer,
-    );
-    let current_records = db::read_range(db, &current_start, &current_end, Some(cancel));
-    let records_read = current_records.len();
-    let t_read_current = layer_t0.elapsed();
-
-    if is_shutdown() || cancel.load(Ordering::Relaxed) || current_records.is_empty() {
-        let stats = RollupStats { records_read, ..Default::default() };
-        return Ok((stats, None, None));
-    }
-
-    // Normalize: keys within a single bucket range are already H3-sorted.
-    // Unparseable records are skipped from the merge but still deleted.
-    let mut records: Vec<(String, CoverageRecord)> = Vec::with_capacity(current_records.len());
-    let mut delete_data_keys: Vec<String> = Vec::with_capacity(current_records.len());
-    for (key, value) in current_records {
-        if let (Some(h3), Some(record)) =
-            (extract_h3_from_db_key(&key), CoverageRecord::from_bytes(&value))
-        {
-            records.push((h3, record));
-        }
-        delete_data_keys.push(key);
-    }
-
-    let period_start = Epoch(accumulators.current.effective_start.0);
-    let period_end = Epoch(period_start.0 + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
-    let current_meta_key = CoverageHeader::accumulator_meta(
-        AccumulatorType::Current, accumulators.current.bucket, layer,
-    ).db_key();
-
-    let source = CurrentSource {
-        records,
-        delete_data_keys,
-        delete_meta_keys: vec![current_meta_key],
-        records_read,
-        period_start,
-        period_end,
+/// Roll up a layer's current buckets - the live one being retired (if any)
+/// plus hanging buckets recovered from their metas - grouped by destination
+/// set so each group needs only one destination walk + arrow rewrite.
+///
+/// `active`: the live accumulators whose current bucket is being retired this
+/// cycle. Its destinations are authoritative (no stored meta needed), it is
+/// exempt from the missing-destination DROP check, and `retired_accumulators`
+/// are purged with its group. Hanging buckets whose destinations match the
+/// active set join its group and are healed in the same walk.
+///
+/// Used by the periodic rollup (active + hanging) and the startup mop-up
+/// (hanging only).
+#[allow(clippy::too_many_arguments)]
+fn rollup_current_buckets(
+    db: &mut rusty_leveldb::DB,
+    station_name: &str,
+    layer: Layer,
+    active: Option<&Accumulators>,
+    hanging: &[(AccumulatorBucket, Accumulators)],
+    all_dest_files: &HashSet<String>,
+    valid_stations: Option<&HashSet<StationId>>,
+    is_global: bool,
+    station_meta: Option<&crate::station::StationDetails>,
+    retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
+    cancel: &AtomicBool,
+    progress: &std::sync::Mutex<RollupProgress>,
+    context: &str,
+) -> Result<(RollupStats, Option<RollupActivity>, Option<usize>), String> {
+    let dest_key = |acc: &Accumulators| {
+        format!(
+            "{:04x}/{}|{:04x}/{}|{:04x}/{}|{:04x}/{}",
+            acc.day.bucket.0, acc.day.file,
+            acc.month.bucket.0, acc.month.file,
+            acc.year.bucket.0, acc.year.file,
+            acc.yearnz.bucket.0, acc.yearnz.file,
+        )
     };
 
-    rollup_layer_core(
-        db, station_name, accumulators, layer, layer_suffix,
-        valid_stations, is_global, station_meta, retired_accumulators,
-        cancel, progress, &source, layer_t0, t_read_current,
-    )
+    // Group members by destination set. The active bucket (if any) anchors
+    // its group and supplies the descriptor; hanging buckets join it when
+    // their destinations match, otherwise the newest member describes the group.
+    struct Group {
+        descriptor: Accumulators,
+        members: Vec<(AccumulatorBucket, Epoch)>, // (bucket, effective_start)
+        has_active: bool,
+    }
+    let mut groups: HashMap<String, Group> = HashMap::new();
+    if let Some(acc) = active {
+        groups.insert(dest_key(acc), Group {
+            descriptor: acc.clone(),
+            members: vec![(acc.current.bucket, acc.current.effective_start)],
+            has_active: true,
+        });
+    }
+    for (bucket, acc) in hanging {
+        let entry = groups.entry(dest_key(acc)).or_insert_with(|| Group {
+            descriptor: acc.clone(),
+            members: Vec::new(),
+            has_active: false,
+        });
+        entry.members.push((*bucket, acc.current.effective_start));
+        if !entry.has_active
+            && acc.current.effective_start.0 > entry.descriptor.current.effective_start.0
+        {
+            entry.descriptor = acc.clone();
+        }
+    }
+
+    let mut total = RollupStats::default();
+    let mut day_activity: Option<RollupActivity> = None;
+    let mut day_arrow_count: Option<usize> = None;
+
+    'groups: for group in groups.values() {
+        // Shutdown: leave remaining groups intact - they'll be re-detected
+        // and rolled up on a later pass.
+        if is_shutdown() || cancel.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let descriptor = &group.descriptor;
+        let (_, dest_files) = descriptor.describe();
+        let buckets_desc: Vec<String> = group.members.iter()
+            .map(|(b, _)| format!("{:04x}", b.0))
+            .collect();
+
+        // Missing-destination check for pure-hang groups: a destination whose
+        // file isn't known would have its complete arrow files on disk
+        // overwritten by a partial rollup. The active group is exempt - its
+        // destinations are the live accumulators.
+        if !group.has_active {
+            let missing: Vec<&str> = [
+                ("day", &descriptor.day, AccumulatorType::Day),
+                ("month", &descriptor.month, AccumulatorType::Month),
+                ("year", &descriptor.year, AccumulatorType::Year),
+                ("yearnz", &descriptor.yearnz, AccumulatorType::YearNz),
+            ].iter()
+                .filter(|(_, entry, acc_type)| {
+                    !entry.file.is_empty()
+                        && crate::layers::should_produce(layer, *acc_type)
+                        && !all_dest_files.contains(&entry.file)
+                })
+                .map(|(name, _, _)| *name)
+                .collect();
+
+            if !missing.is_empty() {
+                warn!(
+                    "{}: DROPPING {} hanging current accumulator(s) [{}] for {} [{}]: {} missing -\
+                     rolling up would overwrite complete arrow files on disk",
+                    station_name, group.members.len(), buckets_desc.join(","), dest_files,
+                    layer.name(), missing.join(",")
+                );
+                // Delete the current meta keys AND data so they won't hang again
+                let mut purged = 0usize;
+                for (bucket, _) in &group.members {
+                    let (start, end) = CoverageHeader::db_search_range_with_meta(
+                        AccumulatorType::Current, *bucket, layer,
+                    );
+                    purged += db::delete_range(db, &start, &end);
+                }
+                // purged == 0 with this DROPPING warn repeating each cycle
+                // means the deletes aren't sticking (see error log from db).
+                info!(
+                    "{}/{}: purged {} keys for dropped current bucket(s) [{}]",
+                    station_name, layer.name(), purged, buckets_desc.join(",")
+                );
+                continue;
+            }
+        }
+
+        // Read every member's current records and merge them by H3. Keys
+        // within a single bucket range are already H3-sorted and unique, so
+        // a single-member group (the normal periodic path) collects straight
+        // into a Vec; only multi-member groups need the BTreeMap to merge
+        // duplicate H3s and keep the combined records H3-sorted.
+        let single_member = group.members.len() == 1;
+        let mut sorted: Vec<(String, CoverageRecord)> = Vec::new();
+        let mut merged: std::collections::BTreeMap<String, CoverageRecord> =
+            std::collections::BTreeMap::new();
+        let mut delete_data_keys: Vec<String> = Vec::new();
+        let mut delete_meta_keys: Vec<String> = Vec::new();
+        let mut records_read = 0usize;
+        let mut unparseable = 0usize;
+        let mut period_start = u32::MAX;
+        let mut period_end = 0u32;
+
+        for (bucket, effective_start) in &group.members {
+            let (start, end) = CoverageHeader::db_search_range(
+                AccumulatorType::Current, *bucket, layer,
+            );
+            // A failed read (None) is indistinguishable from an empty bucket;
+            // acting on it would purge the meta and orphan the unread data.
+            let Some(records) = db::read_range(db, &start, &end, Some(cancel)) else {
+                warn!(
+                    "{}/{}: read of current bucket {:04x} failed - leaving group [{}] untouched for retry",
+                    station_name, layer.name(), bucket.0, buckets_desc.join(",")
+                );
+                continue 'groups;
+            };
+            if is_shutdown() || cancel.load(Ordering::Relaxed) {
+                // Possibly-partial read: leave this group untouched.
+                continue 'groups;
+            }
+            records_read += records.len();
+            delete_data_keys.reserve(records.len());
+            if single_member {
+                sorted.reserve(records.len());
+            }
+            for (key, value) in records {
+                if let (Some(h3), Some(record)) =
+                    (extract_h3_from_db_key(&key), CoverageRecord::from_bytes(&value))
+                {
+                    if single_member {
+                        sorted.push((h3, record));
+                    } else {
+                        merged.entry(h3)
+                            .and_modify(|existing| {
+                                if let Some(m) = existing.rollup(&record, valid_stations) {
+                                    *existing = m;
+                                }
+                            })
+                            .or_insert(record);
+                    }
+                } else {
+                    unparseable += 1;
+                }
+                delete_data_keys.push(key);
+            }
+            delete_meta_keys.push(CoverageHeader::accumulator_meta(
+                AccumulatorType::Current, *bucket, layer,
+            ).db_key());
+            let es = effective_start.0;
+            period_start = period_start.min(es);
+            period_end = period_end.max(es + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
+        }
+        total.records_read += records_read;
+
+        // Unparseable records are excluded from the merge but their keys are
+        // still deleted with the bucket - corrupt data being destroyed must
+        // be visible.
+        if unparseable > 0 {
+            warn!(
+                "{}/{}: discarding {} of {} current record(s) as unparseable from bucket(s) [{}]",
+                station_name, layer.name(), unparseable, records_read,
+                buckets_desc.join(",")
+            );
+        }
+
+        let merged_records: Vec<(String, CoverageRecord)> =
+            if single_member { sorted } else { merged.into_iter().collect() };
+
+        if merged_records.is_empty() {
+            // Nothing mergeable (no traffic this period, meta-only hangs, or
+            // unparseable records) - delete the member keys so stale metas
+            // can't linger as hanging accumulators.
+            let key_count = delete_data_keys.len() + delete_meta_keys.len();
+            let mut batch = rusty_leveldb::WriteBatch::default();
+            for key in delete_data_keys.iter().chain(delete_meta_keys.iter()) {
+                batch.delete(key.as_bytes());
+            }
+            if let Err(e) = db.write(batch, true) {
+                error!(
+                    "{}/{}: failed to purge {} keys for empty current bucket(s) [{}]: {}",
+                    station_name, layer.name(), key_count, buckets_desc.join(","), e
+                );
+            } else if !group.has_active || group.members.len() > 1 {
+                // Hanging buckets resolving as empty would otherwise vanish
+                // without trace; the plain empty active bucket stays quiet.
+                info!(
+                    "{}/{}: purged {} keys for {} empty hanging current bucket(s) [{}]",
+                    station_name, layer.name(), key_count, group.members.len(),
+                    buckets_desc.join(",")
+                );
+            }
+            continue;
+        }
+
+        // Per-group log only when hanging buckets are involved - the plain
+        // active-bucket rollup is the normal path and stays quiet.
+        if !group.has_active || group.members.len() > 1 {
+            info!(
+                "{}/{}: rolling up {} current accumulator(s) [{}] ({} records) into {}",
+                station_name, layer.name(), group.members.len(), buckets_desc.join(","),
+                merged_records.len(), dest_files
+            );
+        }
+
+        let source = CurrentSource {
+            records: merged_records,
+            delete_data_keys,
+            delete_meta_keys,
+            records_read,
+            period_start: Epoch(period_start),
+            period_end: Epoch(period_end),
+        };
+
+        // Retired-accumulator purging belongs to the live rotation only
+        let retired = if group.has_active { retired_accumulators } else { &[] };
+
+        let group_t0 = std::time::Instant::now();
+        match rollup_layer_core(
+            db, station_name, descriptor, layer, layer.file_suffix(),
+            valid_stations, is_global, station_meta, retired,
+            cancel, progress, &source, group_t0, std::time::Duration::ZERO,
+        ) {
+            Ok((stats, da, dac)) => {
+                if group.has_active {
+                    // Station JSON fields come from the live rotation's group
+                    day_activity = da;
+                    day_arrow_count = dac;
+                }
+                // Completion mirrors the "rolling up" intent line: logged
+                // whenever hanging buckets were involved, so draining a hang
+                // is confirmable from the log rather than by its absence.
+                if !group.has_active || group.members.len() > 1 {
+                    info!(
+                        "{}: {} rollup complete {} [{}] - {} written, {} arrow, {} deleted",
+                        station_name, context, layer.name(), buckets_desc.join(","),
+                        stats.records_written, stats.arrow_records, stats.records_deleted
+                    );
+                }
+                total.records_written += stats.records_written;
+                total.records_deleted += stats.records_deleted;
+                total.arrow_records += stats.arrow_records;
+                total.global_h3_counts.extend(stats.global_h3_counts);
+            }
+            Err(e) => {
+                error!(
+                    "{}: {} rollup failed for {} [{}]: {}",
+                    station_name, context, layer.name(), buckets_desc.join(","), e
+                );
+            }
+        }
+    }
+
+    Ok((total, day_activity, day_arrow_count))
 }
 
 /// Core of the per-layer rollup: merge a CurrentSource into the destination
@@ -1547,6 +1882,106 @@ fn write_metadata_json(
 /// accumulator is still active and left in place. Otherwise, the hanging
 /// current data is rolled up into day/month/year/yearnz.
 /// Also purges orphaned data and old accumulators that don't match expected buckets.
+/// Result of scanning a station DB's accumulator metas (seek-based, cheap -
+/// only meta keys are read; data ranges are skipped over).
+#[derive(Default)]
+struct StationDbScan {
+    /// Parsed Current metas: (bucket, layer, accumulators-from-meta).
+    /// Unfiltered - the caller decides which are hanging.
+    current_metas: Vec<(AccumulatorBucket, Layer, Accumulators)>,
+    /// Anomalies: data-without-meta (orphaned) and unparseable metas.
+    /// (type, bucket, layer, description)
+    to_purge: Vec<(AccumulatorType, AccumulatorBucket, Layer, String)>,
+    /// Destination (non-current) metas found: (type, bucket, layer, file)
+    dest_metas: Vec<(AccumulatorType, AccumulatorBucket, Layer, String)>,
+}
+
+/// Scan a station DB for accumulator metas using a seeking iterator (like the
+/// TypeScript implementation) - reads only meta keys, seeking past each
+/// accumulator's data range. Current metas for layers not in `layers` are
+/// skipped (left untouched). Shared by the startup mop-up and the per-cycle
+/// self-healing pass.
+fn scan_station_db(db: &mut rusty_leveldb::DB, layers: &[Layer]) -> Option<StationDbScan> {
+    let mut scan = StationDbScan::default();
+
+    let mut iter = db.new_iter().ok()?;
+    iter.seek(&[]);
+
+    while let Some((key_bytes, val_bytes)) = iter.current() {
+        let key_str = match std::str::from_utf8(&key_bytes) {
+            Ok(s) => s,
+            Err(_) => { if !iter.advance() { break; } continue; }
+        };
+
+        let header = match CoverageHeader::from_db_key(key_str) {
+            Some(h) => h,
+            None => { if !iter.advance() { break; } continue; }
+        };
+
+        let acc_type = header.accumulator_type();
+        let bucket = header.bucket();
+        let layer = header.layer;
+
+        // Calculate the end of this accumulator's range for seeking
+        let (_, seek_end) = CoverageHeader::db_search_range(acc_type, bucket, layer);
+
+        if !header.is_meta() {
+            // Data entry without meta - orphaned, mark for purge
+            scan.to_purge.push((acc_type, bucket, layer,
+                format!("{}/{}/{:04x}(orphaned)", layer.name(), acc_type.name(), bucket.0)));
+            iter.seek(seek_end.as_bytes());
+            continue;
+        }
+
+        // Process meta entry
+        if acc_type == AccumulatorType::Current {
+            if layers.contains(&layer) {
+                match serde_json::from_slice::<serde_json::Value>(&val_bytes)
+                    .ok()
+                    .and_then(|meta| parse_accumulators_from_meta(&meta))
+                {
+                    Some(acc) => {
+                        scan.current_metas.push((bucket, layer, acc));
+                    }
+                    None => {
+                        // Unparseable current meta: destinations are unknowable,
+                        // so it can never be rolled up - purge like an orphan.
+                        scan.to_purge.push((acc_type, bucket, layer,
+                            format!("{}/current/{:04x}(invalid current meta)", layer.name(), bucket.0)));
+                    }
+                }
+            }
+        } else {
+            let meta_ok = serde_json::from_slice::<serde_json::Value>(&val_bytes)
+                .ok()
+                .and_then(|meta| {
+                    let type_name = acc_type.name();
+                    meta.get("accumulators")
+                        .and_then(|a| a.get(type_name))
+                        .and_then(|e| e.get("file"))
+                        .and_then(|f| f.as_str())
+                        .filter(|f| !f.is_empty())
+                        .map(|f| f.to_string())
+                });
+
+            match meta_ok {
+                Some(file) => {
+                    scan.dest_metas.push((acc_type, bucket, layer, file));
+                }
+                None => {
+                    scan.to_purge.push((acc_type, bucket, layer,
+                        format!("{}/{}/{:04x}(invalid meta)", layer.name(), acc_type.name(), bucket.0)));
+                }
+            }
+        }
+
+        // Seek past this accumulator's data range
+        iter.seek(seek_end.as_bytes());
+    }
+
+    Some(scan)
+}
+
 pub async fn rollup_startup(
     storage: &Storage,
     station_manager: &StationManager,
@@ -1617,96 +2052,30 @@ pub async fn rollup_startup(
             // Migrate all legacy unprefixed keys to prefixed format before scanning
             let migrated = migrate_legacy_keys(&mut db);
 
-            // Scan DB using seeking iterator (like TypeScript) - only reads meta keys,
-            // skips past data ranges to avoid reading all H3 records into memory.
+            // Scan DB for accumulator metas (shared with the per-cycle
+            // self-healing pass in rollup_station_all_layers)
+            let Some(scan) = scan_station_db(&mut db, &layers) else {
+                warn!("{}: accumulator meta scan failed - startup mop-up skipped for this station", station_name);
+                log_progress(&completed);
+                return (0, 0, 0, 0);
+            };
+            let mut to_purge = scan.to_purge;
+            let all_accumulators = scan.dest_metas;
+
+            // A current meta is hanging unless it is the still-active
+            // accumulator (same current bucket AND same destination buckets -
+            // the current bucket alone isn't unique, it encodes
+            // (day_of_month << 7) | period, which repeats across months).
             let mut hanging_buckets: HashMap<(AccumulatorBucket, Layer), Accumulators> = HashMap::new();
-            // (type, bucket, layer, description) for purging
-            let mut to_purge: Vec<(AccumulatorType, AccumulatorBucket, Layer, String)> = Vec::new();
-            let mut all_accumulators: Vec<(AccumulatorType, AccumulatorBucket, Layer, String)> = Vec::new();
+            for (bucket, layer, acc) in scan.current_metas {
+                let matches_expected = bucket == expected.current.bucket
+                    && acc.day.bucket == expected.day.bucket
+                    && acc.month.bucket == expected.month.bucket
+                    && acc.year.bucket == expected.year.bucket
+                    && acc.yearnz.bucket == expected.yearnz.bucket;
 
-            {
-                let mut iter = match db.new_iter() {
-                    Ok(iter) => iter,
-                    Err(_) => {
-                        log_progress(&completed);
-                        return (0, 0, 0, 0);
-                    }
-                };
-                iter.seek(&[]);
-
-                while let Some((key_bytes, val_bytes)) = iter.current() {
-                    let key_str = match std::str::from_utf8(&key_bytes) {
-                        Ok(s) => s.to_string(),
-                        Err(_) => { if !iter.advance() { break; } continue; }
-                    };
-
-                    let header = match CoverageHeader::from_db_key(&key_str) {
-                        Some(h) => h,
-                        None => { if !iter.advance() { break; } continue; }
-                    };
-
-                    let acc_type = header.accumulator_type();
-                    let bucket = header.bucket();
-                    let layer = header.layer;
-
-                    // Calculate the end of this accumulator's range for seeking
-                    let (_, seek_end) = CoverageHeader::db_search_range(acc_type, bucket, layer);
-
-                    if !header.is_meta() {
-                        // Data entry without meta - orphaned, mark for purge
-                        to_purge.push((acc_type, bucket, layer,
-                            format!("{}/{}/{:04x}(orphaned)", layer.name(), acc_type.name(), bucket.0)));
-                        iter.seek(seek_end.as_bytes());
-                        continue;
-                    }
-
-                    // Process meta entry
-                    if acc_type == AccumulatorType::Current {
-                        if layers.contains(&layer) {
-                            if let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&val_bytes) {
-                                if let Some(acc) = parse_accumulators_from_meta(&meta) {
-                                    // Check if this is the still-active accumulator (same current
-                                    // bucket AND same destination buckets). The current bucket
-                                    // alone isn't unique - it encodes (day_of_month << 7) | period,
-                                    // which repeats across months.
-                                    let matches_expected = bucket == expected.current.bucket
-                                        && acc.day.bucket == expected.day.bucket
-                                        && acc.month.bucket == expected.month.bucket
-                                        && acc.year.bucket == expected.year.bucket
-                                        && acc.yearnz.bucket == expected.yearnz.bucket;
-
-                                    if !matches_expected {
-                                        hanging_buckets.insert((bucket, layer), acc);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        let meta_ok = serde_json::from_slice::<serde_json::Value>(&val_bytes)
-                            .ok()
-                            .and_then(|meta| {
-                                let type_name = acc_type.name();
-                                meta.get("accumulators")
-                                    .and_then(|a| a.get(type_name))
-                                    .and_then(|e| e.get("file"))
-                                    .and_then(|f| f.as_str())
-                                    .filter(|f| !f.is_empty())
-                                    .map(|f| f.to_string())
-                            });
-
-                        match meta_ok {
-                            Some(file) => {
-                                all_accumulators.push((acc_type, bucket, layer, file));
-                            }
-                            None => {
-                                to_purge.push((acc_type, bucket, layer,
-                                    format!("{}/{}/{:04x}(invalid meta)", layer.name(), acc_type.name(), bucket.0)));
-                            }
-                        }
-                    }
-
-                    // Seek past this accumulator's data range
-                    iter.seek(seek_end.as_bytes());
+                if !matches_expected {
+                    hanging_buckets.insert((bucket, layer), acc);
                 }
             }
 
@@ -1797,169 +2166,39 @@ pub async fn rollup_startup(
                     .map(|e| e.file.clone()))
                 .collect();
 
-            // Group hanging currents by (layer, destination set): every member
-            // of a group merges into the same day/month/year/yearnz buckets, so
-            // they can be combined in memory and rolled up with a single
-            // destination walk + arrow rewrite (the dominant cost - destinations
-            // are typically far larger than the hanging currents).
-            let mut groups: HashMap<(Layer, String), Vec<(AccumulatorBucket, Accumulators)>> =
+            // Group hanging currents per layer and roll each destination-set
+            // group up in a single walk (shared with the per-cycle
+            // self-healing pass; startup has no active bucket).
+            let mut hanging_by_layer: HashMap<Layer, Vec<(AccumulatorBucket, Accumulators)>> =
                 HashMap::new();
-            for ((bucket, layer), acc) in &hanging_buckets {
-                let dest_key = format!(
-                    "{:04x}/{}|{:04x}/{}|{:04x}/{}|{:04x}/{}",
-                    acc.day.bucket.0, acc.day.file,
-                    acc.month.bucket.0, acc.month.file,
-                    acc.year.bucket.0, acc.year.file,
-                    acc.yearnz.bucket.0, acc.yearnz.file,
-                );
-                groups.entry((*layer, dest_key)).or_default().push((*bucket, acc.clone()));
+            for ((bucket, layer), acc) in hanging_buckets {
+                hanging_by_layer.entry(layer).or_default().push((bucket, acc));
             }
 
-            'groups: for ((layer, _), mut members) in groups {
-                // Shutdown: leave remaining groups intact - they'll be
-                // re-detected and rolled up on the next startup.
+            for layer in &layers {
                 if is_shutdown() {
+                    // Leave remaining layers intact - they'll be re-detected
+                    // and rolled up on the next startup.
                     break;
                 }
+                let Some(hangs) = hanging_by_layer.get(layer) else { continue };
 
-                // Sort so the newest member describes the group (meta written
-                // to the destinations records its current bucket).
-                members.sort_by_key(|(_, acc)| acc.current.effective_start.0);
-                let descriptor = members.last().expect("group is never empty").1.clone();
-                let (_, dest_files) = descriptor.describe();
-                let buckets_desc: Vec<String> = members.iter()
-                    .map(|(b, _)| format!("{:04x}", b.0))
-                    .collect();
-
-                // Check which destination buckets are missing - skip accumulator
-                // types that aren't produced for this layer (e.g. ADSB doesn't
-                // produce Day). Members share destinations, so check once.
-                let missing: Vec<&str> = [
-                    ("day", &descriptor.day, AccumulatorType::Day),
-                    ("month", &descriptor.month, AccumulatorType::Month),
-                    ("year", &descriptor.year, AccumulatorType::Year),
-                    ("yearnz", &descriptor.yearnz, AccumulatorType::YearNz),
-                ].iter()
-                    .filter(|(_, entry, acc_type)| {
-                        !entry.file.is_empty()
-                            && crate::layers::should_produce(layer, *acc_type)
-                            && !all_dest_files.contains(&entry.file)
-                    })
-                    .map(|(name, _, _)| *name)
-                    .collect();
-
-                if !missing.is_empty() {
-                    warn!(
-                        "{}: DROPPING {} hanging current accumulator(s) [{}] for {} [{}]: {} missing -\
-                         rolling up would overwrite complete arrow files on disk",
-                        station_name, members.len(), buckets_desc.join(","), dest_files,
-                        layer.name(), missing.join(",")
-                    );
-                    // Delete the current meta keys AND data so they won't hang again
-                    for (bucket, _) in &members {
-                        let (start, end) = CoverageHeader::db_search_range_with_meta(
-                            AccumulatorType::Current, *bucket, layer,
-                        );
-                        db::delete_range(&mut db, &start, &end);
-                    }
-                    continue;
-                }
-
-                // Read every member's current records and merge them by H3.
-                // BTreeMap keeps records H3-sorted as the merge walk requires.
-                let mut merged: std::collections::BTreeMap<String, CoverageRecord> =
-                    std::collections::BTreeMap::new();
-                let mut delete_data_keys: Vec<String> = Vec::new();
-                let mut delete_meta_keys: Vec<String> = Vec::new();
-                let mut records_read = 0usize;
-                let mut period_start = u32::MAX;
-                let mut period_end = 0u32;
-
-                for (bucket, acc) in &members {
-                    let (start, end) = CoverageHeader::db_search_range(
-                        AccumulatorType::Current, *bucket, layer,
-                    );
-                    let records = db::read_range(&mut db, &start, &end, Some(&SHUTDOWN));
-                    if is_shutdown() {
-                        // Possibly-partial read: leave this group untouched.
-                        continue 'groups;
-                    }
-                    records_read += records.len();
-                    for (key, value) in records {
-                        if let (Some(h3), Some(record)) =
-                            (extract_h3_from_db_key(&key), CoverageRecord::from_bytes(&value))
-                        {
-                            merged.entry(h3)
-                                .and_modify(|existing| {
-                                    if let Some(m) = existing.rollup(&record, None) {
-                                        *existing = m;
-                                    }
-                                })
-                                .or_insert(record);
-                        }
-                        delete_data_keys.push(key);
-                    }
-                    delete_meta_keys.push(CoverageHeader::accumulator_meta(
-                        AccumulatorType::Current, *bucket, layer,
-                    ).db_key());
-                    let es = acc.current.effective_start.0;
-                    period_start = period_start.min(es);
-                    period_end = period_end.max(es + (*ROLLUP_PERIOD_MINUTES * 60.0) as u32);
-                }
-
-                if merged.is_empty() {
-                    // Nothing mergeable (meta-only or unparseable hanging
-                    // currents) - purge them directly so they don't hang again
-                    // on every startup.
-                    let mut batch = rusty_leveldb::WriteBatch::default();
-                    for key in delete_data_keys.iter().chain(delete_meta_keys.iter()) {
-                        batch.delete(key.as_bytes());
-                    }
-                    if let Err(e) = db.write(batch, true) {
-                        error!("{}: failed to purge empty hanging currents: {}", station_name, e);
-                    }
-                    continue;
-                }
-
-                info!(
-                    "{}/{}: rolling up {} hanging current accumulator(s) [{}] ({} records) into {}",
-                    station_name, layer.name(), members.len(), buckets_desc.join(","),
-                    merged.len(), dest_files
-                );
-
-                let source = CurrentSource {
-                    records: merged.into_iter().collect(),
-                    delete_data_keys,
-                    delete_meta_keys,
-                    records_read,
-                    period_start: Epoch(period_start),
-                    period_end: Epoch(period_end),
-                };
-
-                let layer_suffix = layer.file_suffix();
-                let group_t0 = std::time::Instant::now();
-                match rollup_layer_core(
+                match rollup_current_buckets(
                     &mut db,
                     &station_name,
-                    &descriptor,
-                    layer,
-                    layer_suffix,
+                    *layer,
+                    None, // no active bucket at startup
+                    hangs,
+                    &all_dest_files,
                     None,
                     is_global,
                     station_meta,
                     &[], // no retired accumulators during startup
                     &SHUTDOWN, // cancel only on process exit
                     &task_progress,
-                    &source,
-                    group_t0,
-                    std::time::Duration::ZERO,
+                    "startup",
                 ) {
                     Ok((stats, _day_activity, _day_arrow_count)) => {
-                        info!(
-                            "{}: startup rollup complete {} - {} written, {} arrow, {} deleted",
-                            station_name, layer.name(),
-                            stats.records_written, stats.arrow_records, stats.records_deleted
-                        );
                         rolled_up += stats.records_written;
                         arrow += stats.arrow_records;
                         deleted += stats.records_deleted;
@@ -2328,6 +2567,100 @@ mod tests {
         );
         let day_rec = CoverageRecord::from_bytes(&db.get(day_key.as_bytes()).unwrap()).unwrap();
         assert_eq!(day_rec.count(), 3);
+    }
+
+    #[test]
+    fn test_heal_hanging_bucket_joins_active_group() {
+        // A hanging current bucket whose destinations match the live
+        // accumulators joins the active group and is healed in the same
+        // destination walk - one merge, both buckets deleted.
+        let tmp = tempfile::tempdir().unwrap();
+        let station_path = tmp.path().join("station_db").to_string_lossy().to_string();
+
+        let h3 = "8828308283fffff";
+        let active_key = "c/0042/8828308283fffff";
+        let hanging_key = "c/0041/8828308283fffff";
+
+        let mut active_rec = CoverageRecord::new(BufferType::Station);
+        active_rec.update(1000, 500, 2, 28, 5);
+        active_rec.update(900, 400, 1, 32, 3);
+        let mut hanging_rec = CoverageRecord::new(BufferType::Station);
+        hanging_rec.update(800, 300, 1, 30, 4);
+
+        let mut db = {
+            let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
+            let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
+            db.put(active_key.as_bytes(), &active_rec.to_bytes()).unwrap();
+            db.put(hanging_key.as_bytes(), &hanging_rec.to_bytes()).unwrap();
+            db.flush().unwrap();
+            db
+        };
+
+        let active = test_accumulators(); // current bucket 0x042
+        // Hanging accumulator from an earlier period, same destination set
+        let mut hanging_acc = test_accumulators();
+        hanging_acc.current.bucket = AccumulatorBucket(0x041);
+        let hanging = vec![(AccumulatorBucket(0x041), hanging_acc)];
+
+        let (stats, _, _) = rollup_current_buckets(
+            &mut db, "test_station_heal", Layer::Combined, Some(&active), &hanging,
+            &HashSet::new(), None, false, None, &[], &AtomicBool::new(false),
+            &std::sync::Mutex::new(RollupProgress::default()), "heal",
+        ).unwrap();
+
+        // One merged H3 into 4 destinations, both source buckets deleted
+        assert_eq!(stats.records_written, 4);
+        assert_eq!(stats.records_deleted, 2);
+        assert!(db.get(active_key.as_bytes()).is_none());
+        assert!(db.get(hanging_key.as_bytes()).is_none());
+
+        let day_key = make_dest_key(
+            AccumulatorType::Day, AccumulatorBucket(0x1001),
+            Layer::Combined, h3,
+        );
+        let day_rec = CoverageRecord::from_bytes(&db.get(day_key.as_bytes()).unwrap()).unwrap();
+        assert_eq!(day_rec.count(), 3);
+    }
+
+    #[test]
+    fn test_heal_drops_hang_with_missing_destinations() {
+        // A pure-hang group whose destination files are unknown is DROPPED
+        // (purged) rather than rolled up - rolling would overwrite complete
+        // arrow files on disk with partial data.
+        let tmp = tempfile::tempdir().unwrap();
+        let station_path = tmp.path().join("station_db").to_string_lossy().to_string();
+
+        let hanging_key = "c/0041/8828308283fffff";
+        let mut rec = CoverageRecord::new(BufferType::Station);
+        rec.update(800, 300, 1, 30, 4);
+
+        let mut db = {
+            let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
+            let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
+            db.put(hanging_key.as_bytes(), &rec.to_bytes()).unwrap();
+            db.flush().unwrap();
+            db
+        };
+
+        let mut hanging_acc = test_accumulators();
+        hanging_acc.current.bucket = AccumulatorBucket(0x041);
+        let hanging = vec![(AccumulatorBucket(0x041), hanging_acc)];
+
+        // all_dest_files empty -> every destination is "missing"
+        let (stats, _, _) = rollup_current_buckets(
+            &mut db, "test_station_drop", Layer::Combined, None, &hanging,
+            &HashSet::new(), None, false, None, &[], &AtomicBool::new(false),
+            &std::sync::Mutex::new(RollupProgress::default()), "startup",
+        ).unwrap();
+
+        assert_eq!(stats.records_written, 0);
+        // Hanging data purged, no destination records created
+        assert!(db.get(hanging_key.as_bytes()).is_none());
+        let day_key = make_dest_key(
+            AccumulatorType::Day, AccumulatorBucket(0x1001),
+            Layer::Combined, "8828308283fffff",
+        );
+        assert!(db.get(day_key.as_bytes()).is_none());
     }
 
     #[test]
