@@ -797,10 +797,24 @@ fn rollup_station_all_layers(
         if let Ok(mut p) = progress.lock() {
             p.phase = "compact".to_string();
         }
+        // Log the level structure for the global DB: compact_range only cascades
+        // down to the highest non-empty level among L1..L5, so if L5 is empty here
+        // the L5->L6 merge (the pass that reclaims the bottom level) never runs.
+        let fmt_levels = |db: &TrackedDb| -> String {
+            db.level_file_sizes().iter()
+                .map(|(l, f, b)| format!("L{}:{}f/{}MB", l, f, b / 1_000_000))
+                .collect::<Vec<_>>().join(" ")
+        };
+        if is_global {
+            info!("{}: pre-compact levels: {}", station_name, fmt_levels(&db));
+        }
         let compact_start = std::time::Instant::now();
         db.compact_range(b"!", b"~").map_err(|e| format!("compact failed for {}: {}", station_name, e))?;
         db.flush().map_err(|e| format!("flush after compact failed for {}: {}", station_name, e))?;
         compact_elapsed = compact_start.elapsed();
+        if is_global {
+            info!("{}: post-compact levels: {} ({:?})", station_name, fmt_levels(&db), compact_elapsed);
+        }
     } else {
         compact_elapsed = std::time::Duration::ZERO;
     }
