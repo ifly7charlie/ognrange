@@ -152,7 +152,7 @@ impl StationManager {
         // Spawn the writer thread which takes over the DB lock
         let writer_db_path = db_path;
         std::thread::spawn(move || {
-            let mut db = match TrackedDb::open(&writer_db_path, true, 8 * 1024 * 1024) {
+            let mut db = match TrackedDb::open(&writer_db_path, true) {
                 Ok(db) => db,
                 Err(e) => {
                     error!("Fatal: writer thread failed to open status DB {}: {}", writer_db_path, e);
@@ -181,7 +181,7 @@ impl StationManager {
     }
 
     fn load_sync(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut db = TrackedDb::open(&self.db_path, true, 8 * 1024 * 1024)?;
+        let mut db = TrackedDb::open(&self.db_path, true)?;
         let entries = crate::db::read_all(&mut db);
 
         let mut max_id: u16 = 0;

@@ -7,6 +7,7 @@
         "build": "yarn aprs:build && yarn next build",
         "aprs:build": "tsc --project tsconfig-bin.json",
         "dumpdb": "node --enable-source-maps dist/bin/dumpdb.js",
+        "compactdb": "node --enable-source-maps dist/bin/compactdb.js",
         "dumparrow": "node --enable-source-maps dist/bin/dumparrow.js",
         "reconcile": "node --enable-source-maps dist/bin/reconcile.js",
         "export": "next export",

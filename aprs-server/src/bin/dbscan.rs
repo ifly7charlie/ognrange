@@ -147,7 +147,7 @@ fn scan_all(station_dirs: &[String], stations_dir: &str, expected: &accumulators
             format!("{}/{}", stations_dir, station_name)
         };
 
-        let mut db = match TrackedDb::open(&station_path, false, 4 * 1024 * 1024) {
+        let mut db = match TrackedDb::open(&station_path, false) {
             Ok(db) => db,
             Err(e) => {
                 eprintln!("{}: ERROR opening: {}", station_name, e);

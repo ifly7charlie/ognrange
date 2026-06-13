@@ -619,11 +619,7 @@ fn rollup_station_all_layers(
     new_current_bucket: Option<AccumulatorBucket>,
 ) -> Result<RollupStats, String> {
     let station_start = std::time::Instant::now();
-    let has_adsb = station_meta
-        .map(|m| m.stats.hourly.contains_key("adsb"))
-        .unwrap_or(false);
-    let cache_bytes = if has_adsb { 16 * 1024 * 1024 } else { 8 * 1024 * 1024 };
-    let mut db = match TrackedDb::open(station_path, true, cache_bytes) {
+    let mut db = match TrackedDb::open(station_path, true) {
         Ok(db) => db,
         Err(e) => {
             return Err(format!("Failed to open DB {}: {}", station_path, e));
@@ -644,7 +640,9 @@ fn rollup_station_all_layers(
     let mut hanging_by_layer: HashMap<Layer, Vec<(AccumulatorBucket, Accumulators)>> =
         HashMap::new();
     let mut all_dest_files: HashSet<String> = HashSet::new();
+    let mut scan_elapsed = std::time::Duration::ZERO;
     if let Some(new_bucket) = new_current_bucket {
+        let scan_start = std::time::Instant::now();
         if let Ok(mut p) = progress.lock() {
             p.phase = "scan".to_string();
         }
@@ -715,8 +713,10 @@ fn rollup_station_all_layers(
             // Without the scan, stranded buckets stay invisible this cycle
             warn!("{}: accumulator meta scan failed - self-healing skipped this cycle", station_name);
         }
+        scan_elapsed = scan_start.elapsed();
     }
 
+    let mut layers_elapsed = std::time::Duration::ZERO;
     for layer in layers {
         if cancelled() {
             break;
@@ -727,13 +727,15 @@ fn rollup_station_all_layers(
         }
         let layer_start = std::time::Instant::now();
         let hangs = hanging_by_layer.get(layer).map(|v| v.as_slice()).unwrap_or(&[]);
-        match rollup_current_buckets(
+        let result = rollup_current_buckets(
             &mut db, station_name, *layer, Some(accumulators), hangs,
             &all_dest_files, valid_stations, is_global, station_meta,
             retired_accumulators, cancel, progress, "heal",
-        ) {
+        );
+        let layer_elapsed = layer_start.elapsed();
+        layers_elapsed += layer_elapsed;
+        match result {
             Ok((stats, day_activity, day_arrow_count)) => {
-                let layer_elapsed = layer_start.elapsed();
                 if layer_elapsed.as_secs() >= 20 {
                     warn!("{}: layer {} took {:?} (read={}, written={}, deleted={}, arrow={})",
                         station_name, layer.name(), layer_elapsed,
@@ -805,9 +807,10 @@ fn rollup_station_all_layers(
 
     let total_elapsed = station_start.elapsed();
     if total_elapsed.as_secs() >= 40 {
-        warn!("{}: slow station rollup {:?} - open={:?}, flush={:?}, compact={:?}, \
+        warn!("{}: slow station rollup {:?} - open={:?}, scan={:?}, layers={:?}, flush={:?}, compact={:?}, \
                read={}, written={}, deleted={}, arrow={}",
-            station_name, total_elapsed, open_elapsed, flush_elapsed, compact_elapsed,
+            station_name, total_elapsed, open_elapsed, scan_elapsed, layers_elapsed,
+            flush_elapsed, compact_elapsed,
             total_stats.records_read, total_stats.records_written,
             total_stats.records_deleted, total_stats.arrow_records);
     }
@@ -2040,7 +2043,7 @@ pub async fn rollup_startup(
             };
 
             // Open DB once for all operations on this station
-            let mut db = match TrackedDb::open(&station_path, true, 8 * 1024 * 1024) {
+            let mut db = match TrackedDb::open(&station_path, true) {
                 Ok(db) => db,
                 Err(e) => {
                     error!("Startup rollup: failed to open DB {}: {}", station_path, e);

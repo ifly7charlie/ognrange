@@ -52,6 +52,34 @@ pub static APRS_SERVER: Lazy<String> =
 
 // Database handle limits
 pub static MAX_STATION_DBS: Lazy<usize> = Lazy::new(|| env_parse("MAX_STATION_DBS", 800));
+
+// Target SST file size, applied to every DB. LevelDB's 2MB default produces
+// tens of thousands of tiny files on the larger DBs (the global one, plus the
+// busier stations), which makes every scan/merge a storm of cold file opens.
+// A larger target means far fewer, bigger files. Compaction work bounds scale
+// with this (grandparent-overlap and expansion limits are multiples of it), so
+// keep it moderate.
+pub static DB_MAX_FILE_SIZE_BYTES: Lazy<usize> =
+    Lazy::new(|| env_parse::<usize>("DB_MAX_FILE_SIZE_MB", 16) * 1024 * 1024);
+
+// Per-station DBs get a small open-file budget so total FDs stay bounded across
+// MAX_STATION_DBS concurrent opens. The global DB is a singleton holding the
+// world's coverage (millions of H3 cells, thousands of SST files), so it gets a
+// much larger table cache (open files) and block cache - the small per-station
+// limits make traversing it pathologically slow (every file-boundary crossing
+// is a cold open through a tiny cache).
+pub static STATION_MAX_OPEN_FILES: Lazy<usize> = Lazy::new(|| env_parse("STATION_MAX_OPEN_FILES", 40));
+pub static GLOBAL_MAX_OPEN_FILES: Lazy<usize> = Lazy::new(|| env_parse("GLOBAL_MAX_OPEN_FILES", 2000));
+
+// Block cache holds decompressed 4KB data blocks - it tracks the hot working
+// set, not file size. The per-station value is multiplied by up to
+// MAX_STATION_DBS concurrent opens, so keep it modest; the global singleton can
+// afford a large cache for the price of one.
+pub static STATION_BLOCK_CACHE_BYTES: Lazy<usize> =
+    Lazy::new(|| env_parse::<usize>("STATION_BLOCK_CACHE_MB", 16) * 1024 * 1024);
+pub static GLOBAL_BLOCK_CACHE_BYTES: Lazy<usize> =
+    Lazy::new(|| env_parse::<usize>("GLOBAL_BLOCK_CACHE_MB", 256) * 1024 * 1024);
+
 // Rollup configuration
 pub static ROLLUP_PERIOD_MINUTES: Lazy<f64> = Lazy::new(|| {
     if let Ok(v) = env::var("ROLLUP_PERIOD_MINUTES") {
