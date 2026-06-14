@@ -30,8 +30,6 @@ pub fn produce_station_file(
     station_manager: &StationManager,
     accumulators: &Accumulators,
 ) {
-    use std::io::Write;
-
     let now = Utc::now();
     let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
     let current_slot = now.hour() * 6 + now.minute() / 10 + 1; // 1-144
@@ -53,21 +51,13 @@ pub fn produce_station_file(
     let stations_dir = format!("{}stations", output_path);
     let _ = std::fs::create_dir_all(&stations_dir);
 
-    // 1. stations.json / stations.json.gz
+    // 1. stations.json / stations.json.gz - atomic (.working + rename), so a
+    // disk-full or interrupted write can't truncate the registry to 0 bytes.
     match serde_json::to_string(&active_stations) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(format!("{}stations.json", output_path), &json) {
-                error!("stations.json write error: {}", e);
-            }
-            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            let _ = encoder.write_all(json.as_bytes());
-            if let Ok(compressed) = encoder.finish() {
-                if let Err(e) =
-                    std::fs::write(format!("{}stations.json.gz", output_path), &compressed)
-                {
-                    error!("stations.json.gz write error: {}", e);
-                }
-            }
+            let dir = output_path.trim_end_matches('/');
+            crate::json_io::write_atomic(dir, "stations.json", &json);
+            crate::json_io::write_gz_atomic(dir, "stations.json.gz", &json);
         }
         Err(e) => error!("stations.json serialization error: {}", e),
     }
@@ -215,24 +205,11 @@ pub fn produce_station_file(
 
 fn write_stations_complete_json(output_path: &str, station_manager: &StationManager) {
     let all_stations = station_manager.all_stations();
-    use std::io::Write;
     match serde_json::to_string(&all_stations) {
         Ok(json) => {
-            if let Err(e) =
-                std::fs::write(format!("{}stations-complete.json", output_path), &json)
-            {
-                error!("stations-complete.json write error: {}", e);
-            }
-            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            let _ = encoder.write_all(json.as_bytes());
-            if let Ok(compressed) = encoder.finish() {
-                if let Err(e) = std::fs::write(
-                    format!("{}stations-complete.json.gz", output_path),
-                    &compressed,
-                ) {
-                    error!("stations-complete.json.gz write error: {}", e);
-                }
-            }
+            let dir = output_path.trim_end_matches('/');
+            crate::json_io::write_atomic(dir, "stations-complete.json", &json);
+            crate::json_io::write_gz_atomic(dir, "stations-complete.json.gz", &json);
         }
         Err(e) => error!("stations-complete.json serialization error: {}", e),
     }

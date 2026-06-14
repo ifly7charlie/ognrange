@@ -344,6 +344,38 @@ fn load_id_map(base: &str) -> HashMap<String, u16> {
             break; // prefer the complete registry
         }
     }
+    // Fallback: the JSON registry is written non-atomically and can be
+    // truncated to 0 bytes by a disk-full; the Arrow registry IS written
+    // atomically, so read id+name from it when the JSON is empty/missing.
+    if m.is_empty() {
+        m = load_id_map_arrow(base);
+    }
+    m
+}
+
+/// Read id+name from the atomically-written Arrow station registry
+/// (`stations.arrow` symlink, else `stations.arrow.gz`).
+fn load_id_map_arrow(base: &str) -> HashMap<String, u16> {
+    let mut m = HashMap::new();
+    let plain = format!("{}stations.arrow", base);
+    let gz = format!("{}stations.arrow.gz", base);
+    let batches: Option<Vec<RecordBatch>> = if let Ok(f) = File::open(&plain) {
+        StreamReader::try_new(BufReader::new(f), None).ok().map(|r| r.filter_map(|b| b.ok()).collect())
+    } else if let Ok(f) = File::open(&gz) {
+        StreamReader::try_new(GzDecoder::new(BufReader::new(f)), None).ok().map(|r| r.filter_map(|b| b.ok()).collect())
+    } else {
+        None
+    };
+    for b in batches.into_iter().flatten() {
+        let (Some(id), Some(name)) = (b.column_by_name("id"), b.column_by_name("name")) else { continue };
+        let (Some(id), Some(name)) = (
+            id.as_any().downcast_ref::<UInt32Array>(),
+            name.as_any().downcast_ref::<StringArray>(),
+        ) else { continue };
+        for i in 0..b.num_rows() {
+            m.entry(name.value(i).to_string()).or_insert(id.value(i) as u16);
+        }
+    }
     m
 }
 
