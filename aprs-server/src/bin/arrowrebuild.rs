@@ -1,7 +1,8 @@
 //! Offline recovery: rebuild a corrupted accumulator Arrow file by re-merging
 //! the intact lower-level Arrow outputs. "Arrow only" - never opens the DB
-//! (the live server holds its lock), and reads each station's numeric id from
-//! its `{station}.json` output sidecar.
+//! (the live server holds its lock); station ids come from the registry
+//! (`stations-complete.json`, the same file the frontend uses), falling back to
+//! per-station `{name}/{name}.json` sidecars.
 //!
 //! Modes:
 //!   station-month <STATION> <YYYY-MM>
@@ -322,8 +323,32 @@ fn merge_global(records: Vec<(u64, u16, CoverageRecord)>, gres: h3o::Resolution)
         .collect()
 }
 
-/// Read a station's numeric id from its `{station}.json` output sidecar.
-fn station_id(base: &str, name: &str) -> Option<u16> {
+/// Build the name -> id map from the station registry written for the frontend
+/// (`stations-complete.json` = all stations; falls back to `stations.json` =
+/// active only). This is the authoritative id source and covers every station,
+/// unlike the per-station `{name}/{name}.json` sidecars (many are absent).
+fn load_id_map(base: &str) -> HashMap<String, u16> {
+    let mut m = HashMap::new();
+    for fname in ["stations-complete.json", "stations.json"] {
+        let path = format!("{}{}", base, fname);
+        let Ok(txt) = std::fs::read_to_string(&path) else { continue };
+        let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&txt) else { continue };
+        for s in arr {
+            if let (Some(name), Some(id)) =
+                (s.get("station").and_then(|v| v.as_str()), s.get("id").and_then(|v| v.as_u64()))
+            {
+                m.entry(name.to_string()).or_insert(id as u16);
+            }
+        }
+        if !m.is_empty() {
+            break; // prefer the complete registry
+        }
+    }
+    m
+}
+
+/// Fallback: read a station's id from its own `{station}.json` sidecar.
+fn station_id_sidecar(base: &str, name: &str) -> Option<u16> {
     let path = format!("{}{}/{}.json", base, name, name);
     let txt = std::fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
@@ -428,6 +453,8 @@ fn main() {
             };
 
             let stations = list_station_dirs(&base);
+            let id_map = load_id_map(&base);
+            eprintln!("loaded {} station ids from registry", id_map.len());
             let mut missing_id = 0usize;
             let global_dir = format!("{}global", base);
             let _ = std::fs::create_dir_all(&global_dir);
@@ -440,7 +467,10 @@ fn main() {
                         eprint!("\r  {} layer {}: {}/{} stations", mode, layer, i, stations.len());
                         let _ = std::io::stderr().flush();
                     }
-                    let Some(id) = station_id(&base, name) else { missing_id += 1; continue };
+                    let id = id_map.get(name).copied()
+                        .or_else(|| id_map.get(&name.to_uppercase()).copied())
+                        .or_else(|| station_id_sidecar(&base, name));
+                    let Some(id) = id else { missing_id += 1; continue };
                     let dir = format!("{}{}", base, name);
                     let files = matching_files(&dir, src_acc, &layer, &fid_ok);
                     if files.is_empty() {
