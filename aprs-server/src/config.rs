@@ -81,13 +81,15 @@ pub static GLOBAL_BLOCK_CACHE_BYTES: Lazy<usize> =
     Lazy::new(|| env_parse::<usize>("GLOBAL_BLOCK_CACHE_MB", 256) * 1024 * 1024);
 
 // Bottom-level reclaim: routine per-rollup compaction (compact_range) only tidies
-// the upper levels, so superseded versions and tombstones pile up in the global
-// DB's bottom level (L6) in proportion to write volume. After this many
-// (written + deleted) records have been applied to the global DB, the next rollup
-// runs the expensive compact_range_full pass that cascades to L6 and reclaims them.
-// At the default 3h cadence (~0.7M writes/cycle) ~5M is roughly daily. 0 disables.
-pub static GLOBAL_FULL_COMPACT_WRITE_THRESHOLD: Lazy<u64> =
-    Lazy::new(|| env_parse::<u64>("GLOBAL_FULL_COMPACT_WRITE_THRESHOLD", 5_000_000));
+// the upper levels, so superseded versions and tombstones pile up in a DB's bottom
+// level (L6) in proportion to write volume - for the global DB and for busy station
+// DBs alike. After this many (written + deleted) records have been applied to a
+// given DB, the next rollup runs the expensive compact_range_full pass that cascades
+// to L6 and reclaims them. At the default 3h cadence (~0.7M writes/cycle on global)
+// ~5M is roughly daily; small/quiet stations rarely reach it (and barely bloat).
+// 0 disables.
+pub static FULL_COMPACT_WRITE_THRESHOLD: Lazy<u64> =
+    Lazy::new(|| env_parse::<u64>("FULL_COMPACT_WRITE_THRESHOLD", 5_000_000));
 
 // Rollup configuration
 pub static ROLLUP_PERIOD_MINUTES: Lazy<f64> = Lazy::new(|| {

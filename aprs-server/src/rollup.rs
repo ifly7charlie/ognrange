@@ -6,20 +6,37 @@
 //! year-nz (Southern Hemisphere season) accumulators.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use once_cell::sync::Lazy;
 use rusty_leveldb::LdbIterator;
 
 /// Global shutdown flag - checked by long-running DB iterations.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-/// Cumulative (written + deleted) records applied to the global DB since the last
-/// full bottom-level compaction. The global DB is a singleton, so a module static
-/// suffices. Drives the gate that decides when compact_range_full is worth running:
-/// routine compaction leaves the bottom level frozen, so dead data accumulates
-/// there in proportion to write volume. Reset to 0 after each full compaction;
-/// resets to 0 on restart (run `compactdb` for an immediate one-off reclaim).
-static GLOBAL_WRITES_SINCE_FULL_COMPACT: AtomicU64 = AtomicU64::new(0);
+/// Cumulative (written + deleted) records applied to each DB since its last full
+/// bottom-level compaction, keyed by station name ("global" included). Drives the
+/// gate that decides when compact_range_full is worth running: routine compaction
+/// leaves the bottom level frozen, so dead data accumulates there in proportion to
+/// write volume - for busy stations (e.g. SpainTTT) as much as for global. Reset to
+/// 0 after each full compaction; resets on restart (run `compactdb <db>` for a
+/// one-off reclaim).
+static WRITES_SINCE_FULL_COMPACT: Lazy<Mutex<HashMap<String, u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Per-DB full-compaction threshold, jittered to [0.5, 1.5)x `base` by a stable
+/// hash of the station name. Without this, DBs with similar write rates (and every
+/// DB after a restart, when counters reset to 0) would accumulate in lockstep and
+/// all cross the threshold on the same rollup cycle - a thundering herd of
+/// expensive full compactions. The jitter is stable per DB (it persists across
+/// counter resets), so each DB keeps crossing at its own offset.
+fn jittered_full_compact_threshold(station_name: &str, base: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    station_name.hash(&mut h);
+    let frac = h.finish() % 1000; // 0..=999
+    base / 2 + base * frac / 1000 // [0.5, 1.5)x base
+}
 
 /// Signal all rollup tasks to stop iterating.
 pub fn request_shutdown() {
@@ -813,18 +830,30 @@ fn rollup_station_all_layers(
                 .collect::<Vec<_>>().join(" ")
         };
         // Routine compaction (compact_range) only tidies the upper levels and
-        // leaves the global DB's bottom level frozen, so superseded versions and
-        // tombstones accumulate there. Once enough writes have piled up, run the
-        // expensive compact_range_full pass that cascades to the bottom level and
-        // reclaims them (see GLOBAL_FULL_COMPACT_WRITE_THRESHOLD). Per-station DBs
-        // are small and always take the routine path.
-        let threshold = *crate::config::GLOBAL_FULL_COMPACT_WRITE_THRESHOLD;
-        let full_compact = is_global && threshold > 0 && {
+        // leaves the bottom level frozen, so superseded versions and tombstones
+        // accumulate there - for any DB, not just global. Busy station DBs bloat
+        // just as badly (e.g. SpainTTT reached 6.4GB of which only ~150MB was
+        // live). Once enough writes have piled up for THIS db, run the expensive
+        // compact_range_full pass that cascades to the bottom level and reclaims
+        // them (see FULL_COMPACT_WRITE_THRESHOLD).
+        let base_threshold = *crate::config::FULL_COMPACT_WRITE_THRESHOLD;
+        let full_compact = base_threshold > 0 && {
+            let threshold = jittered_full_compact_threshold(station_name, base_threshold);
             let written = (total_stats.records_written + total_stats.records_deleted) as u64;
-            let prior = GLOBAL_WRITES_SINCE_FULL_COMPACT.fetch_add(written, Ordering::Relaxed);
-            prior + written >= threshold
+            let mut counters = WRITES_SINCE_FULL_COMPACT.lock().unwrap();
+            let counter = counters.entry(station_name.to_string()).or_insert(0);
+            *counter += written;
+            if *counter >= threshold {
+                *counter = 0;
+                true
+            } else {
+                false
+            }
         };
-        if is_global {
+        // Log levels for global always, and for any DB doing a full reclaim, so the
+        // (rare, expensive) reclaim passes are visible without spamming per-station
+        // routine compactions.
+        if is_global || full_compact {
             info!("{}: pre-compact levels: {}{}", station_name, fmt_levels(&db),
                 if full_compact { " [FULL bottom-level reclaim]" } else { "" });
         }
@@ -832,14 +861,13 @@ fn rollup_station_all_layers(
         if full_compact {
             db.compact_range_full(b"!", b"~")
                 .map_err(|e| format!("full compact failed for {}: {}", station_name, e))?;
-            GLOBAL_WRITES_SINCE_FULL_COMPACT.store(0, Ordering::Relaxed);
         } else {
             db.compact_range(b"!", b"~")
                 .map_err(|e| format!("compact failed for {}: {}", station_name, e))?;
         }
         db.flush().map_err(|e| format!("flush after compact failed for {}: {}", station_name, e))?;
         compact_elapsed = compact_start.elapsed();
-        if is_global {
+        if is_global || full_compact {
             info!("{}: post-compact levels: {} ({:?})", station_name, fmt_levels(&db), compact_elapsed);
         }
     } else {
