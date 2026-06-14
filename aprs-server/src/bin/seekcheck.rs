@@ -15,7 +15,24 @@
 //! Run this against the CURRENT (pre-fix) binary to measure historical
 //! exposure; once the seek fix is deployed it reports zero.
 //!
-//! Usage: seekcheck [station_name]
+//! Usage: seekcheck [station_name] [--ghost-data] [--deep] [--skip-global] [--limit=N]
+//!   --ghost-data     CHEAP fleet census: hop-scan metas only (skips bulk data)
+//!                    and report stale accumulators (bucket != expected) that
+//!                    still carry data keys - the only place the bug could
+//!                    resurrect real coverage right now. Skips the truth scan.
+//!   (default = fast) one linear pass per DB + first-key-after-seek divergence;
+//!                    catches RESURRECTED (deleted-read-as-live) at every
+//!                    boundary the rollup seeks to, and DROPPED keys at those
+//!                    boundaries.
+//!   --deep           adds a second pass that re-reads each accumulator window
+//!                    to count the full magnitude of DROPPED/RESURRECTED keys
+//!                    inside a single read (roughly doubles runtime).
+//!   --skip-global    skip the (huge) global DB, which dominates runtime.
+//!   --limit=N        only check the first N DBs (sampling).
+//!   station_name     only check one station.
+//!
+//! Progress (station counter, rate, ETA, key count) prints to stderr; results
+//! go to stdout.
 
 #[path = "../accumulators.rs"] mod accumulators;
 #[path = "../config.rs"] mod config;
@@ -36,6 +53,8 @@
 #[path = "../h3cache.rs"] mod h3cache;
 
 use std::collections::{BTreeSet, HashSet};
+use std::io::Write;
+use std::time::Instant;
 use coverage::header::{AccumulatorBucket, AccumulatorType, CoverageHeader};
 use db::TrackedDb;
 use layers::Layer;
@@ -77,17 +96,138 @@ fn boundary_read(db: &mut TrackedDb, start: &str, end: &str) -> Option<BTreeSet<
     Some(out)
 }
 
+/// Cheap accumulator enumeration via the scan-skip hop pattern (seek to start,
+/// then hop by seeking to each accumulator's `.../9000...` end). This is the
+/// buggy seek path, so it surfaces resurrected ghosts; it reads only metas and
+/// skips bulk data, so it's fast even on the 100GB global DB.
+fn hop_accumulators(db: &mut TrackedDb) -> Vec<(Layer, AccumulatorType, AccumulatorBucket)> {
+    let mut out = Vec::new();
+    let Ok(mut iter) = db.new_iter() else { return out };
+    iter.seek(&[]);
+    let mut prev: Option<Vec<u8>> = None;
+    while let Some((kb, _)) = iter.current() {
+        // Progress guard: the hop must move strictly forward.
+        if let Some(ref p) = prev {
+            if p.as_slice() >= kb.as_ref() {
+                break;
+            }
+        }
+        prev = Some(kb.to_vec());
+
+        let Ok(key) = std::str::from_utf8(&kb) else {
+            if !iter.advance() { break; }
+            continue;
+        };
+        let Some(h) = CoverageHeader::from_db_key(key) else {
+            if !iter.advance() { break; }
+            continue;
+        };
+        let (t, b, l) = (h.accumulator_type(), h.bucket(), h.layer);
+        if h.is_meta() {
+            out.push((l, t, b));
+        }
+        // Hop past this accumulator's data range (the scan-skip seek).
+        let (_, seek_end) = CoverageHeader::db_search_range(t, b, l);
+        iter.seek(seek_end.as_bytes());
+    }
+    out
+}
+
+/// --ghost-data: cheap fleet-wide census of stale accumulators (bucket != the
+/// expected current bucket for their type) that still carry data keys. Those
+/// are the only ones where the seek bug could resurrect *real* coverage; a
+/// stale accumulator with key_count==0 is harmless meta cruft.
+fn run_ghost_data(stations: &[(String, String)]) {
+    let expected = accumulators::initialise_accumulators();
+    let expected_bucket = |t: AccumulatorType| -> Option<AccumulatorBucket> {
+        match t {
+            AccumulatorType::Day => Some(expected.day.bucket),
+            AccumulatorType::Month => Some(expected.month.bucket),
+            AccumulatorType::Year => Some(expected.year.bucket),
+            AccumulatorType::YearNz => Some(expected.yearnz.bucket),
+            _ => None, // Current / unknown: not a dest-rollup target, skip
+        }
+    };
+
+    let total = stations.len();
+    let run_start = Instant::now();
+    let mut last_tick = Instant::now();
+    let mut affected = 0usize;
+    let mut total_accs = 0usize;
+    let mut total_keys = 0usize;
+
+    for (i, (name, path)) in stations.iter().enumerate() {
+        if i == 0 || last_tick.elapsed().as_secs_f64() >= 2.0 {
+            let el = run_start.elapsed().as_secs_f64().max(1e-6);
+            let rate = i as f64 / el;
+            let eta = if rate > 0.0 { (total - i) as f64 / rate } else { 0.0 };
+            eprint!("\r[{}/{}] {:.0}s  {:.0} st/s  ETA {:.0}s  {:<24}", i, total, el, rate, eta, name);
+            let _ = std::io::stderr().flush();
+            last_tick = Instant::now();
+        }
+
+        let mut db = match TrackedDb::open(path, false) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let accs = hop_accumulators(&mut db);
+        let mut hits: Vec<(String, usize)> = Vec::new();
+        for (l, t, b) in accs {
+            let Some(eb) = expected_bucket(t) else { continue };
+            if b == eb {
+                continue; // current/expected bucket -> not stale
+            }
+            let (ds, de) = CoverageHeader::db_search_range(t, b, l);
+            let cnt = boundary_read(&mut db, &ds, &de).map(|s| s.len()).unwrap_or(0);
+            if cnt > 0 {
+                hits.push((format!("{}/{}/{:04x}", l.name(), t.name(), b.0), cnt));
+            }
+        }
+        if !hits.is_empty() {
+            affected += 1;
+            print!("\n{}:", name);
+            for (desc, cnt) in &hits {
+                print!("  {}={}", desc, cnt);
+                total_accs += 1;
+                total_keys += cnt;
+            }
+            println!();
+        }
+    }
+
+    eprint!("\r{:80}\r", " ");
+    println!("\n=== GHOST-DATA SUMMARY ({:.0}s) ===", run_start.elapsed().as_secs_f64());
+    println!("Stations checked:                 {}", total);
+    println!("Stations with stale data:         {}", affected);
+    println!("Stale accumulators carrying data: {}", total_accs);
+    println!("Total at-risk data keys:          {}", total_keys);
+    if total_keys == 0 {
+        println!("\nNo surviving stale accumulator carries data: live resurrection risk is meta-only.");
+    } else {
+        println!("\nThese stale accumulators still hold real coverage the buggy seek could resurrect.");
+    }
+}
+
 fn main() {
     let _ = dotenvy::from_filename(".env.local");
     let args: Vec<String> = std::env::args().collect();
     let filter: Option<String> = args.iter().skip(1).find(|a| !a.starts_with('-')).cloned();
+    // --deep also runs the (slower) second-pass window magnitude diff that
+    // counts DROPPED (under-read) keys; default does the one-pass resurrection
+    // check only.
+    let deep = args.iter().any(|a| a == "--deep");
+    // --skip-global: the global DB can be ~100GB and dominates runtime.
+    let skip_global = args.iter().any(|a| a == "--skip-global");
+    let limit: Option<usize> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--limit=").and_then(|n| n.parse().ok()));
 
     let stations_dir = format!("{}stations", *config::DB_PATH);
-    println!("DB_PATH={}", *config::DB_PATH);
+    println!("DB_PATH={}  mode={}", *config::DB_PATH, if deep { "deep" } else { "fast" });
 
     let mut station_dirs: Vec<(String, String)> = Vec::new();
     let global = format!("{}global", *config::DB_PATH);
-    if std::path::Path::new(&global).exists() {
+    if !skip_global && std::path::Path::new(&global).exists() {
         station_dirs.push(("global".into(), global));
     }
     if let Ok(entries) = std::fs::read_dir(&stations_dir) {
@@ -103,19 +243,47 @@ fn main() {
     if let Some(ref f) = filter {
         station_dirs.retain(|(n, _)| n == f);
     }
+    if let Some(n) = limit {
+        station_dirs.truncate(n);
+    }
 
-    println!("Checking {} station DBs...\n", station_dirs.len());
+    // --ghost-data: cheap stale-accumulator-with-data census; skips the full
+    // truth scan entirely.
+    if args.iter().any(|a| a == "--ghost-data") {
+        println!("Checking {} DBs for stale accumulators carrying data...\n", station_dirs.len());
+        run_ghost_data(&station_dirs);
+        return;
+    }
+
+    let total = station_dirs.len();
+    println!("Checking {} station DBs...\n", total);
 
     let (mut tot_res_data, mut tot_res_meta) = (0usize, 0usize);
     let (mut tot_drop_data, mut tot_drop_meta) = (0usize, 0usize);
     let mut affected_stations = 0usize;
     let mut checked_ranges = 0usize;
+    let mut total_keys: u64 = 0;
+    let run_start = Instant::now();
+    let mut last_tick = Instant::now();
 
-    for (name, path) in &station_dirs {
+    for (i, (name, path)) in station_dirs.iter().enumerate() {
+        // Throttled progress line on stderr (so stdout stays results-only).
+        if i == 0 || last_tick.elapsed().as_secs_f64() >= 2.0 {
+            let el = run_start.elapsed().as_secs_f64().max(1e-6);
+            let rate = i as f64 / el;
+            let eta = if rate > 0.0 { (total - i) as f64 / rate } else { 0.0 };
+            eprint!(
+                "\r[{}/{}] {:.0}s  {:.0} st/s  ETA {:.0}s  {:.1}M keys  {:<24}",
+                i, total, el, rate, eta, total_keys as f64 / 1e6, name
+            );
+            let _ = std::io::stderr().flush();
+            last_tick = Instant::now();
+        }
+
         let mut db = match TrackedDb::open(path, false) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("{}: open failed: {}", name, e);
+                eprintln!("\n{}: open failed: {}", name, e);
                 continue;
             }
         };
@@ -129,11 +297,21 @@ fn main() {
                 if let Ok(s) = std::str::from_utf8(&k) {
                     truth.push(s.to_string());
                 }
+                // Within-scan progress for large DBs (the global one).
+                if truth.len() % 2_000_000 == 0 {
+                    eprint!(
+                        "\r[{}/{}] scanning {} ... {:.1}M keys        ",
+                        i, total, name, truth.len() as f64 / 1e6
+                    );
+                    let _ = std::io::stderr().flush();
+                    last_tick = Instant::now();
+                }
                 if !it.advance() {
                     break;
                 }
             }
         }
+        total_keys += truth.len() as u64;
 
         // truth is in sorted (leveldb byte) order; ASCII keys => str order matches.
         let truth_set: HashSet<&str> = truth.iter().map(|s| s.as_str()).collect();
@@ -192,9 +370,13 @@ fn main() {
                 }
             }
 
-            // (B) Magnitude check: full set diff over the read/delete windows
-            //     [start, end), to count how many keys within a single read are
+            // (B) Magnitude check (--deep only): full set diff over the
+            //     read/delete windows [start, end) — a second pass over the
+            //     data — to count how many keys within a single read are
             //     mis-handled (under-read of live data / over-read of deleted).
+            if !deep {
+                continue;
+            }
             for start in [&data_start, &meta_start] {
                 let Some(got) = boundary_read(&mut db, start, &data_end) else { continue };
                 let want: BTreeSet<String> = truth
@@ -222,7 +404,7 @@ fn main() {
         if rd + rm + dd + dm > 0 {
             affected_stations += 1;
             println!(
-                "{}: resurrected data={} meta={} | dropped data={} meta={}  ({} keys, {} accumulators)",
+                "\n{}: resurrected data={} meta={} | dropped data={} meta={}  ({} keys, {} accumulators)",
                 name, rd, rm, dd, dm, truth.len(), accs.len()
             );
             for k in resurrected.iter().take(4) {
@@ -238,8 +420,9 @@ fn main() {
         }
     }
 
-    println!("\n=== SUMMARY ===");
-    println!("Stations checked:   {}", station_dirs.len());
+    eprint!("\r{:80}\r", " "); // clear progress line
+    println!("\n=== SUMMARY ({:.0}s, {:.1}M keys) ===", run_start.elapsed().as_secs_f64(), total_keys as f64 / 1e6);
+    println!("Stations checked:   {}", total);
     println!("Accumulator ranges: {}", checked_ranges);
     println!("Stations affected:  {}", affected_stations);
     println!("RESURRECTED (deleted read as live):  data={}  meta={}", tot_res_data, tot_res_meta);
@@ -248,5 +431,8 @@ fn main() {
         println!("\nNo DATA-key divergence: real H3 coverage reads are clean (metas only, if any).");
     } else {
         println!("\nDATA-key divergence present: real coverage was mis-read by the boundary seek.");
+    }
+    if !deep {
+        println!("(fast mode: DROPPED is boundary-only; run --deep for full under-read magnitude.)");
     }
 }
