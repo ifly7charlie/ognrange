@@ -21,6 +21,9 @@
 //!   --month-only  only check day -> month   (default: both levels)
 //!   --year-only   only check month -> year
 //!   --layer=NAME  only this layer (combined, flarm, ...); default: all
+//!   --period=P    only parents whose file_id starts with P, e.g.
+//!                 --period=2025-01 checks the Jan-2025 month vs its days;
+//!                 --period=2025 checks every 2025 month and the 2025 year.
 //!   --all         print every parent, not just the mismatching ones
 //!   --sample[=P]  randomly sample P% of the station dirs (default 5%); only
 //!                 applies when no station is named. Use for a quick fleet read.
@@ -196,6 +199,10 @@ fn main() {
     let show_all = args.iter().any(|a| a == "--all");
     let layer_filter: Option<String> =
         args.iter().find_map(|a| a.strip_prefix("--layer=").map(|s| s.to_string()));
+    // --period=P: only check parents whose file_id starts with P (e.g. a single
+    // month "2025-01", or a whole year "2025").
+    let period: Option<String> =
+        args.iter().find_map(|a| a.strip_prefix("--period=").map(|s| s.to_string()));
     let limit: Option<usize> =
         args.iter().find_map(|a| a.strip_prefix("--limit=").and_then(|n| n.parse().ok()));
     // --sample / --sample=PCT: random fraction of the fleet (default 5%).
@@ -212,11 +219,12 @@ fn main() {
 
     let base = output_path();
     println!(
-        "OUTPUT_PATH={}  levels={}{}  layer={}",
+        "OUTPUT_PATH={}  levels={}{}  layer={}  period={}",
         base,
         if do_month { "day>month " } else { "" },
         if do_year { "month>year" } else { "" },
         layer_filter.as_deref().unwrap_or("all"),
+        period.as_deref().unwrap_or("all"),
     );
 
     let mut stations: Vec<(String, String)> = Vec::new();
@@ -327,6 +335,11 @@ fn main() {
             let mut parent_ids: Vec<&String> = parents.keys().collect();
             parent_ids.sort();
             for pid in parent_ids {
+                if let Some(ref per) = period {
+                    if !pid.starts_with(per.as_str()) {
+                        continue;
+                    }
+                }
                 // Children whose file_id falls under this parent period.
                 let prefix = child_prefix(pid);
                 let mut kids: Vec<(&String, &String)> = children_idx
