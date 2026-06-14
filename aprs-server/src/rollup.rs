@@ -6,12 +6,20 @@
 //! year-nz (Southern Hemisphere season) accumulators.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use rusty_leveldb::LdbIterator;
 
 /// Global shutdown flag - checked by long-running DB iterations.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Cumulative (written + deleted) records applied to the global DB since the last
+/// full bottom-level compaction. The global DB is a singleton, so a module static
+/// suffices. Drives the gate that decides when compact_range_full is worth running:
+/// routine compaction leaves the bottom level frozen, so dead data accumulates
+/// there in proportion to write volume. Reset to 0 after each full compaction;
+/// resets to 0 on restart (run `compactdb` for an immediate one-off reclaim).
+static GLOBAL_WRITES_SINCE_FULL_COMPACT: AtomicU64 = AtomicU64::new(0);
 
 /// Signal all rollup tasks to stop iterating.
 pub fn request_shutdown() {
@@ -797,19 +805,36 @@ fn rollup_station_all_layers(
         if let Ok(mut p) = progress.lock() {
             p.phase = "compact".to_string();
         }
-        // Log the level structure for the global DB: compact_range only cascades
-        // down to the highest non-empty level among L1..L5, so if L5 is empty here
-        // the L5->L6 merge (the pass that reclaims the bottom level) never runs.
         let fmt_levels = |db: &TrackedDb| -> String {
             db.level_file_sizes().iter()
                 .map(|(l, f, b)| format!("L{}:{}f/{}MB", l, f, b / 1_000_000))
                 .collect::<Vec<_>>().join(" ")
         };
+        // Routine compaction (compact_range) only tidies the upper levels and
+        // leaves the global DB's bottom level frozen, so superseded versions and
+        // tombstones accumulate there. Once enough writes have piled up, run the
+        // expensive compact_range_full pass that cascades to the bottom level and
+        // reclaims them (see GLOBAL_FULL_COMPACT_WRITE_THRESHOLD). Per-station DBs
+        // are small and always take the routine path.
+        let threshold = *crate::config::GLOBAL_FULL_COMPACT_WRITE_THRESHOLD;
+        let full_compact = is_global && threshold > 0 && {
+            let written = (total_stats.records_written + total_stats.records_deleted) as u64;
+            let prior = GLOBAL_WRITES_SINCE_FULL_COMPACT.fetch_add(written, Ordering::Relaxed);
+            prior + written >= threshold
+        };
         if is_global {
-            info!("{}: pre-compact levels: {}", station_name, fmt_levels(&db));
+            info!("{}: pre-compact levels: {}{}", station_name, fmt_levels(&db),
+                if full_compact { " [FULL bottom-level reclaim]" } else { "" });
         }
         let compact_start = std::time::Instant::now();
-        db.compact_range(b"!", b"~").map_err(|e| format!("compact failed for {}: {}", station_name, e))?;
+        if full_compact {
+            db.compact_range_full(b"!", b"~")
+                .map_err(|e| format!("full compact failed for {}: {}", station_name, e))?;
+            GLOBAL_WRITES_SINCE_FULL_COMPACT.store(0, Ordering::Relaxed);
+        } else {
+            db.compact_range(b"!", b"~")
+                .map_err(|e| format!("compact failed for {}: {}", station_name, e))?;
+        }
         db.flush().map_err(|e| format!("flush after compact failed for {}: {}", station_name, e))?;
         compact_elapsed = compact_start.elapsed();
         if is_global {
