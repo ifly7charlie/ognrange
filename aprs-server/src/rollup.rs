@@ -1736,6 +1736,36 @@ fn write_arrow_file(
         }
         writer.finish().map_err(|e| format!("Finish error: {}", e))?;
     }
+
+    // Shrink guard: accumulator outputs are monotonic - day/month/year files
+    // only ever gain coverage, so a replacement smaller than what is already on
+    // disk can only be a partial/orphaned rollup clobbering a complete file
+    // (e.g. a hanging current drained into an already-closed period). Refuse the
+    // swap, keep the larger existing file, and skip the uncompressed twin too so
+    // the two stay in sync. (The one legitimate shrink - global station-validity
+    // cleanup - is intentionally blocked by this invariant.)
+    if let Ok(existing) = std::fs::metadata(&gz_final) {
+        let new_size = std::fs::metadata(&gz_working).map(|m| m.len()).unwrap_or(0);
+        if new_size < existing.len() {
+            // Keep the rejected partial on disk (as .rejected.<epoch>, not
+            // .working which the next write truncates, and timestamped so repeat
+            // rejections don't clobber each other) for inspection/recovery.
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let rejected = format!("{}/{}.arrow.gz.rejected.{}", output_dir, base_name, ts);
+            let kept = std::fs::rename(&gz_working, &rejected).is_ok();
+            warn!(
+                "{}: REFUSING arrow shrink {}.arrow.gz: new {} bytes < existing {} bytes \
+                 (partial/orphaned rollup?) - keeping existing file{}",
+                station_name, base_name, new_size, existing.len(),
+                if kept { ", partial saved as .rejected" } else { "" }
+            );
+            return Ok(());
+        }
+    }
+
     std::fs::rename(&gz_working, &gz_final)
         .map_err(|e| format!("Rename error: {}", e))?;
 

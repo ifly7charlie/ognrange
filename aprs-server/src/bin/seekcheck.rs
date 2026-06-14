@@ -34,6 +34,9 @@
 //! Progress (station counter, rate, ETA, key count) prints to stderr; results
 //! go to stdout.
 
+// Shared modules included via #[path]; suppress dead-code/unused noise.
+#![allow(unused)]
+
 #[path = "../accumulators.rs"] mod accumulators;
 #[path = "../config.rs"] mod config;
 #[path = "../coverage/mod.rs"] mod coverage;

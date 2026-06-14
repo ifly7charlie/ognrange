@@ -459,6 +459,47 @@ impl CoverageRecord {
         }
     }
 
+    /// Reconstruct a Station record from an exported station Arrow row.
+    ///
+    /// Used by offline rebuild tooling to recover a higher-level accumulator
+    /// from the per-station Arrow outputs. `count` and the altitude fields are
+    /// recovered exactly; the per-observation signal/crc/gap *sums* are derived
+    /// back out of the u8-quantised averages (`avg_sig=(sum_sig/count)*4`, etc.)
+    /// so they carry the averages' rounding error. Good enough for coverage and
+    /// station-attribution; the signal-quality fields are approximate.
+    pub fn station_from_arrow(r: &ArrowStation) -> CoverageRecord {
+        let c = r.count;
+        CoverageRecord {
+            inner: RecordKind::Station(ObservationData {
+                min_alt_max_sig: r.min_alt_sig,
+                max_sig: r.max_sig,
+                count: c,
+                sum_sig: (r.avg_sig as u32 * c) / 4,
+                sum_crc: (r.avg_crc as u32 * c) / 10,
+                sum_gap: (r.avg_gap as u32 * c) / 4,
+                min_alt_agl: r.min_agl,
+                min_alt: r.min_alt,
+            }),
+        }
+    }
+
+    /// Wrap a Station record as a single-station Global record, so per-station
+    /// contributions to one global cell can be combined with `rollup`. The
+    /// summary is recomputed from the nested stations on each merge, so the
+    /// initial summary here is correct for the single-station case too.
+    pub fn global_single(station_id: u16, station: &CoverageRecord) -> CoverageRecord {
+        let data = match &station.inner {
+            RecordKind::Station(d) => *d,
+            RecordKind::Global { summary, .. } => *summary,
+        };
+        CoverageRecord {
+            inner: RecordKind::Global {
+                summary: data,
+                stations: vec![NestedStation { station_id, data }],
+            },
+        }
+    }
+
     /// Remove stations not in the valid set. Returns None if no stations remain.
     pub fn remove_invalid_stations(
         &self,

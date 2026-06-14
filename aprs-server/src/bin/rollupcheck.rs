@@ -9,9 +9,13 @@
 //! that month, and a year snapshot the merge of every month in that year.
 //! This tool sums the per-H3 `count` of the children and diffs it against the
 //! parent. The interesting direction is CHILD-EXCESS (children hold more than
-//! the parent) -> the parent under-counted, the signature of a dropped-read in
-//! the rollup. PARENT-EXCESS (parent holds more) is usually benign: old child
-//! files get pruned, so the children are simply incomplete.
+//! the parent) -> the parent under-counted (lost coverage), the signature of a
+//! dropped-read. PARENT-EXCESS (parent holds more) means the parent has coverage
+//! no child does -- benign ONLY if old child files were pruned; if nothing is
+//! ever pruned a missing day file means that day had zero traffic, so the day
+//! files are the complete set and a closed month must equal their exact sum --
+//! making a parent-excess a real inconsistency too (e.g. a resurrected /
+//! over-read cell merged into the parent).
 //!
 //! Only the primary packet `count` per H3 cell is compared (not the signal /
 //! altitude aggregates, and not the global station map).
@@ -34,6 +38,8 @@
 //! (the absolute per-H3 count difference as a fraction of the parent's total),
 //! so the worst offenders float to the top. Progress prints to stderr; results
 //! to stdout. Read-only: opens no DB and writes nothing.
+
+#![allow(unused)]
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -442,13 +448,14 @@ fn main() {
     println!("\n=== ROLLUP-CHECK SUMMARY ({:.0}s) ===", run_start.elapsed().as_secs_f64());
     println!("Stations checked:            {}", total);
     println!("Stations with any mismatch:  {}", stations_with_mismatch);
-    println!("Suspicious parents (!!):     {}  (children hold coverage the parent dropped)", suspicious_parents);
+    println!("Under-counted parents (!!):  {}  (month MISSING coverage its days hold -> lost data)", suspicious_parents);
     println!("  total child-excess count:  {}", tot_child_excess);
     println!("  total child-only cells:    {}", tot_child_only);
-    println!("Benign parents (parent>=children, likely pruned children): {}", benign_parents);
-    if suspicious_parents == 0 {
-        println!("\nNo parent under-counts its children: rollup aggregation is consistent.");
+    println!("Over-counted parents:        {}  (month has MORE than its days -> phantom/over-read,", benign_parents);
+    println!("                                 or pruned day files if your deployment prunes)");
+    if suspicious_parents == 0 && benign_parents == 0 {
+        println!("\nEvery parent equals the sum of its children: rollup aggregation is consistent.");
     } else {
-        println!("\nSuspicious parents found: a parent snapshot is missing coverage its own children still hold.");
+        println!("\nParent != sum(children). With no day-file pruning, every closed-period mismatch is a real rollup inconsistency.");
     }
 }
