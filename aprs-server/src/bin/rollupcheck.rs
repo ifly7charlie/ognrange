@@ -177,9 +177,10 @@ fn compare(parent: &HashMap<(u32, u32), u64>, child: &HashMap<(u32, u32), u64>) 
             }
         }
     }
-    for k in parent.keys() {
+    for (k, &pv) in parent {
         if !child.contains_key(k) {
             parent_only += 1;
+            parent_excess += pv; // whole-cell deficit: parent has it, no child does
         }
     }
     (child_only, parent_only, child_excess, parent_excess)
