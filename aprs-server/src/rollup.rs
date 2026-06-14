@@ -70,8 +70,10 @@ use arrow::array::{
     ArrayRef, StringArray, UInt16Array, UInt32Array, UInt8Array,
 };
 use arrow::datatypes::{DataType, Field, Schema};
+use arrow::ipc::reader::StreamReader;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
+use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use tracing::{error, info, warn};
@@ -1696,8 +1698,9 @@ fn write_arrow_station(
     let batch = RecordBatch::try_new(schema.clone(), columns)
         .map_err(|e| format!("RecordBatch error: {}", e))?;
 
-    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch])?;
-    Ok(rows.len())
+    // Returns the row count actually on disk (existing count if the shrink guard
+    // kept a larger file), not necessarily rows.len().
+    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch])
 }
 
 fn write_arrow_global(
@@ -1732,8 +1735,24 @@ fn write_arrow_global(
     let batch = RecordBatch::try_new(schema.clone(), columns)
         .map_err(|e| format!("RecordBatch error: {}", e))?;
 
-    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch])?;
-    Ok(rows.len())
+    // Returns the row count actually on disk (existing count if the shrink guard
+    // kept a larger file), not necessarily rows.len().
+    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch])
+}
+
+/// Count rows (H3 cells) in an existing Arrow.gz, for the shrink guard.
+/// Returns None if the file is absent or unreadable - in which case the guard
+/// is skipped and the new file is written unconditionally (a corrupt existing
+/// file should never block a fresh write).
+fn count_arrow_rows(gz_path: &str) -> Option<usize> {
+    let file = std::fs::File::open(gz_path).ok()?;
+    let reader =
+        StreamReader::try_new(GzDecoder::new(std::io::BufReader::new(file)), None).ok()?;
+    let mut n = 0;
+    for batch in reader {
+        n += batch.ok()?.num_rows();
+    }
+    Some(n)
 }
 
 fn write_arrow_file(
@@ -1744,7 +1763,7 @@ fn write_arrow_file(
     layer_suffix: &str,
     schema: &std::sync::Arc<Schema>,
     batches: &[RecordBatch],
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let base_name = format!("{}.{}.{}{}", station_name, acc_type, file_id, layer_suffix);
 
     // Write gzip-compressed .arrow.gz
@@ -1763,31 +1782,42 @@ fn write_arrow_file(
     }
 
     // Shrink guard: accumulator outputs are monotonic - day/month/year files
-    // only ever gain coverage, so a replacement smaller than what is already on
-    // disk can only be a partial/orphaned rollup clobbering a complete file
-    // (e.g. a hanging current drained into an already-closed period). Refuse the
-    // swap, keep the larger existing file, and skip the uncompressed twin too so
-    // the two stay in sync. (The one legitimate shrink - global station-validity
-    // cleanup - is intentionally blocked by this invariant.)
-    if let Ok(existing) = std::fs::metadata(&gz_final) {
-        let new_size = std::fs::metadata(&gz_working).map(|m| m.len()).unwrap_or(0);
-        if new_size < existing.len() {
-            // Keep the rejected partial on disk (as .rejected.<epoch>, not
-            // .working which the next write truncates, and timestamped so repeat
-            // rejections don't clobber each other) for inspection/recovery.
+    // only ever gain coverage (H3 cells), so a replacement with FEWER rows than
+    // what is already on disk can only be a partial/orphaned rollup clobbering a
+    // complete file (e.g. a hanging current drained into an already-closed
+    // period). Refuse the swap, keep the existing file, and skip the
+    // uncompressed twin too so the two stay in sync. (The one legitimate shrink
+    // - global station-validity cleanup - is intentionally blocked by this
+    // invariant.)
+    //
+    // The measure is row count, NOT compressed byte size: gzipped arrow output
+    // is not monotonic with content - the same set of cells with larger counts
+    // can encode a few bytes smaller, which made the old byte-size guard reject
+    // legitimate same-coverage updates as false positives.
+    let new_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    if let Some(existing_rows) = count_arrow_rows(&gz_final) {
+        if new_rows < existing_rows {
+            // Keep the rejected partial on disk for inspection/recovery. Name it
+            // {base}.rejected.<epoch>.arrow.gz (NOT .arrow.gz.rejected.<epoch>)
+            // so it keeps the .arrow.gz extension and opens directly with
+            // dumparrow; timestamped so repeat rejections don't clobber each
+            // other, and not .working (which the next write truncates).
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let rejected = format!("{}/{}.arrow.gz.rejected.{}", output_dir, base_name, ts);
+            let rejected = format!("{}/{}.rejected.{}.arrow.gz", output_dir, base_name, ts);
             let kept = std::fs::rename(&gz_working, &rejected).is_ok();
             warn!(
-                "{}: REFUSING arrow shrink {}.arrow.gz: new {} bytes < existing {} bytes \
+                "{}: REFUSING arrow shrink {}.arrow.gz: new {} rows < existing {} rows \
                  (partial/orphaned rollup?) - keeping existing file{}",
-                station_name, base_name, new_size, existing.len(),
+                station_name, base_name, new_rows, existing_rows,
                 if kept { ", partial saved as .rejected" } else { "" }
             );
-            return Ok(());
+            // Report the count that is actually on disk (the kept file) so stats
+            // and the metadata sidecar stay consistent with it - NOT new_rows,
+            // which would describe the partial we just refused.
+            return Ok(existing_rows);
         }
     }
 
@@ -1823,7 +1853,7 @@ fn write_arrow_file(
         );
     }
 
-    Ok(())
+    Ok(new_rows)
 }
 
 // NOTE: changes to output fields must be reflected in docs/STATIONS.md and docs/STATION.md
