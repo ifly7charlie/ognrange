@@ -1870,8 +1870,7 @@ fn write_station_json(
     let day_file = &accumulators.day.file;
     let base_name = format!("{}.day.{}", station_name, day_file);
     let json_path = format!("{}/{}.json", output_dir, base_name);
-    if let Err(e) = std::fs::write(&json_path, &json_str) {
-        error!("Failed to write station JSON {}: {}", json_path, e);
+    if !crate::json_io::write_atomic_path(&json_path, &json_str) {
         return;
     }
 
@@ -1911,9 +1910,7 @@ fn write_metadata_json(
 
     let base_name = format!("{}.{}.{}{}", station_name, acc_type, file_id, layer_suffix);
     let json_path = format!("{}/{}.json", output_dir, base_name);
-    if let Err(e) = std::fs::write(&json_path, serde_json::to_string_pretty(&meta).unwrap_or_default()) {
-        error!("Failed to write metadata {}: {}", json_path, e);
-    }
+    crate::json_io::write_atomic_path(&json_path, &serde_json::to_string_pretty(&meta).unwrap_or_default());
 
     // Symlink for latest
     symlink_atomic(

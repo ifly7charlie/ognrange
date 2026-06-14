@@ -387,6 +387,37 @@ fn station_id_sidecar(base: &str, name: &str) -> Option<u16> {
     v.get("id")?.as_u64().map(|n| n as u16)
 }
 
+/// Resolve a station's id from its own period JSON - the id as it was when the
+/// Arrow was written, and guaranteed to exist alongside it. Only the combined
+/// per-day station JSON (`{station}.day.{date}.json`, no layer suffix) carries
+/// `id`; per-layer metadata JSONs do not. Prefer a date matching `period_prefix`
+/// (the rebuild period, e.g. "2026-05" or "2026-05-31"), else any day JSON, else
+/// the bare `{station}.json`.
+fn id_from_dir(dir: &str, station: &str, period_prefix: &str) -> Option<u16> {
+    let pre = format!("{}.day.", station);
+    let (mut exact, mut any): (Option<String>, Option<String>) = (None, None);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let fname = e.file_name();
+            let Some(fname) = fname.to_str() else { continue };
+            let Some(date) = fname.strip_prefix(&pre).and_then(|s| s.strip_suffix(".json")) else { continue };
+            if date.contains('.') {
+                continue; // layer-suffixed metadata JSON: carries no id
+            }
+            let path = e.path().to_string_lossy().to_string();
+            if date.starts_with(period_prefix) {
+                exact = Some(path);
+                break;
+            }
+            any.get_or_insert(path);
+        }
+    }
+    let path = exact.or(any).unwrap_or_else(|| format!("{}/{}.json", dir, station));
+    let txt = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    v.get("id")?.as_u64().map(|n| n as u16)
+}
+
 fn list_station_dirs(base: &str) -> Vec<String> {
     let mut v = Vec::new();
     if let Ok(entries) = std::fs::read_dir(base) {
@@ -499,15 +530,19 @@ fn main() {
                         eprint!("\r  {} layer {}: {}/{} stations", mode, layer, i, stations.len());
                         let _ = std::io::stderr().flush();
                     }
-                    let id = id_map.get(name).copied()
-                        .or_else(|| id_map.get(&name.to_uppercase()).copied())
-                        .or_else(|| station_id_sidecar(&base, name));
-                    let Some(id) = id else { missing_id += 1; continue };
                     let dir = format!("{}{}", base, name);
                     let files = matching_files(&dir, src_acc, &layer, &fid_ok);
                     if files.is_empty() {
-                        continue;
+                        continue; // station has no data for this period/layer
                     }
+                    // Prefer the station's own period JSON (the id as it was when
+                    // the Arrow was written, and guaranteed present alongside it);
+                    // fall back to the registry, then the bare sidecar.
+                    let id = id_from_dir(&dir, name, period)
+                        .or_else(|| id_map.get(name).copied())
+                        .or_else(|| id_map.get(&name.to_uppercase()).copied())
+                        .or_else(|| station_id_sidecar(&base, name));
+                    let Some(id) = id else { missing_id += 1; continue };
                     used_stations += 1;
                     for f in &files {
                         if let Some(rows) = read_station_file(f) {

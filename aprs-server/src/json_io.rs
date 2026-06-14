@@ -21,6 +21,24 @@ pub fn write_atomic(dir: &str, filename: &str, content: &str) {
     }
 }
 
+/// Atomic write to a full path (`.working` temp + rename). Returns whether the
+/// file was durably installed. Use when the final path is already built.
+pub fn write_atomic_path(path: &str, content: &str) -> bool {
+    let working = format!("{}.working", path);
+    if let Err(e) = std::fs::write(&working, content.as_bytes()) {
+        error!("Failed to write {}: {}", working, e);
+        return false;
+    }
+    match std::fs::rename(&working, path) {
+        Ok(()) => true,
+        Err(e) => {
+            error!("Failed to rename {} -> {}: {}", working, path, e);
+            let _ = std::fs::remove_file(&working);
+            false
+        }
+    }
+}
+
 /// Write gzip-compressed content atomically via a `.working` temp file + rename.
 pub fn write_gz_atomic(dir: &str, filename: &str, content: &str) {
     let working = format!("{}/{}.working", dir, filename);

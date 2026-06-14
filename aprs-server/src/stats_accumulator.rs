@@ -160,9 +160,7 @@ impl<T: DailyStatsData> DailyAccumulator<T> {
             "data": data_val,
         });
         let json = serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string());
-        if let Err(e) = std::fs::write(state_path, json.as_bytes()) {
-            error!("Failed to write DailyAccumulator state to {}: {}", state_path, e);
-        }
+        crate::json_io::write_atomic_path(state_path, &json);
     }
 }
 

@@ -390,9 +390,7 @@ impl ProtocolStats {
         let inner = self.inner.lock().unwrap();
         let state_json = build_state_json(&inner);
         let state_path = format!("{}stats/protocol-stats.state.json", *OUTPUT_PATH);
-        if let Err(e) = std::fs::write(&state_path, state_json.as_bytes()) {
-            error!("Failed to write protocol stats state: {}", e);
-        }
+        crate::json_io::write_atomic_path(&state_path, &state_json);
     }
 }
 
