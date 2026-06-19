@@ -1166,6 +1166,19 @@ fn rollup_current_buckets(
                     buckets_desc.join(",")
                 );
             }
+            // Purge retired destination accumulators (e.g. yesterday's day
+            // bucket on day rotation) even when the current period had no
+            // traffic.  Only the active group owns this responsibility - hang
+            // groups never carry retired_accumulators.  The startup path is
+            // unaffected: it passes active=None so has_active is never true,
+            // and it passes retired_accumulators=&[] anyway.
+            if group.has_active {
+                for (acc_type, old_bucket) in retired_accumulators {
+                    let (start, end) =
+                        CoverageHeader::db_search_range_with_meta(*acc_type, *old_bucket, layer);
+                    db::delete_range(db, &start, &end);
+                }
+            }
             continue;
         }
 
@@ -1188,7 +1201,9 @@ fn rollup_current_buckets(
             period_end: Epoch(period_end),
         };
 
-        // Retired-accumulator purging belongs to the live rotation only
+        // Retired-accumulator purging belongs to the live rotation, not hang
+        // groups - but must happen even when the current period had no records
+        // (handled above in the empty-records path).
         let retired = if group.has_active { retired_accumulators } else { &[] };
 
         let group_t0 = std::time::Instant::now();
