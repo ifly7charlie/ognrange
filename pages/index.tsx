@@ -68,12 +68,10 @@ export default function CombinePage(props) {
     const file = params.get('file')?.toString();
     const dateStart = params.get('dateStart') || file || 'year';
     const dateEnd = params.get('dateEnd') || file || 'year';
-    const dateRange = {start: dateStart, end: dateEnd};
     const layersParam = params.get('layers') || 'combined';
-    const layers = layersParam
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
+    // Memoize to avoid invalidating FileSelector's expensive useMemo on every pan/zoom re-render
+    const dateRange = useMemo(() => ({start: dateStart, end: dateEnd}), [dateStart, dateEnd]);
+    const layers = useMemo(() => layersParam.split(',').map((s) => s.trim()).filter(Boolean), [layersParam]);
     const urlH3 = params.get('h3')?.toString();
 
     // What the map is looking at
