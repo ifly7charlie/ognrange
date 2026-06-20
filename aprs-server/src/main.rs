@@ -170,6 +170,10 @@ async fn main() {
     let state_clone = state.clone();
     let rollup_timer_handle = tokio::spawn(rollup_timer(state_clone));
 
+    // Spawn status writer (server stats + per-station JSON, independent of rollup)
+    let state_clone = state.clone();
+    let status_writer_handle = tokio::spawn(status_writer(state_clone));
+
     // Wait for shutdown signal
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -185,6 +189,7 @@ async fn main() {
     processor.abort();
     periodic.abort();
     rollup_timer_handle.abort();
+    status_writer_handle.abort();
 
     // Wait for any in-flight spawn_blocking DB writes to complete
     let _flush_guard = state.flush_lock.lock().await;
@@ -846,6 +851,31 @@ async fn periodic_tasks(state: Arc<AppState>) {
 
 /// Rollup timer: triggers accumulator rotation at period boundaries.
 /// Acquires flush_lock to flush all cached H3 data, then rolls up.
+/// Write server-level stats files and per-station status JSONs on a timer
+/// independent of rollup. Keeps the frontend up-to-date between long rollup
+/// periods without the cost of a full accumulator swap + Arrow aggregation.
+async fn status_writer(state: Arc<AppState>) {
+    let period = Duration::from_secs((*STATUS_WRITE_PERIOD_MINUTES * 60.0) as u64).max(Duration::from_secs(60));
+    let mut interval = tokio::time::interval(period);
+    interval.tick().await; // skip first tick so startup rollup goes first
+
+    loop {
+        interval.tick().await;
+
+        let acc = state.accumulators.read().await.clone();
+
+        // Write server-level stats. Passing acc for both old and new means
+        // bucket == new_bucket everywhere, so no accumulator resets fire -
+        // this is a pure snapshot write.
+        state.protocol_stats.write_stats(&acc, &acc);
+        state.global_stats.write_and_maybe_reset(&acc, &acc);
+        state.global_uptime.write_snapshot(&acc.day.file);
+
+        // Write per-station status JSONs from live in-memory data
+        state.station_manager.write_status_snapshots(&acc);
+    }
+}
+
 async fn rollup_timer(state: Arc<AppState>) {
     let mut last_hourly_write: i64 = chrono::Utc::now().timestamp() / 3600;
     loop {

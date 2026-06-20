@@ -11,7 +11,7 @@ use std::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::bitvec::{bitvec_to_hex, hex_to_bitvec, slot_from_timestamp};
-use crate::config::{DB_PATH, STATION_MOVE_THRESHOLD_KM};
+use crate::config::{DB_PATH, OUTPUT_PATH, STATION_MOVE_THRESHOLD_KM};
 use crate::db::TrackedDb;
 use crate::types::{Epoch, StationId, StationName};
 
@@ -556,6 +556,87 @@ impl StationManager {
     /// Get all station details
     pub fn all_stations(&self) -> Vec<StationDetails> {
         self.stations.read().unwrap().values().cloned().collect()
+    }
+
+    /// Write live-status JSON for every active station without triggering a rollup.
+    ///
+    /// Writes the same `{name}.day.{date}.json` format as rollup, but sources all
+    /// data from in-memory `StationDetails`. Rollup-derived fields (`arrowRecords`,
+    /// `activity`) are preserved by reading the existing JSON file if one exists.
+    /// Call this on a timer shorter than `ROLLUP_PERIOD_MINUTES` so the frontend
+    /// sees fresh timestamps and uptime percentages between rollups.
+    pub fn write_status_snapshots(&self, accumulators: &crate::accumulators::Accumulators) {
+        use chrono::{Datelike, Timelike, Utc};
+        use crate::symlinks::create_accumulator_symlinks;
+
+        let now = Utc::now();
+        let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
+        let current_slot = now.hour() * 6 + now.minute() / 10 + 1;
+        let day_file = &accumulators.day.file;
+        let now_epoch = now.timestamp() as u64;
+        let output_path = &**OUTPUT_PATH;
+
+        let stations = self.stations.read().unwrap();
+        let mut count = 0usize;
+
+        for (name, meta) in stations.iter() {
+            if meta.last_packet.is_none() || name.as_str() == "global" {
+                continue;
+            }
+
+            let uptime = crate::bitvec::compute_uptime(
+                &meta.beacon_activity,
+                &meta.beacon_activity_date,
+                &today,
+                current_slot,
+            );
+
+            let mut json = match serde_json::to_value(meta) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("status snapshot serialize error for {}: {}", name, e);
+                    continue;
+                }
+            };
+
+            let obj = json.as_object_mut().unwrap();
+            obj.insert("uptime".to_string(), serde_json::json!(uptime));
+            obj.insert("exportedAt".to_string(), serde_json::json!(now_epoch));
+
+            // Preserve rollup-derived fields from the most recently written station JSON.
+            // Reading the symlink target gives us arrowRecords and activity from the
+            // last rollup without needing to recompute them here.
+            let station_dir = format!("{}{}", output_path, name.as_str());
+            let existing_path = format!("{}/{}.json", station_dir, name.as_str());
+            if let Ok(existing_str) = std::fs::read_to_string(&existing_path) {
+                if let Ok(existing) = serde_json::from_str::<serde_json::Value>(&existing_str) {
+                    for key in &["arrowRecords", "activity"] {
+                        if let Some(v) = existing.get(*key) {
+                            obj.insert(key.to_string(), v.clone());
+                        }
+                    }
+                }
+            }
+
+            let json_str = match serde_json::to_string_pretty(&json) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("status snapshot format error for {}: {}", name, e);
+                    continue;
+                }
+            };
+
+            let _ = std::fs::create_dir_all(&station_dir);
+            let base_name = format!("{}.day.{}", name.as_str(), day_file);
+            let json_path = format!("{}/{}.json", station_dir, base_name);
+            if crate::json_io::write_atomic_path(&json_path, &json_str) {
+                let target = format!("{}.json", base_name);
+                create_accumulator_symlinks(&station_dir, name.as_str(), "json", accumulators, &target, true);
+                count += 1;
+            }
+        }
+
+        info!("Wrote status snapshots for {} stations", count);
     }
 
     /// All stations with global first (id=0), matching TypeScript's allStationsDetails({includeGlobal: true})

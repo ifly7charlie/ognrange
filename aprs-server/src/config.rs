@@ -106,6 +106,11 @@ pub static MAX_SIMULTANEOUS_ROLLUPS: Lazy<usize> = Lazy::new(|| {
     configured.min(*MAX_STATION_DBS / 2)
 });
 
+// How often to write server/station status files for the frontend, independent of rollup.
+// Set lower than ROLLUP_PERIOD_HOURS when you want fresher status without more frequent rollups.
+pub static STATUS_WRITE_PERIOD_MINUTES: Lazy<f64> =
+    Lazy::new(|| env_parse::<f64>("STATUS_WRITE_PERIOD_MINUTES", 60.0));
+
 // H3 cell levels - DO NOT CHANGE without resetting all data
 pub static H3_STATION_CELL_LEVEL: Lazy<u8> = Lazy::new(|| env_parse("H3_STATION_CELL_LEVEL", 8));
 pub static H3_GLOBAL_CELL_LEVEL: Lazy<u8> = Lazy::new(|| env_parse("H3_GLOBAL_CELL_LEVEL", 7));
