@@ -24,7 +24,6 @@ import {
     zip as _zip,
     keyBy as _keyby,
     filter as _filter,
-    indexOf as _indexOf,
     debounce as _debounce,
     isEqual as _isEqual
 } from 'lodash';
@@ -40,7 +39,7 @@ const altitudeFunctions = {
     minAgl: (f) => f.g
 };
 
-import {useStationListMeta, StationMeta} from './stationmeta';
+import {useStationListMeta, useStationMeta, StationMeta} from './stationmeta';
 import {useDisplayedH3s} from './displayedh3s';
 import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
 
@@ -248,6 +247,7 @@ export function CoverageMap(props: {
     dockSplit: number | string;
 }) {
     const stationMeta = useStationListMeta();
+    const flyToStationMeta = useStationMeta(props.flyToStation ?? '');
     const displayedh3s = useDisplayedH3s();
     const router = useRouter();
     const params = useSearchParams();
@@ -302,14 +302,13 @@ export function CoverageMap(props: {
     // Focus any selected station, but only if it's not a fresh page load
     // flyToStation is a useState and props.station is from the URL
     useEffect(() => {
-        if (stationMeta && props.station === props.flyToStation) {
-            const metaIndex = _indexOf(stationMeta.name, props.flyToStation);
-            if (mapRef?.current && metaIndex != -1) {
-                mapRef.current.getMap().flyTo({center: [stationMeta.lng[metaIndex], stationMeta.lat[metaIndex]]});
-                props.setViewport({latitude: stationMeta.lat[metaIndex], longitude: stationMeta.lng[metaIndex]});
+        if (props.station === props.flyToStation && flyToStationMeta) {
+            if (mapRef?.current) {
+                mapRef.current.getMap().flyTo({center: [flyToStationMeta.lng, flyToStationMeta.lat]});
+                props.setViewport({latitude: flyToStationMeta.lat, longitude: flyToStationMeta.lng});
             }
         }
-    }, [props.station, props.flyToStation, stationMeta, mapRef.current]);
+    }, [props.station, props.flyToStation, flyToStationMeta, mapRef.current]);
 
     const colourMaps = useMemo(() => {
         const f = router.query.fromColour || defaultFromColour;
