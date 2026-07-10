@@ -182,54 +182,54 @@ async fn await_with_warnings<T>(
     }
 }
 
-/// Perform a full rollup: merge current → day/month/year/yearnz.
-/// Caller must flush the H3 cache before calling this.
-pub async fn rollup_all(
-    storage: &Storage,
+/// Result of the station expiry/move evaluation at the start of a rollup.
+struct StationValidity {
+    /// Genuinely valid stations (fresh, not moved) - the source of the
+    /// persisted per-station `valid` flag.
+    valid: HashSet<StationId>,
+    /// Set used for rollup gating and global-record filtering: equals `valid`
+    /// unless the safety valve fired, in which case every station is included
+    /// so a mass event can't drop coverage.
+    rollup_valid: HashSet<StationId>,
+    /// Stations transitioning valid→invalid THIS rollup, whose databases will
+    /// be purged. Already-invalid stations (from previous rollups) are excluded
+    /// so a single new expiry doesn't sweep up a large backlog of orphaned
+    /// databases. Cleared when the safety valve fires.
+    newly_invalid: HashSet<StationId>,
+    /// Bouncing stations whose move was confirmed this rollup.
+    confirmed_moves: HashSet<StationId>,
+    /// Whether any purging (expiry or move) may happen this cycle.
+    need_purge: bool,
+    invalid_count: usize,
+    moved_count: usize,
+}
+
+/// Evaluate station expiry and confirmed moves, persist updated `valid` flags
+/// to the station manager, and decide what may be purged this rollup.
+///
+/// The >2% safety valve protects against mass events (clock skew, long
+/// downtime, migrated station DB): it blocks database purging and keeps every
+/// station in `rollup_valid` so no coverage is removed that cycle. The
+/// persisted `valid` flag is deliberately NOT protected by the valve - it
+/// always reflects real expiry so dead stations drop out of the exported
+/// station list, and unlike purging it is reversible: a false alarm flips
+/// back to valid on the next rollup.
+fn evaluate_station_validity(
     station_manager: &StationManager,
-    old_accumulators: &Accumulators,
-    new_accumulators: Option<&Accumulators>,
-    write_json: bool,
-) -> RollupStats {
-    // Defense in depth: the rollup timer is strictly sequential and checks
-    // rollup_in_progress() before swapping accumulators, so this should never
-    // fire - but if a second entry point ever appears, skip rather than overlap.
-    let Some(_rollup_guard) = RollupGuard::try_acquire() else {
-        warn!("rollup already in progress - skipping this rollup cycle");
-        return RollupStats::default();
-    };
-
-    let start = std::time::Instant::now();
-
-    info!("--------[ accumulator rotation ]--------");
-    let (old_text, old_files) = old_accumulators.describe();
-    if let Some(new_acc) = new_accumulators {
-        let (new_text, new_files) = new_acc.describe();
-        info!("{}/{} => {}/{}", old_text, old_files, new_text, new_files);
-    }
-
-    // --- Station expiry check ---
-    let now_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32;
+    all_station_details: &[StationDetails],
+    now_epoch: u32,
+) -> StationValidity {
     let expiry_epoch = now_epoch.saturating_sub(*STATION_EXPIRY_TIME_SECS as u32);
+    let move_confirm_secs = *crate::config::STATION_MOVE_CONFIRM_SECS as u32;
 
-    let all_station_details = station_manager.all_stations_with_global();
-    let mut valid_stations: HashSet<StationId> = HashSet::new();
+    let mut valid: HashSet<StationId> = HashSet::new();
+    let mut newly_invalid: HashSet<StationId> = HashSet::new();
+    let mut confirmed_moves: HashSet<StationId> = HashSet::new();
     let mut invalid_count = 0usize;
     let mut moved_count = 0usize;
     let mut need_purge = false;
-    let mut confirmed_moves: HashSet<StationId> = HashSet::new();
-    // Tracks stations transitioning valid→invalid THIS rollup.
-    // Only these get their databases purged - already-invalid stations (from
-    // previous rollups) are excluded so a single new expiry doesn't sweep up
-    // a large backlog of orphaned databases.
-    let mut newly_invalid: HashSet<StationId> = HashSet::new();
 
-    let move_confirm_secs = *crate::config::STATION_MOVE_CONFIRM_SECS as u32;
-
-    for station in &all_station_details {
+    for station in all_station_details {
         let was_valid = station.valid;
         let validity_ts = station
             .last_packet
@@ -272,7 +272,7 @@ pub async fn rollup_all(
                 station_manager.update(&updated);
             }
         } else if validity_ts > expiry_epoch {
-            valid_stations.insert(station.id);
+            valid.insert(station.id);
         } else if was_valid {
             invalid_count += 1;
             newly_invalid.insert(station.id);
@@ -284,34 +284,36 @@ pub async fn rollup_all(
                     .unwrap_or_else(|| validity_ts.to_string())
             );
         }
-        // already-invalid stations are left out of valid_stations (correct for
-        // global rollup filtering) and are NOT added to newly_invalid, so they
-        // won't have their databases purged just because need_purge is set by
-        // a different station expiring.
+        // already-invalid stations are left out of `valid` (correct for global
+        // rollup filtering) and are NOT added to newly_invalid, so they won't
+        // have their databases purged just because need_purge is set by a
+        // different station expiring.
     }
 
-    // Safety: if >2% of stations became invalid, don't purge data (something is wrong).
-    // Add all back to valid_stations so global rollup keeps their coverage, and clear
-    // newly_invalid so their metadata is NOT updated - they'll be re-evaluated next rollup
-    // instead of being permanently orphaned with valid=false but intact databases.
-    if invalid_count as f64 / (valid_stations.len().max(1) as f64) > 0.02 {
+    // Safety valve: on a mass-expiry cycle keep every station's coverage and
+    // purge nothing. Previously the valve also forced the persisted valid flag
+    // to true for everyone, so a backlog of >2% dead stations (e.g. inherited
+    // from a migrated station DB) could never expire and stayed "active" in
+    // the exported station list forever.
+    let mut rollup_valid = valid.clone();
+    if invalid_count as f64 / (valid.len().max(1) as f64) > 0.02 {
         warn!(
             "Too many invalid stations ({}), not purging any",
             invalid_count
         );
-        for station in &all_station_details {
-            valid_stations.insert(station.id);
+        for station in all_station_details {
+            rollup_valid.insert(station.id);
         }
         newly_invalid.clear();
     } else {
         need_purge = invalid_count > 0 || moved_count > 0;
     }
 
-    // Update station validity in the station manager.
-    // newly_invalid is empty when the safety valve fired, so expiring stations
-    // retain valid=true and will be re-evaluated on the next rollup.
-    for station in &all_station_details {
-        let is_valid = valid_stations.contains(&station.id);
+    // Update station validity in the station manager. Purge provenance is only
+    // stamped for stations whose database is actually purged this cycle
+    // (newly_invalid is empty when the safety valve fired).
+    for station in all_station_details {
+        let is_valid = valid.contains(&station.id);
         let was_moved = station.moved || confirmed_moves.contains(&station.id);
         if station.valid != is_valid || was_moved {
             let mut updated = if confirmed_moves.contains(&station.id) {
@@ -325,13 +327,67 @@ pub async fn rollup_all(
                 updated.moved = false;
                 updated.purged_at = Some(crate::types::Epoch(now_epoch));
                 updated.purge_reason = Some("moved".into());
-            } else if !is_valid && station.valid {
+            } else if !is_valid && station.valid && newly_invalid.contains(&station.id) {
                 updated.purged_at = Some(crate::types::Epoch(now_epoch));
                 updated.purge_reason = Some("expired".into());
             }
             station_manager.update(&updated);
         }
     }
+
+    StationValidity {
+        valid,
+        rollup_valid,
+        newly_invalid,
+        confirmed_moves,
+        need_purge,
+        invalid_count,
+        moved_count,
+    }
+}
+
+/// Perform a full rollup: merge current → day/month/year/yearnz.
+/// Caller must flush the H3 cache before calling this.
+pub async fn rollup_all(
+    storage: &Storage,
+    station_manager: &StationManager,
+    old_accumulators: &Accumulators,
+    new_accumulators: Option<&Accumulators>,
+    write_json: bool,
+) -> RollupStats {
+    // Defense in depth: the rollup timer is strictly sequential and checks
+    // rollup_in_progress() before swapping accumulators, so this should never
+    // fire - but if a second entry point ever appears, skip rather than overlap.
+    let Some(_rollup_guard) = RollupGuard::try_acquire() else {
+        warn!("rollup already in progress - skipping this rollup cycle");
+        return RollupStats::default();
+    };
+
+    let start = std::time::Instant::now();
+
+    info!("--------[ accumulator rotation ]--------");
+    let (old_text, old_files) = old_accumulators.describe();
+    if let Some(new_acc) = new_accumulators {
+        let (new_text, new_files) = new_acc.describe();
+        info!("{}/{} => {}/{}", old_text, old_files, new_text, new_files);
+    }
+
+    // --- Station expiry check ---
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+
+    let all_station_details = station_manager.all_stations_with_global();
+    let StationValidity {
+        valid: valid_stations,
+        rollup_valid: rollup_valid_stations,
+        newly_invalid,
+        confirmed_moves,
+        need_purge,
+        invalid_count,
+        moved_count,
+    } = evaluate_station_validity(station_manager, &all_station_details, now_epoch);
 
     info!(
         "performing rollup of {} valid stations + global, {} invalid, {} moved",
@@ -395,7 +451,10 @@ pub async fn rollup_all(
     // --- Concurrent rollup with MAX_SIMULTANEOUS_ROLLUPS ---
     let max_concurrent = *MAX_SIMULTANEOUS_ROLLUPS;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-    let valid_stations = Arc::new(valid_stations);
+    // Rollup gating and global-record filtering use the valve-inflated set so a
+    // mass-expiry cycle keeps every station's coverage; the true set above only
+    // feeds the persisted `valid` flags.
+    let valid_stations = Arc::new(rollup_valid_stations);
     let accumulators = old_accumulators.clone();
     let layers = Arc::new(layers);
     let retired_accumulators = Arc::new(retired_accumulators);
@@ -2510,6 +2569,103 @@ mod tests {
     use crate::coverage::header::AccumulatorBucket;
     use crate::coverage::record::BufferType;
     use crate::types::Epoch;
+
+    // --- evaluate_station_validity ---
+
+    const VALIDITY_NOW: u32 = 1_800_000_000;
+    // Comfortably inside / beyond the 31-day default STATION_EXPIRY_TIME_DAYS
+    const FRESH_PACKET: u32 = VALIDITY_NOW - 3600;
+    const DEAD_PACKET: u32 = VALIDITY_NOW - 40 * 86400;
+
+    fn add_station(mgr: &StationManager, name: &str, last_packet: u32, valid: bool) -> StationId {
+        let mut d = mgr.get_or_create(&StationName(name.to_string())).unwrap();
+        d.last_packet = Some(Epoch(last_packet));
+        d.valid = valid;
+        mgr.update(&d);
+        d.id
+    }
+
+    fn get_station(mgr: &StationManager, name: &str) -> StationDetails {
+        mgr.get(&StationName(name.to_string())).unwrap()
+    }
+
+    #[test]
+    fn test_mass_expiry_valve_still_marks_stations_invalid() {
+        let mgr = StationManager::new_for_test();
+        for i in 0..5 {
+            add_station(&mgr, &format!("FRESH{}", i), FRESH_PACKET, true);
+        }
+        let dead_ids: Vec<StationId> = (0..5)
+            .map(|i| add_station(&mgr, &format!("DEAD{}", i), DEAD_PACKET, true))
+            .collect();
+
+        let all = mgr.all_stations_with_global();
+        let v = evaluate_station_validity(&mgr, &all, VALIDITY_NOW);
+
+        // 5 expiries vs 5 fresh (+global) is way over 2% - the valve fires:
+        // nothing is purged and every station keeps coverage this cycle
+        assert!(!v.need_purge);
+        assert!(v.newly_invalid.is_empty());
+        assert_eq!(v.rollup_valid.len(), all.len());
+
+        // but the expired stations are really invalid and the persisted flag
+        // says so, without purge provenance (nothing was purged)
+        for id in &dead_ids {
+            assert!(!v.valid.contains(id));
+        }
+        for i in 0..5 {
+            let s = get_station(&mgr, &format!("DEAD{}", i));
+            assert!(!s.valid, "expired station must be marked invalid even when the valve fires");
+            assert!(s.purged_at.is_none());
+            assert!(s.purge_reason.is_none());
+        }
+        let s = get_station(&mgr, "FRESH0");
+        assert!(s.valid);
+    }
+
+    #[test]
+    fn test_single_expiry_purges_normally() {
+        let mgr = StationManager::new_for_test();
+        for i in 0..60 {
+            add_station(&mgr, &format!("FRESH{}", i), FRESH_PACKET, true);
+        }
+        let dead = add_station(&mgr, "DEAD", DEAD_PACKET, true);
+
+        let all = mgr.all_stations_with_global();
+        let v = evaluate_station_validity(&mgr, &all, VALIDITY_NOW);
+
+        // 1 expiry vs 60 fresh is under the 2% valve - normal purge path
+        assert!(v.need_purge);
+        assert!(v.newly_invalid.contains(&dead));
+        assert!(!v.valid.contains(&dead));
+        assert!(!v.rollup_valid.contains(&dead));
+
+        let s = get_station(&mgr, "DEAD");
+        assert!(!s.valid);
+        assert_eq!(s.purged_at, Some(Epoch(VALIDITY_NOW)));
+        assert_eq!(s.purge_reason.as_deref(), Some("expired"));
+    }
+
+    #[test]
+    fn test_valve_does_not_resurrect_already_invalid_stations() {
+        let mgr = StationManager::new_for_test();
+        // Invalid since a previous rollup
+        add_station(&mgr, "ZOMBIE", DEAD_PACKET, false);
+        // Enough fresh expiries to fire the valve this cycle
+        for i in 0..3 {
+            add_station(&mgr, &format!("DEAD{}", i), DEAD_PACKET, true);
+        }
+        for i in 0..3 {
+            add_station(&mgr, &format!("FRESH{}", i), FRESH_PACKET, true);
+        }
+
+        let all = mgr.all_stations_with_global();
+        let v = evaluate_station_validity(&mgr, &all, VALIDITY_NOW);
+
+        assert!(v.newly_invalid.is_empty(), "valve should have fired");
+        let s = get_station(&mgr, "ZOMBIE");
+        assert!(!s.valid, "valve must not resurrect already-invalid stations");
+    }
 
     #[test]
     fn test_extract_h3_from_db_key() {

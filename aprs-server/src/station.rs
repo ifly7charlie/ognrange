@@ -397,7 +397,7 @@ impl StationManager {
 
     /// Create a StationManager for tests (no database, no writer thread)
     #[cfg(test)]
-    fn new_for_test() -> Self {
+    pub(crate) fn new_for_test() -> Self {
         let (write_tx, _write_rx) = std::sync::mpsc::channel::<DbWrite>();
         StationManager {
             stations: RwLock::new(HashMap::new()),
