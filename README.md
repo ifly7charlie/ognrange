@@ -130,7 +130,7 @@ to averages (sum/count).
 
 _Lowest AGL_ (meters) is the lowest height data above ground that data was received.
 
--   agl varies across the cell and this is taken from the lat/long looked up on mapbox elevation tile
+-   agl varies across the cell and this is taken from the lat/long looked up on a DEM elevation tile
 -   it's possible that lowest AGL point is actually above lowest ALT
 
 _Lowest ALT_ (meters) is the lowest height AMSL that data was received
@@ -368,8 +368,12 @@ configuration variables
 # url of website
 NEXT_PUBLIC_SITEURL=
 
-# mapbox token, used for elevation tiles on server and for the map on the client
+# mapbox token, used for the map on the client
 NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=
+
+# terrarium-encoded DEM tiles used for server elevation lookups, defaults to the
+# free AWS Open Data bucket; override to front it through your own CDN
+#NEXT_PUBLIC_DEM_TILE_URL=https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png
 
 # where to store the accumulator databases
 DB_PATH=/Users/melissa/ognrange/db/
@@ -384,13 +388,14 @@ NEXT_PUBLIC_DATA_URL=
 
 # control the elevation tile cache, note tiles are not evicted on expiry
 # so it will fill to MAX before anything happens. These tiles don't change so
-# if this is too low you'll just be hammering your mapbox account. Flip side
-# is the data will occupy ram or swap, 0 means no expiry
+# if this is too low you'll just be re-fetching the same tiles (though fetches
+# usually hit the on-disk cache in DB_PATH/dem-tiles rather than the network).
+# Flip side is the data will occupy ram or swap, 0 means no expiry
 MAX_ELEVATION_TILES=32000
 ELEVATION_TILE_EXPIRY_HOURS=0
 
 # control how precise the ground altitude is, difficult balance for mountains..
-# see https://docs.mapbox.com/help/glossary/zoom-level/,
+# (this is a web-mercator tile zoom level)
 # resolution 11 gives ~30m per pixel at 40 degrees which should be good enough
 # if you are memory constrained then increase this number before you drop the
 # number of tiles!

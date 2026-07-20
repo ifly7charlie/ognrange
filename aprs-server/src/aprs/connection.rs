@@ -81,7 +81,7 @@ async fn connection_loop(
             }
             Err(e) => {
                 warn!("APRS connection error: {}, reconnecting in 5s...", e);
-                let _ = event_tx.send(AprsEvent::Disconnected(e.to_string())).await;
+                let _ = event_tx.try_send(AprsEvent::Disconnected(e.to_string()));
 
                 // Wait before reconnecting, but honour shutdown
                 tokio::select! {
@@ -135,6 +135,7 @@ async fn connect_and_stream(
     let mut keepalive_interval = tokio::time::interval(Duration::from_millis(keepalive_ms));
     keepalive_interval.tick().await; // consume immediate first tick
     let mut had_traffic = false;
+    let mut dropped_packets: u64 = 0;
     let mut raw_buf = Vec::new();
 
     loop {
@@ -165,10 +166,15 @@ async fn connect_and_stream(
                             }
                         };
                         raw_buf.clear();
+                        // try_send, never block: if this loop stops reading (e.g. the
+                        // processor is slow and the channel fills), the APRS server
+                        // drops us for not consuming. Shedding packets is the lesser evil.
                         if line.starts_with('#') || line.starts_with("user") {
-                            let _ = event_tx.send(AprsEvent::ServerMessage(line)).await;
+                            let _ = event_tx.try_send(AprsEvent::ServerMessage(line));
                         } else if !line.is_empty() {
-                            let _ = event_tx.send(AprsEvent::Packet(line)).await;
+                            if event_tx.try_send(AprsEvent::Packet(line)).is_err() {
+                                dropped_packets += 1;
+                            }
                         }
                     }
                     Err(e) => {
@@ -183,6 +189,11 @@ async fn connect_and_stream(
                     return Err("No traffic received since last keepalive".into());
                 }
                 had_traffic = false;
+
+                if dropped_packets > 0 {
+                    warn!("Event channel full: dropped {} packets since last keepalive (processor too slow)", dropped_packets);
+                    dropped_packets = 0;
+                }
 
                 let keepalive = format!("# {} {}\r\n", siteurl, git_version);
                 // Timeout the write - on a half-open TCP connection write_all

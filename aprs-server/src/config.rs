@@ -24,8 +24,15 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 // Site identity
 pub static NEXT_PUBLIC_SITEURL: Lazy<String> = Lazy::new(|| env_or("NEXT_PUBLIC_SITEURL", "unknown"));
-pub static NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN: Lazy<String> =
-    Lazy::new(|| env_or("NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN", ""));
+
+// Terrarium-encoded PNG DEM tiles. AWS Open Data public bucket is the default;
+// override via NEXT_PUBLIC_DEM_TILE_URL to front it through your own CDN.
+pub static DEM_TILE_URL: Lazy<String> = Lazy::new(|| {
+    env_or(
+        "NEXT_PUBLIC_DEM_TILE_URL",
+        "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+    )
+});
 
 // Database and output paths
 pub static DB_PATH: Lazy<String> = Lazy::new(|| fix_trailing_slash(&env_or("DB_PATH", "./db")));

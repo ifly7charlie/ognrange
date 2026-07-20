@@ -144,7 +144,7 @@ async fn main() {
     // Initialise reject log (logs if active)
     reject_log::init();
 
-    // Probe elevation API before starting
+    // Probe the DEM tile endpoint before starting (log-only health check)
     state.elevation.probe().await;
 
     // Startup rollup - migrate legacy keys and process hanging current accumulators
@@ -156,7 +156,9 @@ async fn main() {
 
     // Start APRS listener
     info!("Starting APRS...");
-    let (event_tx, event_rx) = mpsc::channel(10_000);
+    // ~75s of headroom at peak rates; the connection sheds packets (with a
+    // warning) rather than blocking when this fills - see connection.rs
+    let (event_tx, event_rx) = mpsc::channel(50_000);
     let _aprs_conn = AprsConnection::start(event_tx, gv.clone());
 
     // Spawn packet processor
@@ -811,6 +813,20 @@ async fn periodic_tasks(state: Arc<AppState>) {
 
                 let mut aircraft_station = state.aircraft_station.lock().await;
                 aircraft_station.retain(|_, &mut v| v >= purge_before);
+            }
+        })
+    };
+
+    // DEM disk-tile prune: immediately at startup (cleans up after previous
+    // runs), then daily. Drops tiles whose mtime hasn't been refreshed in 10 days.
+    let _dem_prune_handle = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut prune_interval = tokio::time::interval(Duration::from_secs(24 * 3600));
+            loop {
+                prune_interval.tick().await;
+                let state = state.clone();
+                let _ = tokio::task::spawn_blocking(move || state.elevation.prune_disk_cache()).await;
             }
         })
     };
