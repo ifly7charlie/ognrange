@@ -161,27 +161,47 @@ async fn main() {
 
     // Spawn packet processor
     let state_clone = state.clone();
-    let processor = tokio::spawn(packet_processor(state_clone, event_rx));
+    let mut processor = tokio::spawn(packet_processor(state_clone, event_rx));
 
     // Spawn periodic tasks
     let state_clone = state.clone();
-    let periodic = tokio::spawn(periodic_tasks(state_clone));
+    let mut periodic = tokio::spawn(periodic_tasks(state_clone));
 
     // Spawn rollup timer
     let state_clone = state.clone();
-    let rollup_timer_handle = tokio::spawn(rollup_timer(state_clone));
+    let mut rollup_timer_handle = tokio::spawn(rollup_timer(state_clone));
 
     // Spawn status writer (server stats + per-station JSON, independent of rollup)
     let state_clone = state.clone();
-    let status_writer_handle = tokio::spawn(status_writer(state_clone));
+    let mut status_writer_handle = tokio::spawn(status_writer(state_clone));
 
-    // Wait for shutdown signal
+    // Wait for shutdown signal. The background tasks never return in normal
+    // operation - one ending (a panic) would otherwise leave a half-dead daemon
+    // that keeps the APRS connection alive but processes nothing, so treat it
+    // as fatal: flush, then exit non-zero so systemd restarts us.
+    let mut fatal: Option<&str> = None;
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("SIGINT received, shutting down...");
         }
         _ = signal_term() => {
             info!("SIGTERM received, shutting down...");
+        }
+        res = &mut processor => {
+            error!("Packet processor exited unexpectedly: {:?}", res);
+            fatal = Some("packet processor died");
+        }
+        res = &mut periodic => {
+            error!("Periodic tasks exited unexpectedly: {:?}", res);
+            fatal = Some("periodic tasks died");
+        }
+        res = &mut rollup_timer_handle => {
+            error!("Rollup timer exited unexpectedly: {:?}", res);
+            fatal = Some("rollup timer died");
+        }
+        res = &mut status_writer_handle => {
+            error!("Status writer exited unexpectedly: {:?}", res);
+            fatal = Some("status writer died");
         }
     }
 
@@ -208,6 +228,10 @@ async fn main() {
     state.global_stats.save_state();
     state.global_uptime.clear_current_slot();
     state.station_manager.close();
+    if let Some(reason) = fatal {
+        error!("Exiting after fatal error: {}", reason);
+        std::process::exit(1);
+    }
     info!("Shutdown complete");
 }
 

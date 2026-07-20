@@ -183,11 +183,13 @@ fn parse_position_with_timestamp(body: &str, packet: &mut AprsPacket) {
     }
 
     // Parse timestamp: /HHMMSSh or /DDHHMMz
-    let ts_str = &body[1..8];
+    // get(): offsets can land inside a multi-byte char when the line was decoded lossily
+    let (Some(ts_str), Some(pos_str)) = (body.get(1..8), body.get(8..)) else {
+        packet.packet_type = PacketType::Other;
+        return;
+    };
     packet.timestamp = parse_timestamp(ts_str);
-
-    // Parse position starting at offset 8
-    parse_position(&body[8..], packet);
+    parse_position(pos_str, packet);
 }
 
 /// Parse a position report without timestamp.
@@ -208,14 +210,15 @@ fn parse_position(pos_str: &str, packet: &mut AprsPacket) {
         return;
     }
 
-    // Latitude: DDmm.hhN (8 chars)
-    let lat_str = &pos_str[..8];
-    // Separator
-    let _sep = pos_str.as_bytes()[8]; // symbol table indicator
-    // Longitude: DDDmm.hhE (9 chars)
-    let lon_str = &pos_str[9..18];
-    // Symbol code
-    let _symbol = pos_str.as_bytes()[18];
+    // Latitude DDmm.hhN (8), symbol table (1), longitude DDDmm.hhE (9), symbol code (1),
+    // then the rest at offset 19.
+    // get(): offsets can land inside a multi-byte char when the line was decoded lossily
+    let (Some(lat_str), Some(lon_str), Some(rest)) =
+        (pos_str.get(..8), pos_str.get(9..18), pos_str.get(19..))
+    else {
+        packet.packet_type = PacketType::Other;
+        return;
+    };
 
     let mut lat = parse_latitude(lat_str);
     let mut lon = parse_longitude(lon_str);
@@ -225,12 +228,9 @@ fn parse_position(pos_str: &str, packet: &mut AprsPacket) {
         return;
     }
 
-    // The rest after position+symbol (offset 19)
-    let rest = &pos_str[19..];
-
     // Parse course/speed if present: CCC/SSS
     if rest.len() >= 7 && rest.as_bytes()[3] == b'/' {
-        if let Ok(speed) = rest[4..7].parse::<f64>() {
+        if let Some(Ok(speed)) = rest.get(4..7).map(|s| s.parse::<f64>()) {
             packet.speed = Some(speed); // knots
         }
     }
@@ -275,8 +275,8 @@ fn parse_latitude(s: &str) -> Option<f64> {
     if s.len() < 8 {
         return None;
     }
-    let degrees: f64 = s[..2].parse().ok()?;
-    let minutes: f64 = s[2..7].parse().ok()?;
+    let degrees: f64 = s.get(..2)?.parse().ok()?;
+    let minutes: f64 = s.get(2..7)?.parse().ok()?;
     let hemisphere = s.as_bytes()[7];
 
     let mut lat = degrees + minutes / 60.0;
@@ -297,8 +297,8 @@ fn parse_longitude(s: &str) -> Option<f64> {
     if s.len() < 9 {
         return None;
     }
-    let degrees: f64 = s[..3].parse().ok()?;
-    let minutes: f64 = s[3..8].parse().ok()?;
+    let degrees: f64 = s.get(..3)?.parse().ok()?;
+    let minutes: f64 = s.get(3..8)?.parse().ok()?;
     let hemisphere = s.as_bytes()[8];
 
     let mut lon = degrees + minutes / 60.0;
@@ -336,9 +336,9 @@ fn parse_timestamp(s: &str) -> Option<u32> {
         b'h' => {
             // HHMMSSh format - UTC time, no date supplied.
             // If the time looks future by more than 65 min, it is from yesterday.
-            let hh: u32 = s[..2].parse().ok()?;
-            let mm: u32 = s[2..4].parse().ok()?;
-            let ss: u32 = s[4..6].parse().ok()?;
+            let hh: u32 = s.get(..2)?.parse().ok()?;
+            let mm: u32 = s.get(2..4)?.parse().ok()?;
+            let ss: u32 = s.get(4..6)?.parse().ok()?;
 
             if hh > 23 || mm > 59 || ss > 59 {
                 return None;
@@ -359,9 +359,9 @@ fn parse_timestamp(s: &str) -> Option<u32> {
             // DDHHMMz format - day-of-month + UTC time; no month or year supplied.
             // Try the current month; if that date is more than ~12 h in the future,
             // fall back to the previous month (packet just before month rollover).
-            let dd: u32 = s[..2].parse().ok()?;
-            let hh: u32 = s[2..4].parse().ok()?;
-            let mm: u32 = s[4..6].parse().ok()?;
+            let dd: u32 = s.get(..2)?.parse().ok()?;
+            let hh: u32 = s.get(2..4)?.parse().ok()?;
+            let mm: u32 = s.get(4..6)?.parse().ok()?;
 
             if dd < 1 || dd > 31 || hh > 23 || mm > 59 {
                 return None;
@@ -448,6 +448,24 @@ mod tests {
         assert_eq!(packet.dest_callsign, "OGNSDR");
         assert_eq!(packet.packet_type, PacketType::Status);
         assert!(packet.body.is_some());
+    }
+
+    #[test]
+    fn test_multibyte_chars_in_position_no_panic() {
+        // Packet seen live (2026-07-19): binary garbage in the position field.
+        // Multi-byte chars must not panic the byte-offset slicing, whether they
+        // arrive as real UTF-8 or as U+FFFD from a lossy decode.
+        let raw_bytes: &[u8] = b"ICA4CAE1D>OGADSB,qAS,AVX:/\xf2\xf0*\x1d\xfdd\x85XJ\x1a'\x8a\xda\x11\xdfSG\xfd\xd6\xe87\xddD\x13NAt\xd14/280/A=004067 !W25! id254CAE1D -320fpm FL038.24 A3:ITY721 Sq7735";
+        let line = String::from_utf8_lossy(raw_bytes);
+        let packet = parse_aprs(&line).unwrap();
+        assert_eq!(packet.packet_type, PacketType::Other);
+        assert!(packet.latitude.is_none());
+
+        // Multi-byte chars landing mid-field in each parse helper
+        assert!(parse_latitude("4é39.16N").is_none());
+        assert!(parse_longitude("00é55.89E").is_none());
+        assert!(parse_timestamp("0é2319h").is_none());
+        assert!(parse_timestamp("0é2319z").is_none());
     }
 
     #[test]

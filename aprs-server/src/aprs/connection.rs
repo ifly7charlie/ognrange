@@ -151,7 +151,7 @@ async fn connect_and_stream(
                         let line = match std::str::from_utf8(&raw_buf) {
                             Ok(s) => s.trim().to_string(),
                             Err(_) => {
-                                // Log with non-UTF-8 bytes shown as \xHH
+                                // Corrupt line: log with non-UTF-8 bytes shown as \xHH, then discard
                                 let escaped: String = raw_buf.iter().map(|&b| {
                                     if b.is_ascii_graphic() || b == b' ' {
                                         (b as char).to_string()
@@ -159,8 +159,9 @@ async fn connect_and_stream(
                                         format!("\\x{:02x}", b)
                                     }
                                 }).collect();
-                                warn!("APRS non-UTF-8 line: {}", escaped);
-                                String::from_utf8_lossy(&raw_buf).trim().to_string()
+                                warn!("APRS non-UTF-8 line discarded: {}", escaped);
+                                raw_buf.clear();
+                                continue;
                             }
                         };
                         raw_buf.clear();
