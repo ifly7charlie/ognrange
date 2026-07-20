@@ -18,6 +18,7 @@
 #[path = "../bitvec.rs"] mod bitvec;
 #[path = "../json_io.rs"] mod json_io;
 #[path = "../symlinks.rs"] mod symlinks;
+#[path = "../horizon.rs"] mod horizon;
 #[path = "../rollup.rs"] mod rollup;
 #[path = "../stationfile.rs"] mod stationfile;
 #[path = "../ignore_station.rs"] mod ignore_station;

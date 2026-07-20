@@ -6,6 +6,7 @@ mod coverage;
 mod elevation;
 mod global_uptime;
 mod h3cache;
+mod horizon;
 mod json_io;
 mod ignore_station;
 mod layers;
@@ -954,6 +955,7 @@ async fn rollup_timer(state: Arc<AppState>) {
             &old_acc,
             Some(&new_acc),
             write_outputs,
+            &state.elevation,
         )
         .await;
         drop(flush_guard);

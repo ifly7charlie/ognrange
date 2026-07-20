@@ -46,6 +46,9 @@ pub struct StationDetails {
     pub lat: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lng: Option<f64>,
+    /// Ground elevation (m MSL) at lat/lng, resolved during rollup; cleared on move
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elevation: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "primary_location",
             deserialize_with = "deserialize_coord_pair")]
     pub primary_location: Option<[f64; 2]>,
@@ -300,6 +303,7 @@ impl StationManager {
             station: name.clone(),
             lat: None,
             lng: None,
+            elevation: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,
@@ -493,6 +497,8 @@ impl StationManager {
             details.primary_location = Some([lat, lng]);
             details.last_seen_at_primary = Some(timestamp);
             details.bouncing = true;
+            // Ground elevation belongs to the old location - re-resolve at next rollup
+            details.elevation = None;
         }
 
         details.lat = Some(lat);
@@ -646,6 +652,7 @@ impl StationManager {
             station: StationName("global".to_string()),
             lat: None,
             lng: None,
+            elevation: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,
@@ -683,7 +690,7 @@ impl StationManager {
 }
 
 /// Haversine great-circle distance in kilometers
-fn great_circle_distance(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
+pub(crate) fn great_circle_distance(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     let r = 6371.0;
     let d_lat = (lat2 - lat1).to_radians();
     let d_lng = (lng2 - lng1).to_radians();
@@ -704,6 +711,7 @@ mod tests {
             station: StationName("TEST".to_string()),
             lat: None,
             lng: None,
+            elevation: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,

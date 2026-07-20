@@ -84,7 +84,7 @@ impl Drop for RollupGuard {
 }
 
 use arrow::array::{
-    ArrayRef, StringArray, UInt16Array, UInt32Array, UInt8Array,
+    ArrayRef, Float32Array, StringArray, UInt16Array, UInt32Array, UInt8Array,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::reader::StreamReader;
@@ -105,6 +105,7 @@ use crate::coverage::header::{
     AccumulatorBucket, AccumulatorType, CoverageHeader,
 };
 use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
+use crate::horizon::{HorizonCollector, HorizonRow, HORIZON_DISTANCE_BANDS_KM};
 use crate::layers::{is_layer_prefixed, Layer};
 use crate::packet_stats::AprsPacketStats;
 use crate::station::{StationDetails, StationManager};
@@ -119,6 +120,7 @@ pub struct RollupStats {
     pub records_written: usize,
     pub records_deleted: usize,
     pub arrow_records: usize,
+    pub horizon_records: usize,
     pub elapsed_ms: u64,
     /// Per-(layer, acc_type) H3 cell counts from the global station rollup.
     pub global_h3_counts: Vec<(String, String, usize)>,
@@ -354,6 +356,7 @@ pub async fn rollup_all(
     old_accumulators: &Accumulators,
     new_accumulators: Option<&Accumulators>,
     write_json: bool,
+    elevation: &crate::elevation::ElevationService,
 ) -> RollupStats {
     // Defense in depth: the rollup timer is strictly sequential and checks
     // rollup_in_progress() before swapping accumulators, so this should never
@@ -378,7 +381,7 @@ pub async fn rollup_all(
         .unwrap_or_default()
         .as_secs() as u32;
 
-    let all_station_details = station_manager.all_stations_with_global();
+    let mut all_station_details = station_manager.all_stations_with_global();
     let StationValidity {
         valid: valid_stations,
         rollup_valid: rollup_valid_stations,
@@ -437,6 +440,45 @@ pub async fn rollup_all(
         }
         Epoch(min_start)
     });
+
+    // Resolve ground elevation for stations that don't have one yet (needed
+    // for horizon output). One lookup per station lifetime, cleared on
+    // confirmed move; capped per cycle so a first deploy backfills over a few
+    // cycles instead of bursting thousands of terrain-tile fetches.
+    const MAX_ELEVATION_LOOKUPS_PER_ROLLUP: usize = 500;
+    {
+        let mut lookups = 0usize;
+        let mut resolved = 0usize;
+        for station in all_station_details.iter_mut() {
+            if station.station.as_str() == "global"
+                || station.elevation.is_some()
+                || !rollup_valid_stations.contains(&station.id)
+            {
+                continue;
+            }
+            let (Some(lat), Some(lng)) = (station.lat, station.lng) else {
+                continue;
+            };
+            if lookups >= MAX_ELEVATION_LOOKUPS_PER_ROLLUP {
+                break;
+            }
+            lookups += 1;
+            if let Some(elev) = elevation.try_get_elevation(lat, lng).await {
+                station.elevation = Some(elev);
+                resolved += 1;
+                if let Some(mut details) = station_manager.get(&station.station) {
+                    details.elevation = Some(elev);
+                    station_manager.update(&details); // persisted by flush_all below
+                }
+            }
+        }
+        if lookups > 0 {
+            info!(
+                "resolved ground elevation for {}/{} stations (failures retried next cycle)",
+                resolved, lookups
+            );
+        }
+    }
 
     // Build the list of stations to process (global is already first from all_stations_with_global)
     let mut station_entries: Vec<(String, bool, Option<StationDetails>)> = Vec::new();
@@ -600,6 +642,7 @@ pub async fn rollup_all(
                 total_stats.records_written += stats.records_written;
                 total_stats.records_deleted += stats.records_deleted;
                 total_stats.arrow_records += stats.arrow_records;
+                total_stats.horizon_records += stats.horizon_records;
                 total_stats.global_h3_counts.extend(stats.global_h3_counts);
                 // Update output_epoch/output_date (mirrors TS rollup.ts:207-208)
                 // Also reset per-station stats on day rotation (after write_station_json captured them).
@@ -659,7 +702,7 @@ pub async fn rollup_all(
     station_manager.flush_all();
 
     info!(
-        "Rollup complete in {}ms: {} stations ({} skipped no-traffic, {} concurrent), {} records read, {} written, {} deleted, {} arrow records",
+        "Rollup complete in {}ms: {} stations ({} skipped no-traffic, {} concurrent), {} records read, {} written, {} deleted, {} arrow records, {} horizon records",
         total_stats.elapsed_ms,
         total_stats.stations_processed,
         skipped_no_traffic,
@@ -668,6 +711,7 @@ pub async fn rollup_all(
         total_stats.records_written,
         total_stats.records_deleted,
         total_stats.arrow_records,
+        total_stats.horizon_records,
     );
     total_stats
 }
@@ -717,6 +761,15 @@ fn rollup_station_all_layers(
     let cancelled = || cancel.load(Ordering::Relaxed);
     let mut combined_day_activity: Option<RollupActivity> = None;
     let mut combined_day_arrow_count: usize = 0;
+
+    // Horizon bins accumulate across all layers (merged by frequency group)
+    // and are written once after the layer loop. None (no position / no
+    // resolved elevation / global) skips horizon output entirely.
+    let mut horizon = if is_global {
+        None
+    } else {
+        station_meta.and_then(HorizonCollector::from_station)
+    };
 
     // Self-healing: scan the DB's Current metas (cheap seek-only pass) so any
     // bucket stranded by an earlier failed cycle is rolled up with this one.
@@ -817,6 +870,7 @@ fn rollup_station_all_layers(
             &mut db, station_name, *layer, Some(accumulators), hangs,
             &all_dest_files, valid_stations, is_global, station_meta,
             retired_accumulators, cancel, progress, "heal",
+            horizon.as_mut(),
         );
         let layer_elapsed = layer_start.elapsed();
         layers_elapsed += layer_elapsed;
@@ -855,6 +909,23 @@ fn rollup_station_all_layers(
     // Write per-station JSON for every active-station rollup (not gated by write_json so that
     // beaconActivity, stats, and arrowRecords are always current, not just on hourly writes).
     if !is_global && !cancelled() {
+        if let Some(h) = &horizon {
+            if let Ok(mut p) = progress.lock() {
+                p.phase = "horizon".to_string();
+            }
+            let output_dir = crate::config::output_dir(station_name);
+            for hf in h.build_files() {
+                match write_arrow_horizon(
+                    &output_dir, station_name, hf.acc_type.name(), &hf.file_id, &hf.rows,
+                ) {
+                    Ok(n) => total_stats.horizon_records += n,
+                    Err(e) => error!(
+                        "{}: horizon write failed for {}.{}: {}",
+                        station_name, hf.acc_type.name(), hf.file_id, e
+                    ),
+                }
+            }
+        }
         if let Some(meta) = station_meta {
             let output_dir = crate::config::output_dir(station_name);
             write_station_json(
@@ -984,11 +1055,12 @@ fn rollup_station_layer(
     retired_accumulators: &[(AccumulatorType, AccumulatorBucket)],
     cancel: &AtomicBool,
     progress: &std::sync::Mutex<RollupProgress>,
+    horizon: Option<&mut HorizonCollector>,
 ) -> Result<(RollupStats, Option<RollupActivity>, Option<usize>), String> {
     rollup_current_buckets(
         db, station_name, layer, Some(accumulators), &[], &HashSet::new(),
         valid_stations, is_global, station_meta, retired_accumulators,
-        cancel, progress, "rollup",
+        cancel, progress, "rollup", horizon,
     )
 }
 
@@ -1019,6 +1091,7 @@ fn rollup_current_buckets(
     cancel: &AtomicBool,
     progress: &std::sync::Mutex<RollupProgress>,
     context: &str,
+    mut horizon: Option<&mut HorizonCollector>,
 ) -> Result<(RollupStats, Option<RollupActivity>, Option<usize>), String> {
     let dest_key = |acc: &Accumulators| {
         format!(
@@ -1270,6 +1343,7 @@ fn rollup_current_buckets(
             db, station_name, descriptor, layer, layer.file_suffix(),
             valid_stations, is_global, station_meta, retired,
             cancel, progress, &source, group_t0, std::time::Duration::ZERO,
+            horizon.as_deref_mut(),
         ) {
             Ok((stats, da, dac)) => {
                 if group.has_active {
@@ -1329,6 +1403,7 @@ fn rollup_layer_core(
     source: &CurrentSource,
     layer_t0: std::time::Instant,
     t_read_current: std::time::Duration,
+    horizon: Option<&mut HorizonCollector>,
 ) -> Result<(RollupStats, Option<RollupActivity>, Option<usize>), String> {
     let mut stats = RollupStats { records_read: source.records_read, ..Default::default() };
 
@@ -1619,6 +1694,18 @@ fn rollup_layer_core(
     db.write(batch, true).map_err(|e| format!("write batch failed for {}: {}", station_name, e))?;
     let t_write = t_write_start.elapsed();
 
+    // Feed the horizon collector now the merge is durably committed - each
+    // dest's arrow rows hold the full cell set for that accumulator. On a
+    // commit failure this layer is simply absent from the horizon this cycle
+    // (its data is retried next cycle).
+    if let Some(h) = horizon {
+        for dest in &destinations {
+            if !dest.file.is_empty() {
+                h.feed(dest.acc_type, &dest.file, layer, &dest.arrow_station_rows);
+            }
+        }
+    }
+
     // Purge retired accumulators (matching TypeScript rollupdatabase.ts:407-416).
     // When a bucket changes (e.g. day rolls over), purge old bucket's data and meta.
     set_phase("purge", &format!("{} retired", retired_accumulators.len()));
@@ -1802,7 +1889,7 @@ fn write_arrow_station(
 
     // Returns the row count actually on disk (existing count if the shrink guard
     // kept a larger file), not necessarily rows.len().
-    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch])
+    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], true)
 }
 
 fn write_arrow_global(
@@ -1839,7 +1926,62 @@ fn write_arrow_global(
 
     // Returns the row count actually on disk (existing count if the shrink guard
     // kept a larger file), not necessarily rows.len().
-    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch])
+    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], true)
+}
+
+fn horizon_schema() -> Schema {
+    let mut fields = vec![
+        Field::new("frequency", DataType::UInt16, false),
+        Field::new("bearing", DataType::Float32, false),
+        Field::new("lowestAngle", DataType::Float32, false),
+        Field::new("lowestAgl", DataType::UInt16, false),
+        Field::new("lowestDistance", DataType::UInt16, false),
+        Field::new("maxDistance", DataType::UInt16, false),
+    ];
+    for edge in HORIZON_DISTANCE_BANDS_KM {
+        fields.push(Field::new(format!("angle{}km", edge as u32), DataType::Float32, true));
+    }
+    fields.push(Field::new("count", DataType::UInt32, false));
+    Schema::new(fields)
+}
+
+/// Write a station's horizon rows as {station}.{acc}.{file_id}.horizon.arrow.gz
+/// (the ".horizon" pseudo layer suffix keeps the naming/symlink conventions and
+/// is invisible to the coverage file listing, which only matches layer names).
+fn write_arrow_horizon(
+    output_dir: &str,
+    station_name: &str,
+    acc_type: &str,
+    file_id: &str,
+    rows: &[HorizonRow],
+) -> Result<usize, String> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let schema = std::sync::Arc::new(horizon_schema());
+    let mut columns: Vec<ArrayRef> = vec![
+        std::sync::Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.frequency))),
+        std::sync::Arc::new(Float32Array::from_iter_values(rows.iter().map(|r| r.bearing))),
+        std::sync::Arc::new(Float32Array::from_iter_values(rows.iter().map(|r| r.lowest_angle))),
+        std::sync::Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.lowest_agl))),
+        std::sync::Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.lowest_distance))),
+        std::sync::Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.max_distance))),
+    ];
+    for band in 0..HORIZON_DISTANCE_BANDS_KM.len() {
+        // from_iter over Options yields a nullable array: null = no cells in band
+        columns.push(std::sync::Arc::new(Float32Array::from_iter(
+            rows.iter().map(|r| r.band_angles[band]),
+        )));
+    }
+    columns.push(std::sync::Arc::new(UInt32Array::from_iter_values(rows.iter().map(|r| r.count))));
+
+    let batch = RecordBatch::try_new(schema.clone(), columns)
+        .map_err(|e| format!("RecordBatch error: {}", e))?;
+
+    // No shrink guard: a horizon file can legitimately shrink (e.g. a layer
+    // whose commit failed last cycle is simply absent until the next one).
+    write_arrow_file(output_dir, station_name, acc_type, file_id, ".horizon", &schema, &[batch], false)
 }
 
 /// Count rows (H3 cells) in an existing Arrow.gz, for the shrink guard.
@@ -1865,6 +2007,7 @@ fn write_arrow_file(
     layer_suffix: &str,
     schema: &std::sync::Arc<Schema>,
     batches: &[RecordBatch],
+    shrink_guard: bool,
 ) -> Result<usize, String> {
     let base_name = format!("{}.{}.{}{}", station_name, acc_type, file_id, layer_suffix);
 
@@ -1897,7 +2040,8 @@ fn write_arrow_file(
     // can encode a few bytes smaller, which made the old byte-size guard reject
     // legitimate same-coverage updates as false positives.
     let new_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    if let Some(existing_rows) = count_arrow_rows(&gz_final) {
+    let existing_rows = if shrink_guard { count_arrow_rows(&gz_final) } else { None };
+    if let Some(existing_rows) = existing_rows {
         if new_rows < existing_rows {
             // Keep the rejected partial on disk for inspection/recovery. Name it
             // {base}.rejected.<epoch>.arrow.gz (NOT .arrow.gz.rejected.<epoch>)
@@ -2398,6 +2542,7 @@ pub async fn rollup_startup(
                     &SHUTDOWN, // cancel only on process exit
                     &task_progress,
                     "startup",
+                    None, // no horizon during startup mop-up - next traffic rollup regenerates it
                 ) {
                     Ok((stats, _day_activity, _day_arrow_count)) => {
                         rolled_up += stats.records_written;
@@ -2698,7 +2843,7 @@ mod tests {
         let (stats, _, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
-            &std::sync::Mutex::new(RollupProgress::default()),
+            &std::sync::Mutex::new(RollupProgress::default()), None,
         ).unwrap();
 
         assert_eq!(stats.records_written, 0);
@@ -2740,7 +2885,7 @@ mod tests {
         let (stats, _, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
-            &std::sync::Mutex::new(RollupProgress::default()),
+            &std::sync::Mutex::new(RollupProgress::default()), None,
         ).unwrap();
 
         // Should have merged into 4 destinations (day, month, year, yearnz)
@@ -2769,6 +2914,81 @@ mod tests {
     }
 
     #[test]
+    fn test_rollup_feeds_horizon_and_writes_arrow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let station_path = tmp.path().join("station_db").to_string_lossy().to_string();
+
+        // A cell ~20km north of the station, keyed under the current bucket
+        let station_lat = 47.0;
+        let station_lng = 8.0;
+        let cell = h3o::LatLng::new(47.18, 8.0).unwrap().to_cell(h3o::Resolution::Eight);
+        let key = format!("c/0042/{:x}", u64::from(cell));
+
+        let mut db = {
+            let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
+            let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
+            let mut rec = CoverageRecord::new(BufferType::Station);
+            rec.update(1000, 500, 2, 28, 5);
+            db.put(key.as_bytes(), &rec.to_bytes()).unwrap();
+            db.flush().unwrap();
+            db
+        };
+
+        let meta = crate::station::StationDetails {
+            station: StationName("TESTHZSTATION".to_string()),
+            lat: Some(station_lat),
+            lng: Some(station_lng),
+            elevation: Some(500.0),
+            ..Default::default()
+        };
+        let mut collector = HorizonCollector::from_station(&meta).unwrap();
+
+        let accumulators = test_accumulators();
+        let (stats, _, _) = rollup_station_layer(
+            &mut db, &station_path, "test_station_horizon", &accumulators,
+            Layer::Combined, ".combined", None, false, Some(&meta), &[], &SHUTDOWN,
+            &std::sync::Mutex::new(RollupProgress::default()), Some(&mut collector),
+        ).unwrap();
+        assert_eq!(stats.records_written, 4);
+
+        // Month, year, yearnz - never day
+        let files = collector.build_files();
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].acc_type, AccumulatorType::Month);
+        assert_eq!(files[1].acc_type, AccumulatorType::Year);
+        assert_eq!(files[2].acc_type, AccumulatorType::YearNz);
+
+        // Combined feeds the 868 group; the cell is due north of the station
+        for file in &files {
+            assert!(!file.rows.is_empty());
+            for row in &file.rows {
+                assert_eq!(row.frequency, 868);
+                assert!(row.bearing < 2.0 || row.bearing > 358.0, "bearing {}", row.bearing);
+                assert_eq!(row.lowest_agl, 500);
+            }
+        }
+
+        // Write one out and read it back
+        let out_dir = tmp.path().join("out").to_string_lossy().to_string();
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let hf = &files[0];
+        let written = write_arrow_horizon(
+            &out_dir, "TESTHZSTATION", hf.acc_type.name(), &hf.file_id, &hf.rows,
+        ).unwrap();
+        assert_eq!(written, hf.rows.len());
+        let gz = format!("{}/TESTHZSTATION.month.2026-03.horizon.arrow.gz", out_dir);
+        assert_eq!(count_arrow_rows(&gz), Some(hf.rows.len()));
+
+        // No shrink guard: a smaller replacement must overwrite
+        let fewer = &hf.rows[..1];
+        let rewritten = write_arrow_horizon(
+            &out_dir, "TESTHZSTATION", hf.acc_type.name(), &hf.file_id, fewer,
+        ).unwrap();
+        assert_eq!(rewritten, 1);
+        assert_eq!(count_arrow_rows(&gz), Some(1));
+    }
+
+    #[test]
     fn test_rollup_cancelled_preserves_current() {
         // A cancelled rollup must leave the current accumulator fully intact -
         // no destination records, no deletions - so it can be retried later.
@@ -2791,7 +3011,7 @@ mod tests {
         let (stats, _, _) = rollup_station_layer(
             &mut db, &station_path, "test_station", &accumulators,
             Layer::Combined, ".combined", None, false, None, &[], &cancel,
-            &std::sync::Mutex::new(RollupProgress::default()),
+            &std::sync::Mutex::new(RollupProgress::default()), None,
         ).unwrap();
 
         assert_eq!(stats.records_written, 0);
@@ -2850,7 +3070,7 @@ mod tests {
             &mut db, "test_station_multi", &accumulators, Layer::Combined, ".combined",
             None, false, None, &[], &SHUTDOWN,
             &std::sync::Mutex::new(RollupProgress::default()),
-            &source, std::time::Instant::now(), std::time::Duration::ZERO,
+            &source, std::time::Instant::now(), std::time::Duration::ZERO, None,
         ).unwrap();
 
         // Merged into 4 destinations; both source buckets' records deleted
@@ -2903,7 +3123,7 @@ mod tests {
         let (stats, _, _) = rollup_current_buckets(
             &mut db, "test_station_heal", Layer::Combined, Some(&active), &hanging,
             &HashSet::new(), None, false, None, &[], &AtomicBool::new(false),
-            &std::sync::Mutex::new(RollupProgress::default()), "heal",
+            &std::sync::Mutex::new(RollupProgress::default()), "heal", None,
         ).unwrap();
 
         // One merged H3 into 4 destinations, both source buckets deleted
@@ -2948,7 +3168,7 @@ mod tests {
         let (stats, _, _) = rollup_current_buckets(
             &mut db, "test_station_drop", Layer::Combined, None, &hanging,
             &HashSet::new(), None, false, None, &[], &AtomicBool::new(false),
-            &std::sync::Mutex::new(RollupProgress::default()), "startup",
+            &std::sync::Mutex::new(RollupProgress::default()), "startup", None,
         ).unwrap();
 
         assert_eq!(stats.records_written, 0);

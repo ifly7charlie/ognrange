@@ -66,6 +66,7 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `station` | `string` | Station callsign |
 | `lat` | `f64?` | Current latitude (from most recent Location packet) |
 | `lng` | `f64?` | Current longitude |
+| `elevation` | `f64?` | Ground elevation (m MSL) at `lat`/`lng`, resolved via the terrain service during rollup; cleared when the station moves. Required for horizon output |
 | `primary_location` | `[f64, f64]?` | Reference location `[lat, lng]` used for move detection |
 | `previous_location` | `[f64, f64]?` | Prior location before the most recent move |
 | `lastPacket` | `u32?` | Unix timestamp of the last packet processed for coverage |

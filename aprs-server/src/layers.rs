@@ -87,6 +87,38 @@ impl Layer {
     pub fn bit_mask(&self) -> u8 {
         1 << self.bit_position()
     }
+
+    /// Frequency group for horizon aggregation: the receive horizon is an
+    /// antenna/frequency property, not a protocol one. None = excluded
+    /// (flarm/ogntrk are already inside combined - feeding combined instead
+    /// halves the rows processed; safesky is network-sourced, not RF).
+    pub fn frequency_group(&self) -> Option<FrequencyGroup> {
+        match self {
+            Layer::Combined | Layer::Fanet | Layer::Adsl | Layer::Paw => {
+                Some(FrequencyGroup::Mhz868)
+            }
+            Layer::Adsb => Some(FrequencyGroup::Mhz1090),
+            Layer::Flarm | Layer::Ogntrk | Layer::Safesky => None,
+        }
+    }
+}
+
+/// RF frequency groups for horizon output
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FrequencyGroup {
+    Mhz868,
+    Mhz1090,
+}
+
+impl FrequencyGroup {
+    pub const ALL: &'static [FrequencyGroup] = &[FrequencyGroup::Mhz868, FrequencyGroup::Mhz1090];
+
+    pub fn mhz(&self) -> u16 {
+        match self {
+            FrequencyGroup::Mhz868 => 868,
+            FrequencyGroup::Mhz1090 => 1090,
+        }
+    }
 }
 
 /// All layers in DB sort order

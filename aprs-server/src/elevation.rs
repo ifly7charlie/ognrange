@@ -118,12 +118,19 @@ impl ElevationService {
     /// Get terrain elevation at the given lat/lng in meters.
     /// Returns 0 if the elevation cannot be determined or lookups are disabled.
     pub async fn get_elevation(&self, lat: f64, lng: f64) -> f64 {
+        self.try_get_elevation(lat, lng).await.unwrap_or(0.0)
+    }
+
+    /// Get terrain elevation at the given lat/lng in meters, or None when
+    /// lookups are disabled or the tile fetch fails - callers that persist the
+    /// result must be able to tell failure apart from a genuine 0m.
+    pub async fn try_get_elevation(&self, lat: f64, lng: f64) -> Option<f64> {
         if !self.enabled.load(Ordering::Relaxed) {
-            return 0.0;
+            return None;
         }
         let access_token = match &self.access_token {
             Some(t) => t,
-            None => return 0.0,
+            None => return None,
         };
 
         // Calculate tile coordinates
@@ -145,7 +152,7 @@ impl ElevationService {
                 let yp = ty - tile_y as f64;
                 let x = (xp * tile.width as f64).floor() as u32;
                 let y = (yp * tile.height as f64).floor() as u32;
-                return tile.get_elevation(x, y).floor();
+                return Some(tile.get_elevation(x, y).floor());
             }
         }
 
@@ -162,11 +169,11 @@ impl ElevationService {
                 let mut cache = self.cache.lock().await;
                 cache.put(url, tile_arc);
 
-                elevation
+                Some(elevation)
             }
             Err(e) => {
                 debug!("Failed to fetch elevation tile: {}", e);
-                0.0
+                None
             }
         }
     }

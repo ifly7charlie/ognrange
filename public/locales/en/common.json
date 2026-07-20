@@ -157,6 +157,20 @@
         "server": {
             "uptime_title": "Server Uptime"
         },
+        "horizon": {
+            "title": "Receive Horizon",
+            "frequency": "{{mhz}} MHz",
+            "any_distance": "Any distance",
+            "band_5": "≤5 km",
+            "band_10": "5–10 km",
+            "band_20": "10–20 km",
+            "band_30": "20–30 km",
+            "band_50": "30–50 km",
+            "band_90": "50–90 km",
+            "tooltip_lowest": "Lowest cell: {{agl}} m AGL at {{distance}} km",
+            "tooltip_max": "Furthest cell: {{distance}} km",
+            "tooltip_count": "{{count}} cell arcs"
+        },
         "times": {
             "title": "Times",
             "location": "Location",

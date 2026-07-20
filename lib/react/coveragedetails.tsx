@@ -31,6 +31,7 @@ import {ActivityDetails} from './coveragedetails/activitydetails';
 import {UptimeBar} from './coveragedetails/uptimebar';
 import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {StationPosition} from './coveragedetails/stationposition';
+import {HorizonDetails} from './coveragedetails/horizondetails';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 import {GlobalUptimeCard} from './coveragedetails/globaluptime';
 import {StationStatsDashboard, StationHourlyDetailChart} from './coveragedetails/stationstats';
@@ -352,6 +353,7 @@ export function CoverageDetails({
                 <ActivityDetails activity={stationData?.activity} />
                 <UptimeBar uptime={stationData?.uptime} />
                 <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} exportedAt={stationData?.exportedAt} />
+                <HorizonDetails station={station} period={dateRange?.start || file} env={env} />
                 {serverUptimePercent != null && serverUptimePercent < 100 && (
                     <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
                 )}

@@ -101,3 +101,34 @@ The `activity` object describes the station's coverage rollup history for the co
 | `lastRollup` | `u32` | Epoch of most recent rollup (with or without data) |
 
 Note: This `activity` field (RollupActivity) is distinct from `beaconActivity` (beacon bitvector). `beaconActivity` tracks 10-minute beacon slots; `activity` tracks coverage rollup periods.
+
+## Horizon Arrow Files
+
+Alongside the coverage arrow files, the rollup writes a per-station receive-horizon file for the month, year, and yearnz accumulators (never day/current):
+
+| File | Description |
+|------|-------------|
+| `{name}.{acc}.{fileid}.horizon.arrow.gz` | Dated horizon file (e.g. `LFLE.month.2026-07.horizon.arrow.gz`) |
+| `{name}.{acc}.horizon.arrow.gz` | Symlink to the latest dated file per accumulator |
+| `...horizon.arrow` | Uncompressed twin when `UNCOMPRESSED_ARROW_FILES` is set |
+
+Requires the station to have a position and a resolved `elevation` (no Mapbox token → no horizon files). Cells from all protocol layers are merged into two RF frequency groups, since the horizon is an antenna/frequency property: **868 MHz** (combined + fanet + adsl + paw; flarm/ogntrk are already inside combined) and **1090 MHz** (adsb). Safesky is excluded (network-sourced, not RF). The mapping lives in `Layer::frequency_group()` (`aprs-server/src/layers.rs`).
+
+The circle is divided into 720 half-degree bearing bins. Each H3 cell contributes to every bin its ~0.8 km width subtends (arc spreading), using the elevation angle from the station to the cell's lowest received point: selection is by minimum AGL, the angle is computed from that point's MSL altitude and great-circle distance with a k=4/3 effective-earth curvature/refraction correction. Cells closer than 2 km are excluded.
+
+### Schema
+
+One row per non-empty (frequency, bearing) bin:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `frequency` | `u16` | Frequency group: `868` or `1090` |
+| `bearing` | `f32` | Bin start in degrees: 0.0, 0.5, ... 359.5 |
+| `lowestAngle` | `f32` | Elevation angle (degrees) of the lowest-AGL cell at any distance |
+| `lowestAgl` | `u16` | AGL metres of that cell's lowest point |
+| `lowestDistance` | `u16` | Distance (km) to that cell |
+| `maxDistance` | `u16` | Distance (km) to the furthest contributing cell |
+| `angle5km` … `angle90km` | `f32?` | Lowest-AGL angle within each distance band (upper edges 5/10/20/30/50/90 km); null when the band has no cells. The 90 km top edge is where a 0.5° bin arc matches the cell width |
+| `count` | `u32` | Cell-arc contributions to the bin |
+
+Horizon files have no shrink guard (bin counts can legitimately shrink) and no metadata JSON sidecar. They are regenerated whenever the station's coverage rolls up; the startup mop-up does not produce them. The `.horizon` suffix cannot collide with layer suffixes, so the coverage file-listing API ignores these files.
