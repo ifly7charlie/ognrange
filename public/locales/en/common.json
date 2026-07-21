@@ -138,6 +138,7 @@
             "ignoredSignal0": "Ignored (No signal strength)",
             "ignoredH3stationary": "Ignored (Mostly Stationary)",
             "ignoredElevation": "Ignored (Corrupt elevation)",
+            "ignoredDistance": "Ignored (Too far away)",
             "ignoredFutureTimestamp": "Ignored (Future timestamp)",
             "ignoredStaleTimestamp": "Ignored (Stale timestamp)",
             "avgDelaySecs": "Avg Packet Delay (s)"
@@ -168,6 +169,7 @@
             "band_50": "30–50 km",
             "band_90": "50–90 km",
             "tooltip_lowest": "Lowest cell: {{agl}} m AGL at {{distance}} km",
+            "tooltip_heights": "({{low}}–{{high}} m above station)",
             "tooltip_max": "Furthest cell: {{distance}} km",
             "tooltip_count": "{{count}} cell arcs"
         },

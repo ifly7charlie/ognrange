@@ -1,7 +1,18 @@
 import {describe, it, expect} from 'vitest';
 import {tableFromJSON, tableFromIPC, tableToIPC} from 'apache-arrow';
 
-import {chartsFromTable, horizonFileFor, BIN_COUNT} from '../../lib/react/coveragedetails/horizondata';
+import {chartsFromTable, horizonFileFor, heightAtDistance, BIN_COUNT} from '../../lib/react/coveragedetails/horizondata';
+
+describe('heightAtDistance', () => {
+    // Inverts the writer's angle formula: reference values from the Rust
+    // angle_curvature_dip test in aprs-server/src/horizon.rs
+    it('recovers the height the writer computed the angle from', () => {
+        // Flat terrain at 10km gives -0.0337 deg (pure curvature dip)
+        expect(heightAtDistance(-0.0337, 10)).toBeCloseTo(0, 0);
+        // 300m above station ground at 20km gives 0.792 deg
+        expect(heightAtDistance(0.792, 20)).toBeCloseTo(300, -1);
+    });
+});
 
 describe('horizonFileFor', () => {
     it('passes month/year/yearnz periods through', () => {

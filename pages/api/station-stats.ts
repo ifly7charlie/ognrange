@@ -22,6 +22,7 @@ function aggregateStatsFiles(
     let ignoredTracker = 0, invalidTracker = 0, invalidTimestamp = 0;
     let ignoredStationary = 0, ignoredSignal0 = 0;
     let ignoredH3stationary = 0, ignoredElevation = 0;
+    let ignoredDistance = 0;
     let ignoredFutureTimestamp = 0, ignoredStaleTimestamp = 0;
     const hourly: Record<string, number[]> = {};
     let startTime = '';
@@ -42,6 +43,7 @@ function aggregateStatsFiles(
         ignoredSignal0 += stats.ignoredSignal0 ?? 0;
         ignoredH3stationary += stats.ignoredH3stationary ?? 0;
         ignoredElevation += stats.ignoredElevation ?? 0;
+        ignoredDistance += stats.ignoredDistance ?? 0;
         ignoredFutureTimestamp += stats.ignoredFutureTimestamp ?? 0;
         ignoredStaleTimestamp += stats.ignoredStaleTimestamp ?? 0;
 
@@ -61,6 +63,7 @@ function aggregateStatsFiles(
         ignoredTracker, invalidTracker, invalidTimestamp,
         ignoredStationary, ignoredSignal0,
         ignoredH3stationary, ignoredElevation,
+        ignoredDistance,
         ignoredFutureTimestamp, ignoredStaleTimestamp,
         hourly
     };

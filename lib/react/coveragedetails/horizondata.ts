@@ -1,10 +1,31 @@
 import type {Table} from 'apache-arrow';
 
 // Matches the writer in aprs-server/src/horizon.rs: 720 half-degree bearing bins,
-// band columns are the lowest-AGL angle within each distance band (nullable)
+// band columns are the minimum elevation angle within each distance band (nullable)
 export const BIN_COUNT = 720;
 export const BIN_DEG = 360 / BIN_COUNT;
 export const BAND_KEYS = ['angle5km', 'angle10km', 'angle20km', 'angle30km', 'angle50km', 'angle90km'] as const;
+
+// Distance range (km) each band column covers; the first band starts at the
+// writer's 2 km minimum-distance window
+export const BAND_RANGES_KM: Record<(typeof BAND_KEYS)[number], [number, number]> = {
+    angle5km: [2, 5],
+    angle10km: [5, 10],
+    angle20km: [10, 20],
+    angle30km: [20, 30],
+    angle50km: [30, 50],
+    angle90km: [50, 90]
+};
+
+const EFFECTIVE_EARTH_RADIUS_M = (4 / 3) * 6_371_000;
+
+// Inverse of the writer's angle formula: the height above station ground that
+// an elevation angle corresponds to at a distance, k=4/3 curvature dip included
+export function heightAtDistance(angleDeg: number, distanceKm: number): number {
+    const d = distanceKm * 1000;
+    const curvatureDip = d / (2 * EFFECTIVE_EARTH_RADIUS_M);
+    return Math.tan((angleDeg * Math.PI) / 180 + curvatureDip) * d;
+}
 
 export interface HorizonPoint {
     x: number; // signed offset from north, S(-180) W(-90) N(0) E(90) - north in the middle

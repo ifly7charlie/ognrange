@@ -532,6 +532,23 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     let lng = packet.longitude.unwrap();
     let comment = packet.comment.as_deref().unwrap_or("");
 
+    // Filter positions implausibly far from the receiver - a corrupted packet
+    // (e.g. a mangled longitude) otherwise plants a stray cell in the coverage
+    // map and, via min-AGL selection, wrecks the horizon chart. Checked before
+    // the elevation lookups so garbage positions don't pull in far-away DEM
+    // tiles. Skipped until the station's own position is known.
+    if let (Some(slat), Some(slng)) = (station_details.lat, station_details.lng) {
+        if (slat != 0.0 || slng != 0.0)
+            && station::great_circle_distance(slat, slng, lat, lng) > *MAX_PACKET_DISTANCE_KM
+        {
+            station_details.stats.record_ignored_distance();
+            state.global_stats.with_data(|d| d.record_ignored_distance());
+            state.station_manager.update(&station_details);
+            reject_log::log_reject("distance_too_far", raw);
+            return;
+        }
+    }
+
     // Ensure aircraft entry exists before stationary check (matches TS: aircraft
     // is always created before stationary filter so seen time is always tracked)
     {

@@ -7,7 +7,7 @@ import {tableFromIPC, Table} from 'apache-arrow';
 import {NEXT_PUBLIC_DATA_URL} from '../../common/config';
 import graphcolours from '../graphcolours';
 
-import {chartsFromTable, horizonFileFor, HorizonPoint} from './horizondata';
+import {chartsFromTable, horizonFileFor, heightAtDistance, BAND_RANGES_KM, HorizonPoint} from './horizondata';
 
 const SERIES: {key: string; label: string; colour: string; width: number}[] = [
     {key: 'lowestAngle', label: 'any_distance', colour: '#333333', width: 2},
@@ -52,13 +52,21 @@ const HorizonTooltip = ({active, payload, t}: {active?: boolean; payload?: any[]
                     {point.bearing.toFixed(1)}&deg; ({compass})
                 </b>
             </p>
-            {payload.map((entry) =>
-                entry.value != null ? (
+            {payload.map((entry) => {
+                if (entry.value == null) {
+                    return null;
+                }
+                // For band series, show the height window the angle sweeps
+                // across the band's distance range (relative to station ground)
+                const range = BAND_RANGES_KM[entry.dataKey as keyof typeof BAND_RANGES_KM];
+                const heights = range ? ([heightAtDistance(entry.value, range[0]), heightAtDistance(entry.value, range[1])] as const) : null;
+                return (
                     <div key={entry.dataKey} style={{color: entry.color}}>
                         {entry.name}: {entry.value.toFixed(2)}&deg;
+                        {heights ? <> {t('tooltip_heights', {low: Math.round(heights[0] / 10) * 10, high: Math.round(heights[1] / 10) * 10})}</> : null}
                     </div>
-                ) : null
-            )}
+                );
+            })}
             {point.lowestAgl != null && point.lowestDistance != null ? <div>{t('tooltip_lowest', {agl: point.lowestAgl, distance: point.lowestDistance})}</div> : null}
             {point.maxDistance != null ? <div>{t('tooltip_max', {distance: point.maxDistance})}</div> : null}
             {point.count != null ? <div>{t('tooltip_count', {count: point.count})}</div> : null}

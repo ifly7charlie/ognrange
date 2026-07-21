@@ -1,10 +1,12 @@
 //! Per-station receive-horizon aggregation.
 //!
-//! For each bearing bin around a station, tracks the elevation angle of the
-//! lowest-AGL point received (overall and per distance band). Selection is by
-//! minimum AGL - the point seen closest to the terrain - while the angle is
-//! computed from that point's MSL altitude, the station's ground elevation and
-//! the great-circle distance, with a standard-refraction earth-curvature dip.
+//! For each bearing bin around a station, tracks the minimum elevation angle
+//! at which anything was received (overall and per distance band). Nothing is
+//! received below the skyline, so the lowest observed angle is the tightest
+//! bound on the horizon occlusion in that direction. The angle is computed
+//! from the cell's lowest received MSL altitude, the station's ground
+//! elevation and the great-circle distance, with a standard-refraction
+//! earth-curvature dip.
 //!
 //! Layers are merged into RF frequency groups (see `Layer::frequency_group`):
 //! the horizon is an antenna/frequency property, not a protocol one. Merging
@@ -22,6 +24,17 @@ pub const HORIZON_BINS: usize = 720;
 /// Cells nearer than this produce meaninglessly steep angles (the cell-centre
 /// position quantisation alone is ~0.5km at H3 res 8) and are excluded
 pub const HORIZON_MIN_DISTANCE_KM: f64 = 2.0;
+/// Cells further than this are excluded entirely. Min-angle selection is
+/// extremely sensitive to corrupted positions already in the coverage data
+/// (a single garbage cell thousands of km out shows as a huge negative
+/// angle - the curvature dip alone is ~-23 degrees at 6800km)
+pub const HORIZON_MAX_DISTANCE_KM: f64 = 120.0;
+/// Valid elevation-angle window (degrees). Below the floor the point would
+/// sit under any plausible terrain even after the curvature dip - a corrupted
+/// altitude; above the ceiling the cell is nearly overhead and says nothing
+/// about the horizon
+pub const HORIZON_MIN_ANGLE_DEG: f32 = -3.0;
+pub const HORIZON_MAX_ANGLE_DEG: f32 = 50.0;
 /// Distance band upper edges (km). The top band ends at the cell-match
 /// distance where a 0.5 degree bin arc equals the cell width:
 /// 0.8km / (0.5 degree in radians) ~= 91km
@@ -79,7 +92,10 @@ fn compute_geom(station_lat: f64, station_lng: f64, h3: u64) -> Option<CellGeom>
     let cell = h3o::CellIndex::try_from(h3).ok()?;
     let centre = h3o::LatLng::from(cell);
     let distance_km = great_circle_distance(station_lat, station_lng, centre.lat(), centre.lng());
-    if !distance_km.is_finite() || distance_km < HORIZON_MIN_DISTANCE_KM {
+    if !distance_km.is_finite()
+        || distance_km < HORIZON_MIN_DISTANCE_KM
+        || distance_km > HORIZON_MAX_DISTANCE_KM
+    {
         return None;
     }
     let bearing = initial_bearing_deg(station_lat, station_lng, centre.lat(), centre.lng());
@@ -95,12 +111,12 @@ struct BandEntry {
 
 #[derive(Clone, Copy)]
 struct HorizonBin {
-    /// Lowest-minAgl cell across all distances (>= cutoff)
+    /// Lowest-angle cell across the whole distance window
     lowest: BandEntry,
     lowest_distance_km: f32,
     /// Furthest contributing cell in this bearing
     max_distance_km: f32,
-    /// Lowest-minAgl cell per distance band
+    /// Lowest-angle cell per distance band
     bands: [Option<BandEntry>; HORIZON_DISTANCE_BANDS_KM.len()],
     /// Cell-arc contributions (a near cell counts once per bin it subtends)
     count: u32,
@@ -126,13 +142,15 @@ pub struct HorizonRow {
     pub frequency: u16,
     /// Degrees, bin start: 0.0, 0.5, ... 359.5
     pub bearing: f32,
+    /// Minimum elevation angle across the whole distance window
     pub lowest_angle: f32,
+    /// AGL metres of that lowest-angle cell's lowest point
     pub lowest_agl: u16,
-    /// km to the lowest-AGL cell, rounded
+    /// km to the lowest-angle cell, rounded
     pub lowest_distance: u16,
     /// km to the furthest contributing cell, rounded
     pub max_distance: u16,
-    /// Lowest-AGL angle per distance band; None = no cells in band
+    /// Minimum angle per distance band; None = no cells in band
     pub band_angles: [Option<f32>; HORIZON_DISTANCE_BANDS_KM.len()],
     pub count: u32,
 }
@@ -210,6 +228,9 @@ impl HorizonCollector {
                 row.min_alt as f64 - elevation_m,
                 geom.distance_km as f64 * 1000.0,
             ) as f32;
+            if !(HORIZON_MIN_ANGLE_DEG..=HORIZON_MAX_ANGLE_DEG).contains(&angle) {
+                continue;
+            }
             let entry = BandEntry { min_agl: row.min_agl, angle };
             let band = band_index(geom.distance_km as f64);
 
@@ -218,14 +239,14 @@ impl HorizonCollector {
                 match bin {
                     None => *bin = Some(HorizonBin::new(entry, geom.distance_km, band)),
                     Some(b) => {
-                        if entry.min_agl < b.lowest.min_agl {
+                        if entry.angle < b.lowest.angle {
                             b.lowest = entry;
                             b.lowest_distance_km = geom.distance_km;
                         }
                         b.max_distance_km = b.max_distance_km.max(geom.distance_km);
                         if let Some(bi) = band {
                             match &mut b.bands[bi] {
-                                Some(e) if entry.min_agl >= e.min_agl => {}
+                                Some(e) if entry.angle >= e.angle => {}
                                 slot => *slot = Some(entry),
                             }
                         }
@@ -394,6 +415,20 @@ mod tests {
     }
 
     #[test]
+    fn far_cells_excluded() {
+        let mut c = HorizonCollector::from_station(&test_station()).unwrap();
+        // Beyond HORIZON_MAX_DISTANCE_KM: a corrupted-position cell must not
+        // reach the lowest/any-distance selection
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(150.0, 600, 4)]);
+        assert!(c.build_files().is_empty());
+        // Just inside the window still counts
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(110.0, 3000, 500)]);
+        let files = c.build_files();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].rows.iter().all(|r| r.max_distance <= 120));
+    }
+
+    #[test]
     fn day_current_and_unmapped_layers_ignored() {
         let mut c = HorizonCollector::from_station(&test_station()).unwrap();
         let rows = [row_north(20.0, 800, 100)];
@@ -421,7 +456,7 @@ mod tests {
         let f868: Vec<_> = files[0].rows.iter().filter(|r| r.frequency == 868).collect();
         let f1090: Vec<_> = files[0].rows.iter().filter(|r| r.frequency == 1090).collect();
         assert!(!f868.is_empty() && !f1090.is_empty());
-        // The adsl row has the lower AGL, so it wins the 868 bins
+        // The adsl row has the lower altitude, hence lower angle: wins the 868 bins
         assert!(f868.iter().all(|r| r.lowest_agl == 50));
         assert!(f1090.iter().all(|r| r.lowest_agl == 200));
 
@@ -431,9 +466,10 @@ mod tests {
     }
 
     #[test]
-    fn lowest_agl_wins_over_lower_msl() {
+    fn lowest_angle_wins_over_lower_agl() {
         let mut c = HorizonCollector::from_station(&test_station()).unwrap();
-        // Same bearing: high-MSL cell hugging terrain (agl 50) vs low-MSL cell well above it
+        // Same bearing: cell hugging terrain nearby (agl 50, steep ~4 degrees)
+        // vs a barely-above-station cell further out (agl 300, ~0.15 degrees)
         c.feed(
             AccumulatorType::Year,
             "2026",
@@ -442,13 +478,29 @@ mod tests {
         );
         let files = c.build_files();
         let row = files[0].rows.iter().find(|r| (r.bearing - 0.0).abs() < 0.01).unwrap();
-        assert_eq!(row.lowest_agl, 50);
-        assert_eq!(row.lowest_distance, 20);
+        assert_eq!(row.lowest_agl, 300);
+        assert_eq!(row.lowest_distance, 40);
         assert_eq!(row.max_distance, 40);
         // Both cells land in different bands: (10,20] and (30,50]
-        assert!(row.band_angles[2].is_some());
-        assert!(row.band_angles[4].is_some());
+        let b20 = row.band_angles[2].unwrap();
+        let b50 = row.band_angles[4].unwrap();
+        assert!(b50 < b20, "b50 {} b20 {}", b50, b20);
+        // Any-distance is the lower envelope of the bands
+        assert_eq!(row.lowest_angle, b50);
         assert!(row.band_angles[0].is_none());
+    }
+
+    #[test]
+    fn angle_window_excluded() {
+        let mut c = HorizonCollector::from_station(&test_station()).unwrap();
+        // Below the floor: claims 0m MSL, 500m under the station at 8km (~-3.6 deg)
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(8.0, 0, 0)]);
+        // Above the ceiling: ~4500m above the station at 3km (~56 deg)
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(3.0, 5000, 100)]);
+        assert!(c.build_files().is_empty());
+        // A normal cell still passes
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(20.0, 800, 100)]);
+        assert!(!c.build_files().is_empty());
     }
 
     #[test]

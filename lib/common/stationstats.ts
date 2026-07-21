@@ -22,6 +22,7 @@ export interface AprsPacketStats {
     ignoredSignal0: number;
     ignoredH3stationary: number;
     ignoredElevation: number;
+    ignoredDistance: number;
     ignoredFutureTimestamp: number;
     ignoredStaleTimestamp: number;
     /** Accepted packet counts by layer and hour-of-day (0–23). */

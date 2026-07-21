@@ -161,6 +161,12 @@ pub static FUTURE_PACKET_CUTOFF_SECS: Lazy<u32> =
 pub static STALE_PACKET_CUTOFF_SECS: Lazy<u32> =
     Lazy::new(|| env_parse("STALE_PACKET_CUTOFF_SECS", 3600u32));
 
+/// Reject packets claiming a position further than this from the station's
+/// known location - beyond real reception range the position is corrupt
+/// (default: 500, comfortably above the ~450km mountain/ducting records)
+pub static MAX_PACKET_DISTANCE_KM: Lazy<f64> =
+    Lazy::new(|| env_parse("MAX_PACKET_DISTANCE_KM", 500.0f64));
+
 // Layer configuration
 pub static ENABLED_LAYERS: Lazy<Option<HashSet<Layer>>> =
     Lazy::new(|| parse_enabled_layers(env::var("ENABLED_LAYERS").ok().as_deref()));

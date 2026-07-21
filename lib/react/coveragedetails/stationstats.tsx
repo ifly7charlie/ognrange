@@ -73,7 +73,7 @@ const EXCEPTION_KEYS: (keyof AprsPacketStats)[] = [
     'count', 'accepted',
     'ignoredTracker', 'invalidTracker', 'invalidTimestamp',
     'ignoredStationary', 'ignoredSignal0', 'ignoredH3stationary',
-    'ignoredElevation', 'ignoredFutureTimestamp', 'ignoredStaleTimestamp'
+    'ignoredElevation', 'ignoredDistance', 'ignoredFutureTimestamp', 'ignoredStaleTimestamp'
 ];
 
 function StationExceptionTable({stats}: {stats: AprsPacketStats}) {

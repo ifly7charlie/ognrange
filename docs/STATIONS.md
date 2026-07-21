@@ -108,6 +108,7 @@ Per-station packet filtering counters. These accumulate over the lifetime of the
 | `ignoredSignal0` | Packets ignored due to zero signal strength |
 | `ignoredH3stationary` | Packets ignored because the H3 cell hasn't changed |
 | `ignoredElevation` | Packets ignored due to elevation filter (bad altitude data) |
+| `ignoredDistance` | Packets ignored because the claimed position was further than `MAX_PACKET_DISTANCE_KM` (default 500 km) from the station — corrupted positions |
 | `count` | Total packets accepted for coverage recording |
 
 ### Layer mask
