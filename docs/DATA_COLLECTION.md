@@ -65,11 +65,31 @@ Because of this, the layer selector only offers protocols that a given station h
 
 ADS-B and PilotAware do not carry a signal strength value in the way that FLARM does. Coverage for these layers records only that the station *heard* the aircraft — not how well. On the map, presence-only layers use a fixed signal value rather than a measured one, so the colour scale reflects coverage extent rather than signal quality.
 
+## Receive Horizon
+
+The station details panel shows a *receive horizon* chart: for each compass direction, the lowest elevation angle at which the station has actually received traffic. Nothing is received below the local skyline, so the lowest observed angle is a good estimate of how much of the sky is blocked in that direction — a ridge to the west shows up as a raised line over westerly bearings, while an open valley lets the line drop to (or below) zero degrees.
+
+### How the angles are computed
+
+The circle around the station is divided into 720 half-degree bearing bins. Every coverage cell contributes its lowest received point: the elevation angle is calculated from that point's altitude relative to the station's own ground elevation, over the direct distance, with a standard-refraction (k=4/3) earth-curvature correction. Each bin then keeps the *minimum* angle seen — overall ("Any distance", the dark line) and separately within each distance band (≤5, 5–10, 10–20, 20–30, 30–50 and 50–90 km).
+
+Because every band applies the same minimum-angle rule, the "Any distance" line is the lower envelope of the band lines. The one exception: cells between 90 and 120 km belong to no band, so a minimum found out there appears only in the "Any distance" line — the tooltip's "Lowest cell" entry shows its distance.
+
+To keep one corrupted packet from wrecking the chart, cells are excluded when they are closer than 2 km or further than 120 km from the station, or when their angle falls outside −3° to +50° (below that floor the reported altitude is under any plausible terrain; above the ceiling the cell is nearly overhead and says nothing about the horizon).
+
+### Height ranges in the tooltip
+
+Hovering a bearing shows, next to each band's angle, the height window that angle corresponds to across the band's distance range — for example `5–10 km: 2.21° (190–390 m above station)` means an aircraft at the band's near edge becomes visible about 190 m above the station's elevation, rising to about 390 m at the far edge. These are computed with the same curvature correction used for the angles, and are relative to the station's ground elevation, not sea level; negative values mean below station level, which is normal over falling terrain.
+
+### Frequencies and periods
+
+Cells from all protocol layers are merged into two charts by RF frequency — 868 MHz (FLARM, OGN Tracker, FANET, ADS-L, PilotAware) and 1090 MHz (ADS-B) — since the horizon is a property of the antenna and frequency, not the protocol. SafeSky is excluded because it is network-sourced rather than received over RF. Horizon charts exist for month and year periods and are rebuilt from the full coverage data at every rollup; a day view shows the containing month.
+
 ## Station Lifecycle
 
 ### How stations are added
 
-A station only enters the system when it has successfully received and forwarded at least one valid aircraft packet. For a packet to count, it must carry a measured signal strength, a valid timestamp, the correct protocol identifier, and originate from a moving aircraft.
+A station only enters the system when it has successfully received and forwarded at least one valid aircraft packet. For a packet to count, it must carry a measured signal strength, a valid timestamp, the correct protocol identifier, originate from a moving aircraft, and claim a position within plausible reception range of the station (500 km by default) — anything further is treated as a corrupted position and rejected.
 
 A receiver that connects to the APRS-IS network and sends its own beacon announcements — but has no aircraft in range — does not appear in ognrange. This prevents stations that are online but idle from accumulating in the database as 0-traffic entries.
 

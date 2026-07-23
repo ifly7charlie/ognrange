@@ -8,7 +8,7 @@
 use std::sync::Mutex;
 
 use chrono::Utc;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::bitvec::{bitvec_to_hex, hex_to_bitvec, popcount_144, slot_from_timestamp};
 use crate::config::{OUTPUT_PATH, UNCOMPRESSED_ARROW_FILES};
@@ -29,9 +29,15 @@ struct Inner {
     server: String,
     server_software: String,
     server_address: String,
+    /// State of the most recently completed day. `bits` resets the moment the
+    /// first keepalive of a new day arrives, which is before the midnight
+    /// rollup archives the completed day — without this stash that archive
+    /// would contain the new day's near-empty bitvector.
+    prev: Option<Snapshot>,
 }
 
 /// Cloned snapshot of Inner for use outside the lock (e.g. file I/O).
+#[derive(Clone)]
 struct Snapshot {
     bits: [u64; 3],
     date: String,
@@ -99,12 +105,19 @@ impl GlobalUptime {
         let ts = now.timestamp() as u32;
         let slot = slot_from_timestamp(ts);
 
-        let snap = {
+        let (snap, rolled_prev) = {
             let mut inner = self.inner.lock().unwrap();
 
-            // Reset bitvector on date change
+            // Reset bitvector on date change, stashing the completed day so
+            // the midnight rollup (which runs after this reset) can still
+            // archive it.
+            let mut rolled_prev = None;
             if inner.date != today {
                 info!("Global uptime: new day {}", today);
+                if !inner.date.is_empty() {
+                    inner.prev = Some(inner.snapshot());
+                    rolled_prev = inner.prev.clone();
+                }
                 inner.bits = [0u64; 3];
                 inner.date = today;
             }
@@ -113,44 +126,87 @@ impl GlobalUptime {
             inner.server = parsed.alias;
             inner.server_software = format!("{} {}", parsed.software, parsed.version);
             inner.server_address = parsed.address;
-            inner.snapshot()
+            (inner.snapshot(), rolled_prev)
         };
 
         write_live(now, &snap);
+
+        // Archive the completed day immediately so its data is durable even if
+        // the process dies before the midnight rollup runs.
+        if let Some(prev) = rolled_prev {
+            let day_file = prev.date.clone();
+            write_dated(now, &prev, Some(144), &day_file, false);
+        }
     }
 
-    /// Write a dated snapshot during rollup (e.g. `global-uptime.2026-03-16.json.gz`)
-    /// and update symlinks to point to it.
+    /// Write a dated snapshot during rollup (e.g. `global-uptime.2026-03-16.json.gz`).
+    /// Only writes state whose date actually matches `day_file` — the live state
+    /// normally, or the stashed previous day at the midnight rollup. Anything
+    /// else would stamp the file with another day's bitvector.
     pub fn write_snapshot(&self, day_file: &str) {
         let now = Utc::now();
-        let snap = {
+        let today = now.format("%Y-%m-%d").to_string();
+        let selected = {
             let inner = self.inner.lock().unwrap();
-            if inner.date.is_empty() {
-                return; // no keepalives received yet
-            }
-            inner.snapshot()
+            select_snapshot(&inner, day_file, &today)
         };
 
-        // Use 144 only for completed (previous) days; for today use the actual elapsed slot count.
-        let today = now.format("%Y-%m-%d").to_string();
-        let elapsed_override = if snap.date != today { Some(144) } else { None };
-        let content = build_json(now, &snap, elapsed_override);
-        let stats_dir = format!("{}stats", *OUTPUT_PATH);
+        let (snap, elapsed_override, is_live) = match selected {
+            Some(s) => s,
+            None => {
+                debug!("Global uptime: no state for {}, skipping snapshot", day_file);
+                return;
+            }
+        };
 
-        // Always write .json.gz
-        let dated_gz_name = format!("global-uptime.{}.json.gz", day_file);
-        write_gz_atomic(&stats_dir, &dated_gz_name, &content);
+        write_dated(now, &snap, elapsed_override, day_file, is_live);
+    }
+}
+
+/// Pick which state (if any) covers `day_file`: the live bitvector when its
+/// date matches, or the previous-day stash. Returns the snapshot, the elapsed
+/// slot override (144 for completed days, None = derive from wall clock), and
+/// whether this is the live day (controls the live symlink update).
+fn select_snapshot(inner: &Inner, day_file: &str, today: &str) -> Option<(Snapshot, Option<u32>, bool)> {
+    if !inner.date.is_empty() && inner.date == day_file {
+        let elapsed = if inner.date != today { Some(144) } else { None };
+        return Some((inner.snapshot(), elapsed, true));
+    }
+    if let Some(prev) = inner.prev.as_ref().filter(|p| p.date == day_file) {
+        return Some((prev.clone(), Some(144), false));
+    }
+    None
+}
+
+/// Write the dated global-uptime files for `day_file`, optionally repointing
+/// the live symlinks (only correct when the snapshot is the current day).
+fn write_dated(
+    now: chrono::DateTime<Utc>,
+    snap: &Snapshot,
+    elapsed_override: Option<u32>,
+    day_file: &str,
+    update_symlink: bool,
+) {
+    let content = build_json(now, snap, elapsed_override);
+    let stats_dir = format!("{}stats", *OUTPUT_PATH);
+
+    // Always write .json.gz
+    let dated_gz_name = format!("global-uptime.{}.json.gz", day_file);
+    write_gz_atomic(&stats_dir, &dated_gz_name, &content);
+    if update_symlink {
         symlink_atomic(&dated_gz_name, &format!("{}/global-uptime.json.gz", stats_dir));
+    }
 
-        // Conditionally write .json
-        if *UNCOMPRESSED_ARROW_FILES {
-            let dated_name = format!("global-uptime.{}.json", day_file);
-            write_atomic(&stats_dir, &dated_name, &content);
+    // Conditionally write .json
+    if *UNCOMPRESSED_ARROW_FILES {
+        let dated_name = format!("global-uptime.{}.json", day_file);
+        write_atomic(&stats_dir, &dated_name, &content);
+        if update_symlink {
             symlink_atomic(&dated_name, &format!("{}/global-uptime.json", stats_dir));
         }
-
-        info!("Wrote global uptime snapshot: {}", dated_gz_name);
     }
+
+    info!("Wrote global uptime snapshot: {}", dated_gz_name);
 }
 
 /// Build the JSON string from a snapshot.
@@ -227,12 +283,34 @@ fn load_state() -> Inner {
 
     let today = Utc::now().format("%Y-%m-%d").to_string();
     let date = parsed["date"].as_str().unwrap_or("");
-    if date != today {
+    if date.is_empty() {
         return default_inner();
     }
 
     let hex = parsed["activity"].as_str().unwrap_or("");
     let bits = hex_to_bitvec(hex).unwrap_or([0u64; 3]);
+    let server = parsed["server"].as_str().unwrap_or("").to_string();
+    let server_software = parsed["serverSoftware"].as_str().unwrap_or("").to_string();
+    let server_address = parsed["serverAddress"].as_str().unwrap_or("").to_string();
+
+    if date != today {
+        // Stale state — the server was down across midnight. Keep it as the
+        // previous-day stash so a catch-up rollup can still archive that day.
+        info!(
+            "Restored stale global uptime for {} ({} slots) as previous-day archive",
+            date,
+            popcount_144(&bits)
+        );
+        let mut inner = default_inner();
+        inner.prev = Some(Snapshot {
+            bits,
+            date: date.to_string(),
+            server,
+            server_software,
+            server_address,
+        });
+        return inner;
+    }
 
     info!(
         "Restored global uptime for {}: {}/{} slots",
@@ -244,9 +322,10 @@ fn load_state() -> Inner {
     Inner {
         bits,
         date: date.to_string(),
-        server: parsed["server"].as_str().unwrap_or("").to_string(),
-        server_software: parsed["serverSoftware"].as_str().unwrap_or("").to_string(),
-        server_address: parsed["serverAddress"].as_str().unwrap_or("").to_string(),
+        server,
+        server_software,
+        server_address,
+        prev: None,
     }
 }
 
@@ -257,6 +336,7 @@ fn default_inner() -> Inner {
         server: String::new(),
         server_software: String::new(),
         server_address: String::new(),
+        prev: None,
     }
 }
 
@@ -308,6 +388,69 @@ mod tests {
     }
 
     #[test]
+    fn test_rollover_stashes_prev() {
+        let mut inner = default_inner();
+        inner.date = "2020-01-01".to_string();
+        inner.bits = [u64::MAX, 0, 0]; // 64 slots set
+        let uptime = GlobalUptime {
+            inner: Mutex::new(inner),
+        };
+
+        uptime.record_keepalive("# aprsc 2.1.19-g730c5c0 16 Mar 2026 10:31:00 GMT GLIDERN5 148.251.228.229:14580");
+
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let inner = uptime.inner.lock().unwrap();
+        // Live state reset to today with just the current slot
+        assert_eq!(inner.date, today);
+        assert_eq!(popcount_144(&inner.bits), 1);
+        // Completed day stashed intact
+        let prev = inner.prev.as_ref().unwrap();
+        assert_eq!(prev.date, "2020-01-01");
+        assert_eq!(popcount_144(&prev.bits), 64);
+    }
+
+    #[test]
+    fn test_select_snapshot_matches_by_date() {
+        let mut inner = default_inner();
+        inner.date = "2026-03-17".to_string();
+        inner.bits = [0b111, 0, 0];
+        inner.prev = Some(Snapshot {
+            bits: [u64::MAX, u64::MAX, 0],
+            date: "2026-03-16".to_string(),
+            server: String::new(),
+            server_software: String::new(),
+            server_address: String::new(),
+        });
+
+        // Live day, still today: no elapsed override, updates symlink
+        let (snap, elapsed, live) = select_snapshot(&inner, "2026-03-17", "2026-03-17").unwrap();
+        assert_eq!(snap.date, "2026-03-17");
+        assert_eq!(elapsed, None);
+        assert!(live);
+
+        // Live day already completed (rollup won the race against the first keepalive)
+        let (_, elapsed, live) = select_snapshot(&inner, "2026-03-17", "2026-03-18").unwrap();
+        assert_eq!(elapsed, Some(144));
+        assert!(live);
+
+        // Completed day served from the stash
+        let (snap, elapsed, live) = select_snapshot(&inner, "2026-03-16", "2026-03-17").unwrap();
+        assert_eq!(snap.date, "2026-03-16");
+        assert_eq!(popcount_144(&snap.bits), 128);
+        assert_eq!(elapsed, Some(144));
+        assert!(!live);
+
+        // Unrelated day: nothing to write — must NOT fall back to mismatched state
+        assert!(select_snapshot(&inner, "2026-03-10", "2026-03-17").is_none());
+
+        // Empty live date (post-restart) never matches
+        let mut empty = default_inner();
+        empty.prev = inner.prev.clone();
+        assert!(select_snapshot(&empty, "", "2026-03-17").is_none());
+        assert!(select_snapshot(&empty, "2026-03-16", "2026-03-17").is_some());
+    }
+
+    #[test]
     fn test_clear_current_slot() {
         let now = Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
@@ -328,6 +471,7 @@ mod tests {
                 server: String::new(),
                 server_software: String::new(),
                 server_address: String::new(),
+                prev: None,
             }),
         };
 

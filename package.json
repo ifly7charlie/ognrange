@@ -10,6 +10,7 @@
         "compactdb": "node --enable-source-maps dist/bin/compactdb.js",
         "dumparrow": "node --enable-source-maps dist/bin/dumparrow.js",
         "reconcile": "node --enable-source-maps dist/bin/reconcile.js",
+        "purgeuptime": "node --enable-source-maps dist/bin/purgeuptime.js",
         "export": "next export",
         "start": "next start",
         "lint": "next lint",

@@ -2102,6 +2102,23 @@ fn write_arrow_file(
     Ok(new_rows)
 }
 
+/// Pick the beacon activity bitvector covering `day_file`: the live one when
+/// its date matches, the prev stash when the station already rolled over to a
+/// new day, otherwise the live one unchanged (silent station carrying its last
+/// known activity, labeled with its own date).
+fn select_beacon_activity(
+    meta: &crate::station::StationDetails,
+    day_file: &str,
+) -> (Option<String>, Option<String>) {
+    if meta.beacon_activity_date.as_deref() != Some(day_file)
+        && meta.beacon_activity_prev_date.as_deref() == Some(day_file)
+    {
+        (meta.beacon_activity_prev.clone(), meta.beacon_activity_prev_date.clone())
+    } else {
+        (meta.beacon_activity.clone(), meta.beacon_activity_date.clone())
+    }
+}
+
 // NOTE: changes to output fields must be reflected in docs/STATIONS.md and docs/STATION.md
 /// Write per-station JSON containing station details, beacon bitvector, uptime, layers, and activity.
 /// Written once per rollup cycle for non-global stations with traffic.
@@ -2120,24 +2137,24 @@ fn write_station_json(
     let current_slot = now.hour() * 6 + now.minute() / 10 + 1; // 1-144
     let day_file = &accumulators.day.file;
 
-    // Compute uptime from beacon activity.
-    // If the beacon activity covers the day being rolled up and that day is already
-    // complete (not today), use elapsed=144 so the uptime is accurate for the full day.
-    let uptime = if station_meta.beacon_activity_date.as_deref() == Some(day_file.as_str())
+    // Pick the bitvector covering the day being written. At the midnight rollup
+    // the first beacon of the new day has usually already rolled the live
+    // vector over, leaving the completed day in the prev stash.
+    let (activity, activity_date) = select_beacon_activity(station_meta, day_file);
+
+    // Compute uptime from the chosen beacon activity.
+    // If it covers the day being rolled up and that day is already complete
+    // (not today), use elapsed=144 so the uptime is accurate for the full day.
+    let uptime = if activity_date.as_deref() == Some(day_file.as_str())
         && day_file.as_str() != today.as_str()
     {
-        station_meta.beacon_activity.as_deref().and_then(|hex| {
+        activity.as_deref().and_then(|hex| {
             let bits = crate::bitvec::hex_to_bitvec(hex)?;
             let set = crate::bitvec::popcount_144(&bits);
             Some(((set as f32 / 144.0) * 1000.0).round() / 10.0)
         })
     } else {
-        crate::station::compute_uptime(
-            &station_meta.beacon_activity,
-            &station_meta.beacon_activity_date,
-            &today,
-            current_slot,
-        )
+        crate::station::compute_uptime(&activity, &activity_date, &today, current_slot)
     };
 
     // Build the JSON: serialize StationDetails then merge in extra fields
@@ -2157,6 +2174,20 @@ fn write_station_json(
         if let Some(act) = day_activity {
             obj.insert("activity".to_string(), serde_json::to_value(act).unwrap_or_default());
         }
+        // Export the chosen bitvector (serde serialized the live one) and drop
+        // the internal rollover stash from the output
+        match (&activity, &activity_date) {
+            (Some(a), Some(d)) => {
+                obj.insert("beaconActivity".to_string(), serde_json::json!(a));
+                obj.insert("beaconActivityDate".to_string(), serde_json::json!(d));
+            }
+            _ => {
+                obj.remove("beaconActivity");
+                obj.remove("beaconActivityDate");
+            }
+        }
+        obj.remove("beaconActivityPrev");
+        obj.remove("beaconActivityPrevDate");
     }
 
     let json_str = match serde_json::to_string_pretty(&json) {
@@ -2714,6 +2745,36 @@ mod tests {
     use crate::coverage::header::AccumulatorBucket;
     use crate::coverage::record::BufferType;
     use crate::types::Epoch;
+
+    #[test]
+    fn test_select_beacon_activity() {
+        let mut meta = crate::station::StationDetails::default();
+        meta.beacon_activity = Some("aa".to_string());
+        meta.beacon_activity_date = Some("2026-03-17".to_string());
+        meta.beacon_activity_prev = Some("bb".to_string());
+        meta.beacon_activity_prev_date = Some("2026-03-16".to_string());
+
+        // Live vector covers the day being written
+        let (a, d) = select_beacon_activity(&meta, "2026-03-17");
+        assert_eq!(a.as_deref(), Some("aa"));
+        assert_eq!(d.as_deref(), Some("2026-03-17"));
+
+        // Completed day comes from the rollover stash
+        let (a, d) = select_beacon_activity(&meta, "2026-03-16");
+        assert_eq!(a.as_deref(), Some("bb"));
+        assert_eq!(d.as_deref(), Some("2026-03-16"));
+
+        // Unrelated day falls back to the live vector, labeled with its own date
+        let (a, d) = select_beacon_activity(&meta, "2026-03-10");
+        assert_eq!(a.as_deref(), Some("aa"));
+        assert_eq!(d.as_deref(), Some("2026-03-17"));
+
+        // No stash: live vector even when its date doesn't match
+        meta.beacon_activity_prev = None;
+        meta.beacon_activity_prev_date = None;
+        let (a, _) = select_beacon_activity(&meta, "2026-03-16");
+        assert_eq!(a.as_deref(), Some("aa"));
+    }
 
     // --- evaluate_station_validity ---
 

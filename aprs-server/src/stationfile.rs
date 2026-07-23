@@ -43,6 +43,8 @@ pub fn produce_station_file(
             // beacon activity bitvec lives in per-station {name}/{name}.json, not the station list
             s.beacon_activity = None;
             s.beacon_activity_date = None;
+            s.beacon_activity_prev = None;
+            s.beacon_activity_prev_date = None;
             s
         })
         .collect();
@@ -204,7 +206,16 @@ pub fn produce_station_file(
 }
 
 fn write_stations_complete_json(output_path: &str, station_manager: &StationManager) {
-    let all_stations = station_manager.all_stations();
+    let all_stations: Vec<StationDetails> = station_manager
+        .all_stations()
+        .into_iter()
+        .map(|mut s| {
+            // Internal rollover stash, not part of the export format
+            s.beacon_activity_prev = None;
+            s.beacon_activity_prev_date = None;
+            s
+        })
+        .collect();
     match serde_json::to_string(&all_stations) {
         Ok(json) => {
             let dir = output_path.trim_end_matches('/');

@@ -107,6 +107,14 @@ pub struct StationDetails {
     /// UTC date (YYYY-MM-DD) the beacon activity bitvector covers
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beacon_activity_date: Option<String>,
+    /// Previous day's beacon bitvector, stashed at day rollover so the midnight
+    /// rollup can archive the completed day after `beacon_activity` has reset.
+    /// Persisted to the station DB but stripped from JSON exports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_activity_prev: Option<String>,
+    /// UTC date (YYYY-MM-DD) covered by `beacon_activity_prev`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_activity_prev_date: Option<String>,
     /// Station uptime today as a percentage (0.0–100.0). Computed at output time, not persisted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime: Option<f32>,
@@ -328,6 +336,8 @@ impl StationManager {
             stats: AprsPacketStats::default(),
             beacon_activity: None,
             beacon_activity_date: None,
+            beacon_activity_prev: None,
+            beacon_activity_prev_date: None,
             uptime: None,
             layers: Vec::new(),
         };
@@ -520,6 +530,9 @@ impl StationManager {
 
     /// Record a station beacon in the daily beacon activity bitvector.
     /// Sets the bit for the 10-minute UTC slot corresponding to `timestamp`.
+    /// On day rollover the completed day's bitvector moves to the prev stash
+    /// (so the midnight rollup can archive it); beacons timestamped in the
+    /// prev day that arrive after the rollover still land in the stash.
     pub fn record_beacon(&self, name: &StationName, timestamp: u32) {
         let utc_date = match chrono::DateTime::from_timestamp(timestamp as i64, 0) {
             Some(dt) => dt.format("%Y-%m-%d").to_string(),
@@ -533,18 +546,40 @@ impl StationManager {
             None => return,
         };
 
-        // Reset if date changed
-        let mut bits = match (&details.beacon_activity, &details.beacon_activity_date) {
-            (Some(hex), Some(date)) if date == &utc_date => {
-                hex_to_bitvec(hex).unwrap_or([0u64; 3])
-            }
-            _ => [0u64; 3],
+        let set_bit = |hex: &Option<String>| {
+            let mut bits = hex
+                .as_deref()
+                .and_then(hex_to_bitvec)
+                .unwrap_or([0u64; 3]);
+            bits[slot / 64] |= 1u64 << (slot % 64);
+            bitvec_to_hex(&bits)
         };
 
-        bits[slot / 64] |= 1u64 << (slot % 64);
-
-        details.beacon_activity = Some(bitvec_to_hex(&bits));
-        details.beacon_activity_date = Some(utc_date);
+        match details.beacon_activity_date.as_deref() {
+            Some(date) if date == utc_date => {
+                details.beacon_activity = Some(set_bit(&details.beacon_activity));
+            }
+            Some(date) if date < utc_date.as_str() => {
+                // New day: stash the completed day, start a fresh bitvector
+                details.beacon_activity_prev = details.beacon_activity.take();
+                details.beacon_activity_prev_date = details.beacon_activity_date.take();
+                details.beacon_activity = Some(set_bit(&None));
+                details.beacon_activity_date = Some(utc_date);
+            }
+            Some(_) => {
+                // Beacon timestamped before the current day: record it in the
+                // stash if it covers that date, otherwise drop it
+                if details.beacon_activity_prev_date.as_deref() == Some(utc_date.as_str()) {
+                    details.beacon_activity_prev = Some(set_bit(&details.beacon_activity_prev));
+                } else {
+                    return;
+                }
+            }
+            None => {
+                details.beacon_activity = Some(set_bit(&None));
+                details.beacon_activity_date = Some(utc_date);
+            }
+        }
         self.update(&details);
     }
 
@@ -608,6 +643,9 @@ impl StationManager {
             let obj = json.as_object_mut().unwrap();
             obj.insert("uptime".to_string(), serde_json::json!(uptime));
             obj.insert("exportedAt".to_string(), serde_json::json!(now_epoch));
+            // Internal rollover stash, not part of the export format
+            obj.remove("beaconActivityPrev");
+            obj.remove("beaconActivityPrevDate");
 
             // Preserve rollup-derived fields from the most recently written station JSON.
             // Reading the symlink target gives us arrowRecords and activity from the
@@ -677,6 +715,8 @@ impl StationManager {
             stats: AprsPacketStats::default(),
             beacon_activity: None,
             beacon_activity_date: None,
+            beacon_activity_prev: None,
+            beacon_activity_prev_date: None,
             uptime: None,
             layers: Vec::new(),
         }];
@@ -736,6 +776,8 @@ mod tests {
             stats: AprsPacketStats::default(),
             beacon_activity: None,
             beacon_activity_date: None,
+            beacon_activity_prev: None,
+            beacon_activity_prev_date: None,
             uptime: None,
             layers: Vec::new(),
         }
@@ -1018,6 +1060,53 @@ mod tests {
         assert!(!s.bouncing);
         assert!(!s.mobile);
         assert_eq!(s.last_seen_at_primary, Some(Epoch(1000)));
+    }
+
+    #[test]
+    fn test_record_beacon_rollover_stashes_prev() {
+        let mgr = StationManager::new_for_test();
+        mgr.update(&make_test_details());
+        let name = StationName("TEST".to_string());
+        let popcount = |hex: &Option<String>| {
+            crate::bitvec::popcount_144(&crate::bitvec::hex_to_bitvec(hex.as_deref().unwrap()).unwrap())
+        };
+        let date_of = |ts: u32| {
+            chrono::DateTime::from_timestamp(ts as i64, 0)
+                .unwrap()
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+
+        let day1 = 1_900_000_800u32; // mid-day
+        let day2 = day1 + 86400;
+
+        mgr.record_beacon(&name, day1);
+        mgr.record_beacon(&name, day1 + 600);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.beacon_activity_date, Some(date_of(day1)));
+        assert_eq!(popcount(&s.beacon_activity), 2);
+        assert!(s.beacon_activity_prev.is_none());
+
+        // First beacon of the next day moves the completed day into the stash
+        mgr.record_beacon(&name, day2);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.beacon_activity_date, Some(date_of(day2)));
+        assert_eq!(popcount(&s.beacon_activity), 1);
+        assert_eq!(s.beacon_activity_prev_date, Some(date_of(day1)));
+        assert_eq!(popcount(&s.beacon_activity_prev), 2);
+
+        // A late beacon timestamped in the previous day lands in the stash
+        mgr.record_beacon(&name, day1 + 1200);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(popcount(&s.beacon_activity_prev), 3);
+        assert_eq!(popcount(&s.beacon_activity), 1);
+
+        // A beacon older than the stash is dropped
+        mgr.record_beacon(&name, day1 - 86400);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(popcount(&s.beacon_activity_prev), 3);
+        assert_eq!(popcount(&s.beacon_activity), 1);
+        assert_eq!(s.beacon_activity_prev_date, Some(date_of(day1)));
     }
 
     #[test]

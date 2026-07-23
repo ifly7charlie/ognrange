@@ -447,6 +447,11 @@ H3_GLOBAL_CELL_LEVEL=7
 # until approximately this many hours have passed
 FORGET_AIRCRAFT_AFTER_HOURS=12
 
+# Packets claiming a position further than this (in km) from the station's
+# known location are rejected as corrupt - well beyond real reception range
+# even for mountain/ducting records (~450km)
+MAX_PACKET_DISTANCE_KM=500
+
 # How far a station is allowed to move (in km) without triggering move detection
 STATION_MOVE_THRESHOLD_KM=0.2
 

@@ -534,7 +534,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Filter positions implausibly far from the receiver - a corrupted packet
     // (e.g. a mangled longitude) otherwise plants a stray cell in the coverage
-    // map and, via min-AGL selection, wrecks the horizon chart. Checked before
+    // map and, via min-angle selection, wrecks the horizon chart. Checked before
     // the elevation lookups so garbage positions don't pull in far-away DEM
     // tiles. Skipped until the station's own position is known.
     if let (Some(slat), Some(slng)) = (station_details.lat, station_details.lng) {
