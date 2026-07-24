@@ -1,13 +1,13 @@
 import {useMemo, useState, useCallback, useEffect, useRef} from 'react';
 import useSWR from 'swr';
 import {useTranslation} from 'next-i18next';
-import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer} from 'recharts';
+import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer} from 'recharts';
 import {tableFromIPC, Table} from 'apache-arrow';
 
 import {NEXT_PUBLIC_DATA_URL} from '../../common/config';
 import graphcolours from '../graphcolours';
 
-import {chartsFromTable, horizonFileFor, heightAtDistance, BAND_RANGES_KM, HorizonPoint, HorizonHover} from './horizondata';
+import {chartsFromTable, horizonFileFor, heightAtDistance, BAND_RANGES_KM, BAND_KEYS, BIN_DEG, HorizonPoint, HorizonHover} from './horizondata';
 
 const SERIES: {key: string; label: string; colour: string; width: number}[] = [
     {key: 'lowestAngle', label: 'any_distance', colour: '#333333', width: 2},
@@ -39,37 +39,47 @@ const arrowFetcher = async (url: string): Promise<Table | null> => {
     }
 };
 
-const HorizonTooltip = ({active, payload, t}: {active?: boolean; payload?: any[]; t: (key: string, opts?: any) => string}) => {
-    if (!active || !payload?.length) {
-        return null;
-    }
-    const point = payload[0].payload as HorizonPoint;
-    const compass = COMPASS[Math.round(point.bearing / 22.5) % 16];
+// Stable no-op tooltip content - keeps the recharts hover cursor and active
+// dots without drawing a box over the plot; the data goes to HorizonReadout
+const noTooltipContent = () => null;
+
+// Combined legend and hover readout below the chart - clicking a series name
+// toggles it, values fill in for the hovered bearing bin. All rows are always
+// rendered so hovering doesn't reflow the panel
+const HorizonReadout = ({point, hidden, toggleSeries, t}: {point: HorizonPoint | null; hidden: Record<string, boolean>; toggleSeries: (key: string) => void; t: (key: string, opts?: any) => string}) => {
+    const compass = point ? COMPASS[Math.round(point.bearing / 22.5) % 16] : null;
     return (
-        <div style={{background: 'white', padding: '2px 10px 4px 10px', border: '1px solid grey', fontSize: '0.75rem'}}>
-            <p className="label">
-                <b>
-                    {point.bearing.toFixed(1)}&deg; ({compass})
-                </b>
-            </p>
-            {payload.map((entry) => {
-                if (entry.value == null) {
-                    return null;
-                }
+        <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>
+            <div>
+                {point ? (
+                    <b>
+                        {point.bearing.toFixed(1)}&deg; ({compass})
+                    </b>
+                ) : (
+                    <span style={{color: '#888888'}}>{t('readout_hint')}</span>
+                )}
+            </div>
+            {SERIES.map((s) => {
+                const value = point?.[s.key as keyof HorizonPoint] as number | null | undefined;
                 // For band series, show the height window the angle sweeps
                 // across the band's distance range (relative to station ground)
-                const range = BAND_RANGES_KM[entry.dataKey as keyof typeof BAND_RANGES_KM];
-                const heights = range ? ([heightAtDistance(entry.value, range[0]), heightAtDistance(entry.value, range[1])] as const) : null;
+                const range = BAND_RANGES_KM[s.key as keyof typeof BAND_RANGES_KM];
+                const heights = value != null && range ? ([heightAtDistance(value, range[0]), heightAtDistance(value, range[1])] as const) : null;
                 return (
-                    <div key={entry.dataKey} style={{color: entry.color}}>
-                        {entry.name}: {entry.value.toFixed(2)}&deg;
+                    <div key={s.key} style={{color: s.colour}}>
+                        <span onClick={() => toggleSeries(s.key)} style={{cursor: 'pointer', ...(hidden[s.key] ? {color: '#bbbbbb', textDecoration: 'line-through'} : {})}}>
+                            {t(s.label)}
+                        </span>
+                        : {value != null ? <>{value.toFixed(2)}&deg;</> : '—'}
                         {heights ? <> {t('tooltip_heights', {low: Math.round(heights[0] / 10) * 10, high: Math.round(heights[1] / 10) * 10})}</> : null}
                     </div>
                 );
             })}
-            {point.lowestAgl != null && point.lowestDistance != null ? <div>{t('tooltip_lowest', {agl: point.lowestAgl, distance: point.lowestDistance})}</div> : null}
-            {point.maxDistance != null ? <div>{t('tooltip_max', {distance: point.maxDistance})}</div> : null}
-            {point.count != null ? <div>{t('tooltip_count', {count: point.count})}</div> : null}
+            <div style={{minHeight: '4.2em'}}>
+                {point?.lowestAgl != null && point.lowestDistance != null ? <div>{t('tooltip_lowest', {agl: point.lowestAgl, distance: point.lowestDistance})}</div> : null}
+                {point?.maxDistance != null ? <div>{t('tooltip_max', {distance: point.maxDistance})}</div> : null}
+                {point?.count != null ? <div>{t('tooltip_count', {count: point.count})}</div> : null}
+            </div>
         </div>
     );
 };
@@ -85,28 +95,29 @@ function HorizonChart({
     frequency: number;
     data: HorizonPoint[];
     hidden: Record<string, boolean>;
-    toggleSeries: (e: any) => void;
+    toggleSeries: (key: string) => void;
     onHover: (h: HorizonHover) => void;
     t: (key: string, opts?: any) => string;
 }) {
-    // Report the hovered bearing bin so the map can draw a bearing line from the
-    // station. Empty bins may be missing from activePayload so fall back to the
-    // x-axis label (signed offset from north) for the bearing
+    const [hoverPoint, setHoverPoint] = useState<HorizonPoint | null>(null);
+
+    // Resolve the hovered bin from the x-axis label (signed offset from north) -
+    // data always holds all 720 bins in x order, and reusing the stable bin
+    // objects means repeat events on the same bin don't re-render anything.
+    // Feeds both the readout below the chart and the bearing line on the map
     const chartMouseMove = useCallback(
         (state: any) => {
-            const point = state?.isTooltipActive ? (state.activePayload?.[0]?.payload as HorizonPoint | undefined) : undefined;
             const x = Number(state?.activeLabel);
-            if (point) {
-                onHover({bearing: point.bearing, distanceKm: point.maxDistance ?? null});
-            } else if (state?.isTooltipActive && Number.isFinite(x)) {
-                onHover({bearing: x < 0 ? x + 360 : x, distanceKm: null});
-            } else {
-                onHover(null);
-            }
+            const point = (state?.isTooltipActive && Number.isFinite(x) ? data[Math.round((x + 180) / BIN_DEG)] : null) ?? null;
+            setHoverPoint(point);
+            onHover(point ? {bearing: point.bearing, distanceKm: point.maxDistance ?? null, bands: BAND_KEYS.map((k) => point[k])} : null);
         },
-        [onHover]
+        [data, onHover]
     );
-    const chartMouseLeave = useCallback(() => onHover(null), [onHover]);
+    const chartMouseLeave = useCallback(() => {
+        setHoverPoint(null);
+        onHover(null);
+    }, [onHover]);
 
     return (
         <>
@@ -124,14 +135,7 @@ function HorizonChart({
                     />
                     <YAxis domain={['auto', 'auto']} tickFormatter={(v: number) => `${v}°`} style={{fontSize: '0.7rem'}} />
                     <ReferenceLine y={0} stroke="#888888" strokeDasharray="3 3" />
-                    <Tooltip content={<HorizonTooltip t={t} />} />
-                    <Legend
-                        onClick={toggleSeries}
-                        wrapperStyle={{fontSize: '0.7rem', cursor: 'pointer'}}
-                        formatter={(value: string, entry: any) => (
-                            <span style={hidden[entry.dataKey] ? {color: '#bbbbbb', textDecoration: 'line-through'} : undefined}>{value}</span>
-                        )}
-                    />
+                    <Tooltip content={noTooltipContent} cursor={{stroke: '#888888'}} />
                     {SERIES.map((s) => (
                         <Line
                             key={s.key}
@@ -147,6 +151,7 @@ function HorizonChart({
                     ))}
                 </LineChart>
             </ResponsiveContainer>
+            <HorizonReadout point={hoverPoint} hidden={hidden} toggleSeries={toggleSeries} t={t} />
         </>
     );
 }
@@ -168,14 +173,14 @@ export function HorizonDetails({
     const DATA_URL = env?.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL;
 
     // Mouse-move fires per pixel but bins are 0.5°, so only push changes upward
-    const lastHover = useRef<HorizonHover>(null);
+    const lastHover = useRef<string>('');
     const onHover = useCallback(
         (h: HorizonHover) => {
-            const prev = lastHover.current;
-            if (!!h === !!prev && h?.bearing === prev?.bearing && h?.distanceKm === prev?.distanceKm) {
+            const key = h ? `${h.bearing}|${h.distanceKm}|${h.bands}` : '';
+            if (key === lastHover.current) {
                 return;
             }
-            lastHover.current = h;
+            lastHover.current = key;
             setHorizonHover?.(h);
         },
         [setHorizonHover]
@@ -184,7 +189,7 @@ export function HorizonDetails({
     // Don't leave a stale bearing line when the station changes or the panel closes
     useEffect(() => {
         return () => {
-            lastHover.current = null;
+            lastHover.current = '';
             setHorizonHover?.(null);
         };
     }, [station, setHorizonHover]);
@@ -201,10 +206,8 @@ export function HorizonDetails({
     const charts = useMemo(() => (table ? chartsFromTable(table) : null), [table]);
 
     const [hidden, setHidden] = useState<Record<string, boolean>>({});
-    const toggleSeries = useCallback((e: any) => {
-        if (e?.dataKey) {
-            setHidden((h) => ({...h, [e.dataKey]: !h[e.dataKey]}));
-        }
+    const toggleSeries = useCallback((key: string) => {
+        setHidden((h) => ({...h, [key]: !h[key]}));
     }, []);
 
     if (!charts?.length) {

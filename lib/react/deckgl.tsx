@@ -3,7 +3,7 @@ import {MapboxOverlay, MapboxOverlayProps} from '@deck.gl/mapbox';
 
 import Map, {Source, Layer, useControl, NavigationControl, ScaleControl, AttributionControl} from 'react-map-gl/mapbox';
 
-import {IconLayer, ColumnLayer, LineLayer} from '@deck.gl/layers';
+import {IconLayer, ColumnLayer, LineLayer, ScatterplotLayer} from '@deck.gl/layers';
 import {H3HexagonLayer} from '@deck.gl/geo-layers';
 
 import ReactDOMServer from 'react-dom/server';
@@ -40,7 +40,14 @@ const altitudeFunctions = {
 };
 
 import {useStationListMeta, useStationMeta, StationMeta} from './stationmeta';
-import {destinationPoint, HorizonHover} from './coveragedetails/horizondata';
+import {destinationPoint, BAND_KEYS, BAND_RANGES_KM, HorizonHover} from './coveragedetails/horizondata';
+import graphcolours from './graphcolours';
+
+// Band colours matching the horizon chart series (hex '#rrggbb' → deck.gl rgba)
+const horizonBandColours: [number, number, number, number][] = BAND_KEYS.map((_k, i) => {
+    const hex = graphcolours[i];
+    return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 224];
+});
 import {useDisplayedH3s} from './displayedh3s';
 import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
 
@@ -404,25 +411,69 @@ export function CoverageMap(props: {
         ]
     );
 
-    // Bearing line from the station when hovering the horizon chart in the sidebar.
-    // Kept out of makeLayers so per-hover updates don't recreate all the layers
-    const horizonHoverLayer = useMemo(() => {
+    // Bearing line from the station when hovering the horizon chart in the sidebar:
+    // one segment per distance band with data, coloured to match the chart series,
+    // with tick dots at the band boundaries. Kept out of makeLayers so per-hover
+    // updates don't recreate all the layers
+    const horizonHoverLayers = useMemo(() => {
         if (!props.horizonHover || !selectedStationMeta || isNaN(selectedStationMeta.lat)) {
-            return null;
+            return [];
         }
-        const {bearing, distanceKm} = props.horizonHover;
-        const from: [number, number] = [selectedStationMeta.lng, selectedStationMeta.lat];
-        const to = destinationPoint(selectedStationMeta.lat, selectedStationMeta.lng, bearing, distanceKm ?? 30);
-        return new LineLayer({
-            id: 'horizonBearing',
-            data: [{from, to}],
-            pickable: false,
-            getSourcePosition: (d: {from: [number, number]}) => d.from,
-            getTargetPosition: (d: {to: [number, number]}) => d.to,
-            getColor: [255, 16, 240, 192],
-            getWidth: 2,
-            widthUnits: 'pixels'
+        const {bearing, distanceKm, bands} = props.horizonHover;
+        const {lat, lng} = selectedStationMeta;
+        const at = (d: number) => destinationPoint(lat, lng, bearing, d);
+
+        type Segment = {from: [number, number]; to: [number, number]; color: [number, number, number, number]};
+        const segments: Segment[] = [];
+        const boundaries: number[] = [];
+        BAND_KEYS.forEach((k, i) => {
+            if (bands?.[i] == null) {
+                return;
+            }
+            // The outermost band is clipped to the furthest received cell
+            const [bandStart, bandEnd] = BAND_RANGES_KM[k];
+            const end = distanceKm != null ? Math.min(bandEnd, distanceKm) : bandEnd;
+            if (end > bandStart) {
+                segments.push({from: at(bandStart), to: at(end), color: horizonBandColours[i]});
+                boundaries.push(bandStart, end);
+            }
         });
+        // Cells beyond the last band (>90 km) have no band series - grey tail
+        if (distanceKm != null && distanceKm > 90) {
+            segments.push({from: at(90), to: at(distanceKm), color: [51, 51, 51, 224]});
+            boundaries.push(90, distanceKm);
+        }
+        if (!segments.length) {
+            // Nothing received at this bearing - just show the direction
+            segments.push({from: [lng, lat], to: at(distanceKm ?? 30), color: [255, 16, 240, 192]});
+        }
+        return [
+            new LineLayer({
+                id: 'horizonBearing',
+                data: segments,
+                pickable: false,
+                getSourcePosition: (d: Segment) => d.from,
+                getTargetPosition: (d: Segment) => d.to,
+                getColor: (d: Segment) => d.color,
+                getWidth: 3,
+                widthUnits: 'pixels'
+            }),
+            boundaries.length
+                ? new ScatterplotLayer({
+                      id: 'horizonBearingTicks',
+                      data: [...new Set(boundaries)].map((d) => ({position: at(d)})),
+                      pickable: false,
+                      getPosition: (d: {position: [number, number]}) => d.position,
+                      radiusUnits: 'pixels',
+                      getRadius: 3,
+                      filled: true,
+                      getFillColor: [255, 255, 255, 224],
+                      stroked: true,
+                      getLineColor: [51, 51, 51, 224],
+                      lineWidthMinPixels: 1
+                  })
+                : null
+        ].filter(Boolean);
     }, [props.horizonHover, selectedStationMeta]);
 
     let attribution = `<a href="//www.glidernet.org/">${t('source')}</a> | `;
@@ -458,7 +509,7 @@ export function CoverageMap(props: {
                 <DeckGLOverlay
                     getTooltip={useToolTipSelection}
                     onClick={onClick}
-                    layers={horizonHoverLayer ? [...layers, horizonHoverLayer] : layers} //
+                    layers={horizonHoverLayers.length ? [...layers, ...horizonHoverLayers] : layers} //
                     interleaved={true}
                 />
                 {router.query?.airspace == '1' && airspaceKey ? (

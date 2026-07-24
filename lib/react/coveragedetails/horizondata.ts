@@ -21,8 +21,9 @@ const EFFECTIVE_EARTH_RADIUS_M = (4 / 3) * 6_371_000;
 const EARTH_RADIUS_KM = 6371;
 
 // Hovered bin on the horizon chart, used to draw a bearing line on the map.
-// distanceKm is the bin's furthest received cell, null for empty bins
-export type HorizonHover = {bearing: number; distanceKm: number | null} | null;
+// distanceKm is the bin's furthest received cell, null for empty bins; bands
+// holds the bin's per-band angles in BAND_KEYS order (null = band has no data)
+export type HorizonHover = {bearing: number; distanceKm: number | null; bands?: (number | null)[]} | null;
 
 // Great-circle destination from (lat, lng) along a bearing.
 // Returns [lng, lat] to match deck.gl position order

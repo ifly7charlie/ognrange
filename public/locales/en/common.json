@@ -171,7 +171,8 @@
             "tooltip_lowest": "Lowest cell: {{agl}} m AGL at {{distance}} km",
             "tooltip_heights": "({{low}}–{{high}} m above station)",
             "tooltip_max": "Furthest cell: {{distance}} km",
-            "tooltip_count": "{{count}} cell arcs"
+            "tooltip_count": "{{count}} cell arcs",
+            "readout_hint": "Hover over the chart to inspect a bearing"
         },
         "times": {
             "title": "Times",
