@@ -3,7 +3,7 @@ import {MapboxOverlay, MapboxOverlayProps} from '@deck.gl/mapbox';
 
 import Map, {Source, Layer, useControl, NavigationControl, ScaleControl, AttributionControl} from 'react-map-gl/mapbox';
 
-import {IconLayer, ColumnLayer} from '@deck.gl/layers';
+import {IconLayer, ColumnLayer, LineLayer} from '@deck.gl/layers';
 import {H3HexagonLayer} from '@deck.gl/geo-layers';
 
 import ReactDOMServer from 'react-dom/server';
@@ -40,6 +40,7 @@ const altitudeFunctions = {
 };
 
 import {useStationListMeta, useStationMeta, StationMeta} from './stationmeta';
+import {destinationPoint, HorizonHover} from './coveragedetails/horizondata';
 import {useDisplayedH3s} from './displayedh3s';
 import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
 
@@ -239,6 +240,7 @@ export function CoverageMap(props: {
     station: string;
     setStation: (s: any) => void;
     flyToStation: string;
+    horizonHover?: HorizonHover;
     visualisation: string;
     file?: string;
     tooltips: boolean;
@@ -248,6 +250,7 @@ export function CoverageMap(props: {
 }) {
     const stationMeta = useStationListMeta();
     const flyToStationMeta = useStationMeta(props.flyToStation ?? '');
+    const selectedStationMeta = useStationMeta(props.station ?? '');
     const displayedh3s = useDisplayedH3s();
     const router = useRouter();
     const params = useSearchParams();
@@ -401,6 +404,27 @@ export function CoverageMap(props: {
         ]
     );
 
+    // Bearing line from the station when hovering the horizon chart in the sidebar.
+    // Kept out of makeLayers so per-hover updates don't recreate all the layers
+    const horizonHoverLayer = useMemo(() => {
+        if (!props.horizonHover || !selectedStationMeta || isNaN(selectedStationMeta.lat)) {
+            return null;
+        }
+        const {bearing, distanceKm} = props.horizonHover;
+        const from: [number, number] = [selectedStationMeta.lng, selectedStationMeta.lat];
+        const to = destinationPoint(selectedStationMeta.lat, selectedStationMeta.lng, bearing, distanceKm ?? 30);
+        return new LineLayer({
+            id: 'horizonBearing',
+            data: [{from, to}],
+            pickable: false,
+            getSourcePosition: (d: {from: [number, number]}) => d.from,
+            getTargetPosition: (d: {to: [number, number]}) => d.to,
+            getColor: [255, 16, 240, 192],
+            getWidth: 2,
+            widthUnits: 'pixels'
+        });
+    }, [props.horizonHover, selectedStationMeta]);
+
     let attribution = `<a href="//www.glidernet.org/">${t('source')}</a> | `;
     if (props.station) {
         attribution += t('map.showing', {station: props.station});
@@ -434,7 +458,7 @@ export function CoverageMap(props: {
                 <DeckGLOverlay
                     getTooltip={useToolTipSelection}
                     onClick={onClick}
-                    layers={layers} //
+                    layers={horizonHoverLayer ? [...layers, horizonHoverLayer] : layers} //
                     interleaved={true}
                 />
                 {router.query?.airspace == '1' && airspaceKey ? (

@@ -1,7 +1,7 @@
 import {describe, it, expect} from 'vitest';
 import {tableFromJSON, tableFromIPC, tableToIPC} from 'apache-arrow';
 
-import {chartsFromTable, horizonFileFor, heightAtDistance, BIN_COUNT} from '../../lib/react/coveragedetails/horizondata';
+import {chartsFromTable, horizonFileFor, heightAtDistance, destinationPoint, BIN_COUNT} from '../../lib/react/coveragedetails/horizondata';
 
 describe('heightAtDistance', () => {
     // Inverts the writer's angle formula: reference values from the Rust
@@ -11,6 +11,25 @@ describe('heightAtDistance', () => {
         expect(heightAtDistance(-0.0337, 10)).toBeCloseTo(0, 0);
         // 300m above station ground at 20km gives 0.792 deg
         expect(heightAtDistance(0.792, 20)).toBeCloseTo(300, -1);
+    });
+});
+
+describe('destinationPoint', () => {
+    it('moves due north and east by the expected degrees', () => {
+        // 1 degree of latitude is ~111.2 km on a 6371 km sphere
+        const [lngN, latN] = destinationPoint(47, 8, 0, 111.2);
+        expect(latN).toBeCloseTo(48, 2);
+        expect(lngN).toBeCloseTo(8, 3);
+
+        // due east: longitude change scaled by cos(latitude), latitude nearly unchanged
+        const [lngE, latE] = destinationPoint(47, 8, 90, 50);
+        expect(lngE).toBeCloseTo(8 + 50 / (111.2 * Math.cos((47 * Math.PI) / 180)), 2);
+        expect(latE).toBeCloseTo(47, 1);
+    });
+
+    it('wraps across the antimeridian', () => {
+        const [lng] = destinationPoint(0, 179.9, 90, 50);
+        expect(lng).toBeCloseTo(-179.65, 1);
     });
 });
 

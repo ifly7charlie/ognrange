@@ -10,6 +10,7 @@ import {LayerSelector} from './layerselector';
 import {useStationMeta} from './stationmeta';
 
 import type {PickableDetails} from './pickabledetails';
+import type {HorizonHover} from './coveragedetails/horizondata';
 
 export function Dock(props: {
     setStation: (station: string) => void; //
@@ -24,6 +25,7 @@ export function Dock(props: {
     setVisualisation: (visualisation: string) => void;
     visualisation: string;
     isPresenceOnly?: boolean;
+    setHorizonHover?: (h: HorizonHover) => void;
     updateUrl: (a: Record<string, string>) => void;
     expanded: boolean;
     env: any;
@@ -64,6 +66,7 @@ export function Dock(props: {
                         layers={props.layers}
                         setLayers={props.setLayers}
                         dateRange={props.dateRange}
+                        setHorizonHover={props.setHorizonHover}
                         env={props.env}
                     />
                 ) : null}

@@ -32,6 +32,7 @@ import {UptimeBar} from './coveragedetails/uptimebar';
 import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {StationPosition} from './coveragedetails/stationposition';
 import {HorizonDetails} from './coveragedetails/horizondetails';
+import type {HorizonHover} from './coveragedetails/horizondata';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 import {GlobalUptimeCard} from './coveragedetails/globaluptime';
 import {StationStatsDashboard, StationHourlyDetailChart} from './coveragedetails/stationstats';
@@ -124,6 +125,7 @@ export function CoverageDetails({
     layers,
     setLayers,
     dateRange,
+    setHorizonHover,
     env
 }: //
 {
@@ -137,6 +139,7 @@ export function CoverageDetails({
     layers?: string[];
     setLayers?: (l: string[]) => void;
     dateRange?: {start: string; end: string};
+    setHorizonHover?: (h: HorizonHover) => void;
     env: any;
 }) {
     // Tidy up code later by simplifying typescript types
@@ -353,7 +356,7 @@ export function CoverageDetails({
                 <ActivityDetails activity={stationData?.activity} />
                 <UptimeBar uptime={stationData?.uptime} />
                 <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} exportedAt={stationData?.exportedAt} />
-                <HorizonDetails station={station} period={dateRange?.start || file} env={env} />
+                <HorizonDetails station={station} period={dateRange?.start || file} env={env} setHorizonHover={setHorizonHover} />
                 {serverUptimePercent != null && serverUptimePercent < 100 && (
                     <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
                 )}

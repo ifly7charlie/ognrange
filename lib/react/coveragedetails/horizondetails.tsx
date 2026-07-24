@@ -1,4 +1,4 @@
-import {useMemo, useState, useCallback} from 'react';
+import {useMemo, useState, useCallback, useEffect, useRef} from 'react';
 import useSWR from 'swr';
 import {useTranslation} from 'next-i18next';
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer} from 'recharts';
@@ -7,7 +7,7 @@ import {tableFromIPC, Table} from 'apache-arrow';
 import {NEXT_PUBLIC_DATA_URL} from '../../common/config';
 import graphcolours from '../graphcolours';
 
-import {chartsFromTable, horizonFileFor, heightAtDistance, BAND_RANGES_KM, HorizonPoint} from './horizondata';
+import {chartsFromTable, horizonFileFor, heightAtDistance, BAND_RANGES_KM, HorizonPoint, HorizonHover} from './horizondata';
 
 const SERIES: {key: string; label: string; colour: string; width: number}[] = [
     {key: 'lowestAngle', label: 'any_distance', colour: '#333333', width: 2},
@@ -79,19 +79,40 @@ function HorizonChart({
     data,
     hidden,
     toggleSeries,
+    onHover,
     t
 }: {
     frequency: number;
     data: HorizonPoint[];
     hidden: Record<string, boolean>;
     toggleSeries: (e: any) => void;
+    onHover: (h: HorizonHover) => void;
     t: (key: string, opts?: any) => string;
 }) {
+    // Report the hovered bearing bin so the map can draw a bearing line from the
+    // station. Empty bins may be missing from activePayload so fall back to the
+    // x-axis label (signed offset from north) for the bearing
+    const chartMouseMove = useCallback(
+        (state: any) => {
+            const point = state?.isTooltipActive ? (state.activePayload?.[0]?.payload as HorizonPoint | undefined) : undefined;
+            const x = Number(state?.activeLabel);
+            if (point) {
+                onHover({bearing: point.bearing, distanceKm: point.maxDistance ?? null});
+            } else if (state?.isTooltipActive && Number.isFinite(x)) {
+                onHover({bearing: x < 0 ? x + 360 : x, distanceKm: null});
+            } else {
+                onHover(null);
+            }
+        },
+        [onHover]
+    );
+    const chartMouseLeave = useCallback(() => onHover(null), [onHover]);
+
     return (
         <>
             <b style={{fontSize: 'small'}}>{t('frequency', {mhz: frequency})}</b>
             <ResponsiveContainer width="100%" height={190}>
-                <LineChart data={data} margin={{top: 5, right: 5, left: -10, bottom: 5}}>
+                <LineChart data={data} margin={{top: 5, right: 5, left: -10, bottom: 5}} onMouseMove={chartMouseMove} onMouseLeave={chartMouseLeave}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                         dataKey="x"
@@ -132,9 +153,41 @@ function HorizonChart({
 
 // Receive-horizon chart(s) for the station details panel - one chart per RF
 // frequency group present in the station's horizon.arrow file
-export function HorizonDetails({station, period, env}: {station: string; period?: string; env?: {NEXT_PUBLIC_DATA_URL?: string}}) {
+export function HorizonDetails({
+    station,
+    period,
+    env,
+    setHorizonHover
+}: {
+    station: string;
+    period?: string;
+    env?: {NEXT_PUBLIC_DATA_URL?: string};
+    setHorizonHover?: (h: HorizonHover) => void;
+}) {
     const {t} = useTranslation('common', {keyPrefix: 'details.horizon'});
     const DATA_URL = env?.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL;
+
+    // Mouse-move fires per pixel but bins are 0.5°, so only push changes upward
+    const lastHover = useRef<HorizonHover>(null);
+    const onHover = useCallback(
+        (h: HorizonHover) => {
+            const prev = lastHover.current;
+            if (!!h === !!prev && h?.bearing === prev?.bearing && h?.distanceKm === prev?.distanceKm) {
+                return;
+            }
+            lastHover.current = h;
+            setHorizonHover?.(h);
+        },
+        [setHorizonHover]
+    );
+
+    // Don't leave a stale bearing line when the station changes or the panel closes
+    useEffect(() => {
+        return () => {
+            lastHover.current = null;
+            setHorizonHover?.(null);
+        };
+    }, [station, setHorizonHover]);
 
     const url = useMemo(() => {
         if (!station) {
@@ -163,7 +216,7 @@ export function HorizonDetails({station, period, env}: {station: string; period?
             <b>{t('title')}</b>
             <br />
             {charts.map(({frequency, data}) => (
-                <HorizonChart key={frequency} frequency={frequency} data={data} hidden={hidden} toggleSeries={toggleSeries} t={t} />
+                <HorizonChart key={frequency} frequency={frequency} data={data} hidden={hidden} toggleSeries={toggleSeries} onHover={onHover} t={t} />
             ))}
         </>
     );

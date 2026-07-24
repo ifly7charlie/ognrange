@@ -19,6 +19,7 @@ import {useDisplayedH3s, DisplayedH3s} from '../lib/react/displayedh3s';
 import {COMBINED_LAYERS} from '../lib/common/layers';
 import type {PickableDetails} from '../lib/react/pickabledetails';
 import {getObjectFromH3s} from '../lib/react/pickabledetails';
+import type {HorizonHover} from '../lib/react/coveragedetails/horizondata';
 
 import type {GetServerSideProps} from 'next';
 
@@ -93,6 +94,9 @@ export default function CombinePage(props) {
 
     // Tooltip or sidebar
     const [hoverDetails, setHoverDetails] = useState<PickableDetails>({type: 'none'});
+
+    // Bearing hovered on the horizon chart, drawn as a line from the station on the map
+    const [horizonHover, setHorizonHover] = useState<HorizonHover>(null);
     const selectedDetails = useMemo<PickableDetails>(() => getObjectFromH3s(displayedH3s, urlH3), [displayedH3s.length, urlH3]);
 
     const setSelectedDetails = useCallback(
@@ -252,6 +256,7 @@ export default function CombinePage(props) {
                                 dockSplit={dockSplit}
                                 hoverDetails={hoverDetails}
                                 selectedDetails={selectedDetails}
+                                horizonHover={horizonHover}
                             />
                         </div>
                     </Panel>
@@ -279,6 +284,7 @@ export default function CombinePage(props) {
                                 layers={layers}
                                 setLayers={setLayers}
                                 isPresenceOnly={displayedH3s.isPresenceOnly}
+                                setHorizonHover={setHorizonHover}
                                 hoverDetails={hoverDetails}
                                 setSelectedDetails={setSelectedDetails}
                                 selectedDetails={selectedDetails}

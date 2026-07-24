@@ -18,6 +18,23 @@ export const BAND_RANGES_KM: Record<(typeof BAND_KEYS)[number], [number, number]
 };
 
 const EFFECTIVE_EARTH_RADIUS_M = (4 / 3) * 6_371_000;
+const EARTH_RADIUS_KM = 6371;
+
+// Hovered bin on the horizon chart, used to draw a bearing line on the map.
+// distanceKm is the bin's furthest received cell, null for empty bins
+export type HorizonHover = {bearing: number; distanceKm: number | null} | null;
+
+// Great-circle destination from (lat, lng) along a bearing.
+// Returns [lng, lat] to match deck.gl position order
+export function destinationPoint(lat: number, lng: number, bearingDeg: number, distanceKm: number): [number, number] {
+    const d = distanceKm / EARTH_RADIUS_KM;
+    const brng = (bearingDeg * Math.PI) / 180;
+    const lat1 = (lat * Math.PI) / 180;
+    const lng1 = (lng * Math.PI) / 180;
+    const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(brng));
+    const lng2 = lng1 + Math.atan2(Math.sin(brng) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+    return [(((lng2 * 180) / Math.PI + 540) % 360) - 180, (lat2 * 180) / Math.PI];
+}
 
 // Inverse of the writer's angle formula: the height above station ground that
 // an elevation angle corresponds to at a distance, k=4/3 curvature dip included
