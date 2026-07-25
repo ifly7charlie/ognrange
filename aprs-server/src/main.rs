@@ -818,18 +818,26 @@ async fn periodic_tasks(state: Arc<AppState>) {
                     .as_secs() as u32;
                 let purge_before = now_secs - *FORGET_AIRCRAFT_AFTER_SECS as u32;
 
-                let mut all_aircraft = state.all_aircraft.lock().await;
-                let before = all_aircraft.len();
-                all_aircraft.retain(|_, v| v.seen >= purge_before);
-                let purged = before - all_aircraft.len();
-                info!(
-                    "Purged {} aircraft from gap map, {} remaining",
-                    purged,
-                    all_aircraft.len()
-                );
+                // Take these locks one at a time: process_packet's gap calculation
+                // acquires aircraft_station then all_aircraft, so holding all_aircraft
+                // while waiting for aircraft_station here is a lock-order inversion
+                // that deadlocks the packet processor (observed 2026-07-25).
+                {
+                    let mut all_aircraft = state.all_aircraft.lock().await;
+                    let before = all_aircraft.len();
+                    all_aircraft.retain(|_, v| v.seen >= purge_before);
+                    let purged = before - all_aircraft.len();
+                    info!(
+                        "Purged {} aircraft from gap map, {} remaining",
+                        purged,
+                        all_aircraft.len()
+                    );
+                }
 
-                let mut aircraft_station = state.aircraft_station.lock().await;
-                aircraft_station.retain(|_, &mut v| v >= purge_before);
+                {
+                    let mut aircraft_station = state.aircraft_station.lock().await;
+                    aircraft_station.retain(|_, &mut v| v >= purge_before);
+                }
             }
         })
     };

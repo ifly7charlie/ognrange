@@ -45,6 +45,15 @@ export function heightAtDistance(angleDeg: number, distanceKm: number): number {
     return Math.tan((angleDeg * Math.PI) / 180 + curvatureDip) * d;
 }
 
+// The writer's angle formula (aprs-server/src/horizon.rs elevation_angle_deg):
+// elevation angle from the station to a point deltaHM above station ground at
+// distanceKm, k=4/3 curvature dip included
+export function elevationAngleDeg(deltaHM: number, distanceKm: number): number {
+    const d = distanceKm * 1000;
+    const curvatureDip = d / (2 * EFFECTIVE_EARTH_RADIUS_M);
+    return ((Math.atan2(deltaHM, d) - curvatureDip) * 180) / Math.PI;
+}
+
 export interface HorizonPoint {
     x: number; // signed offset from north, S(-180) W(-90) N(0) E(90) - north in the middle
     bearing: number;

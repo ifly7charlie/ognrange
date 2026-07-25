@@ -33,6 +33,7 @@ import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {StationPosition} from './coveragedetails/stationposition';
 import {HorizonDetails} from './coveragedetails/horizondetails';
 import type {HorizonHover} from './coveragedetails/horizondata';
+import {elevationAngleDeg} from './coveragedetails/horizondata';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 import {GlobalUptimeCard} from './coveragedetails/globaluptime';
 import {StationStatsDashboard, StationHourlyDetailChart} from './coveragedetails/stationstats';
@@ -193,6 +194,12 @@ export function CoverageDetails({
 
     const stationMeta = useStationMeta(station ?? '');
 
+    // Station ground elevation (m MSL) from the latest station JSON, used to compute
+    // the elevation angle to the hexagon's lowest point. Ground elevation is static
+    // so the latest file is correct for historical periods too
+    const {data: stationLatest} = useSWR(h3 && station ? `/api/station/${station}/details` : null, fetcher);
+    const stationElevation = typeof stationLatest?.elevation === 'number' ? stationLatest.elevation : null;
+
     const isRange = dateRange && dateRange.start !== dateRange.end;
 
     // Always use the API for station details
@@ -265,6 +272,12 @@ export function CoverageDetails({
     delayedUpdateFrom(key);
 
     if (details.type === 'hexagon') {
+        const distanceKm = stationMeta ? greatCircleDistance(cellToLatLng(details.h), [stationMeta.lat, stationMeta.lng], 'km') : null;
+        // Same 2km floor as the horizon writer - nearer cells give meaninglessly steep angles
+        const lowestAngle =
+            distanceKm != null && distanceKm >= 2 && stationElevation != null //
+                ? elevationAngleDeg(details.b - stationElevation, distanceKm)
+                : null;
         return (
             <div>
                 {details?.length ? (
@@ -284,10 +297,16 @@ export function CoverageDetails({
                         &nbsp;<span>{t('unlock')}</span>
                     </button>
                 ) : null}
-                {stationMeta ? (
+                {distanceKm != null ? (
                     <>
                         <br />
-                        {t('distance', {station, km: greatCircleDistance(cellToLatLng(details.h), [stationMeta.lat, stationMeta.lng], 'km').toFixed(0)})}
+                        {t('distance', {station, km: distanceKm.toFixed(0)})}
+                        {lowestAngle != null ? (
+                            <>
+                                <br />
+                                {t('angle', {angle: lowestAngle.toFixed(2)})}
+                            </>
+                        ) : null}
                     </>
                 ) : null}
                 <br style={{clear: 'both'}} />

@@ -83,6 +83,7 @@
         "title_mouse": "Details at mouse position",
         "unlock": "Unlock",
         "distance": "Distance to {{station}}: {{km}}km",
+        "angle": "Elevation angle to lowest point: {{angle}}°",
         "lowest": {
             "title": "Lowest point",
             "summary": "{{strength}} dB @ {{altitude}}m ({{agl}}m agl)",
