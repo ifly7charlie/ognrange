@@ -1576,7 +1576,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 [[package]]
 name = "rusty-leveldb"
 version = "4.0.1"
-source = "git+https://github.com/ifly7charlie/leveldb-rs.git#07276ef14ba2071f5560f06526dfb5c2f3f480de"
+source = "git+https://github.com/ifly7charlie/leveldb-rs.git#286c9fb7823959fbc9f7eadb9eff95580bc91013"
 dependencies = [
  "bytes",
  "crc32c",
