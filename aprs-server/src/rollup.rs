@@ -348,6 +348,52 @@ fn evaluate_station_validity(
     }
 }
 
+/// Remove a station's output files for the still-active accumulator periods
+/// (day/month/year/yearnz). Used when a station's DB is purged for a move:
+/// those files hold pre-move coverage from the old location, and with the DB
+/// cleared the next rollup legitimately shrinks them - which the arrow shrink
+/// guard would refuse, pinning the wrong-location coverage until the bucket
+/// rolls over. Closed periods (older dated files) stay on disk as history.
+///
+/// Prefix matching on "{station}.{type}.{file_id}." sweeps every layer
+/// variant plus .json sidecars, .horizon files, .working temps and .rejected
+/// copies. A second pass removes symlinks left dangling by the first (the
+/// "latest" pointers), so readers get a clean missing-file instead of a
+/// broken link.
+fn remove_active_period_outputs(output_dir: &str, station_name: &str, active: &Accumulators) -> usize {
+    let prefixes = [
+        format!("{}.day.{}.", station_name, active.day.file),
+        format!("{}.month.{}.", station_name, active.month.file),
+        format!("{}.year.{}.", station_name, active.year.file),
+        format!("{}.yearnz.{}.", station_name, active.yearnz.file),
+    ];
+
+    let mut removed = 0usize;
+    let Ok(entries) = std::fs::read_dir(output_dir) else {
+        return 0; // station never produced output
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if prefixes.iter().any(|p| name.starts_with(p.as_str()))
+            && std::fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(output_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // exists() follows the link, so symlink+!exists == dangling
+            if path.is_symlink() && !path.exists() && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
 /// Perform a full rollup: merge current → day/month/year/yearnz.
 /// Caller must flush the H3 cache before calling this.
 pub async fn rollup_all(
@@ -539,6 +585,24 @@ pub async fn rollup_all(
                 };
                 info!("clearing database for {}: {}", station_name, reason);
                 storage.purge_station(&station_name);
+                if was_moved {
+                    // Coverage is location-bound: the active-period outputs
+                    // mix pre-move cells from the old location and must be
+                    // rebuilt from the (now empty) DB. Expired stations keep
+                    // their outputs - that coverage is valid history.
+                    let active = new_accumulators.unwrap_or(old_accumulators);
+                    let removed = remove_active_period_outputs(
+                        &crate::config::output_dir(&station_name),
+                        &station_name,
+                        active,
+                    );
+                    if removed > 0 {
+                        info!(
+                            "{}: removed {} active-period output files (pre-move coverage)",
+                            station_name, removed
+                        );
+                    }
+                }
                 continue;
             }
         }
@@ -2033,7 +2097,9 @@ fn write_arrow_file(
     // period). Refuse the swap, keep the existing file, and skip the
     // uncompressed twin too so the two stay in sync. (The one legitimate shrink
     // - global station-validity cleanup - is intentionally blocked by this
-    // invariant.)
+    // invariant. Moved stations never hit it: their active-period outputs are
+    // deleted at purge time (remove_active_period_outputs), so the post-move
+    // rebuild starts with no existing file.)
     //
     // The measure is row count, NOT compressed byte size: gzipped arrow output
     // is not monotonic with content - the same set of cells with larger counts
@@ -2972,6 +3038,46 @@ mod tests {
             year: AccumulatorEntry { bucket: AccumulatorBucket(0x4000), file: "2026".into(), effective_start: Epoch(0) },
             yearnz: AccumulatorEntry { bucket: AccumulatorBucket(0x5000), file: "2025nz".into(), effective_start: Epoch(0) },
         }
+    }
+
+    #[test]
+    fn test_remove_active_period_outputs_moved_station() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // day 2026-03-12, month 2026-03, year 2026, yearnz 2025nz
+        let acc = test_accumulators();
+
+        let make = |name: &str| std::fs::write(dir.join(name), b"x").unwrap();
+        // Active-period files across layers/formats - all must go
+        make("TESTMV.day.2026-03-12.arrow.gz");
+        make("TESTMV.day.2026-03-12.json");
+        make("TESTMV.day.2026-03-12.horizon.arrow");
+        make("TESTMV.month.2026-03.flarm.arrow.gz");
+        make("TESTMV.year.2026.arrow.gz");
+        make("TESTMV.year.2026.flarm.rejected.1753444861.arrow.gz");
+        make("TESTMV.yearnz.2025nz.arrow.gz");
+        // Closed periods and station meta - must stay
+        make("TESTMV.day.2026-03-11.arrow.gz");
+        make("TESTMV.month.2026-02.arrow.gz");
+        make("TESTMV.year.2025.arrow.gz");
+        make("TESTMV.json");
+        // Latest symlinks: month points at an active file (dangles after
+        // pass 1), day points at a closed file (stays valid)
+        std::os::unix::fs::symlink("TESTMV.month.2026-03.flarm.arrow.gz", dir.join("TESTMV.month.flarm.arrow.gz")).unwrap();
+        std::os::unix::fs::symlink("TESTMV.day.2026-03-11.arrow.gz", dir.join("TESTMV.day.arrow.gz")).unwrap();
+
+        let removed = remove_active_period_outputs(&dir.to_string_lossy(), "TESTMV", &acc);
+        assert_eq!(removed, 8, "7 active-period files + 1 dangling symlink");
+
+        for kept in ["TESTMV.day.2026-03-11.arrow.gz", "TESTMV.month.2026-02.arrow.gz", "TESTMV.year.2025.arrow.gz", "TESTMV.json", "TESTMV.day.arrow.gz"] {
+            assert!(dir.join(kept).exists(), "{} should remain", kept);
+        }
+        for gone in ["TESTMV.day.2026-03-12.arrow.gz", "TESTMV.month.2026-03.flarm.arrow.gz", "TESTMV.year.2026.arrow.gz", "TESTMV.yearnz.2025nz.arrow.gz", "TESTMV.month.flarm.arrow.gz"] {
+            assert!(!dir.join(gone).exists(), "{} should be removed", gone);
+        }
+
+        // Missing output dir is a no-op, not an error
+        assert_eq!(remove_active_period_outputs(&dir.join("nope").to_string_lossy(), "TESTMV", &acc), 0);
     }
 
     #[test]
