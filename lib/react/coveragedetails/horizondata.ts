@@ -34,7 +34,7 @@ export const X_TICK_LABELS: Record<number, string> = {[-180]: 'S', [-90]: 'W', 0
 // bin's furthest received cell ('receive') or the terrain ridge distance
 // ('ground'), null when the bin is empty; bands holds the bin's per-band
 // angles in BAND_KEYS order (receive hovers only)
-export type HorizonHover = {source: 'receive' | 'ground'; bearing: number; distanceKm: number | null; bands?: (number | null)[]} | null;
+export type HorizonHover = {source: 'receive' | 'ground'; bearing: number; distanceKm: number | null; bands?: (number | null)[]; frequency?: number} | null;
 
 // Great-circle destination from (lat, lng) along a bearing.
 // Returns [lng, lat] to match deck.gl position order

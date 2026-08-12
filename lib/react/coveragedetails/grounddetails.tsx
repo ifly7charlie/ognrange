@@ -162,6 +162,7 @@ function GroundProfileChart({
     lowestAngle,
     receivedKm,
     stationAgl,
+    maxRangeKm,
     t
 }: {
     profile: GroundProfile;
@@ -169,6 +170,9 @@ function GroundProfileChart({
     lowestAngle: number | null;
     receivedKm: number | null;
     stationAgl: number;
+    // Capability-derived maximum useful range: the prediction stops there and
+    // a dashed marker is drawn when it's under the chart's full extent
+    maxRangeKm: number;
     t: (key: string, opts?: any) => string;
 }) {
     const data = useMemo(() => {
@@ -206,8 +210,10 @@ function GroundProfileChart({
                 km,
                 elevation,
                 shadow: shadow[i],
-                // Starts one sample early so it joins the end of the solid segment
-                predicted: predictedAngle != null && km > predictedFrom - GROUND_STEP_KM ? at(predictedAngle, km) : null
+                // Starts one sample early so it joins the end of the solid
+                // segment; predicting beyond the receiver's capability range
+                // would claim coverage the radio can't deliver
+                predicted: predictedAngle != null && km > predictedFrom - GROUND_STEP_KM && km <= maxRangeKm ? at(predictedAngle, km) : null
             };
             BAND_KEYS.forEach((k, i) => {
                 const a = bands?.[i];
@@ -216,7 +222,7 @@ function GroundProfileChart({
             });
             return row;
         });
-    }, [profile, bands, lowestAngle, receivedKm, stationAgl]);
+    }, [profile, bands, lowestAngle, receivedKm, stationAgl, maxRangeKm]);
 
     return (
         <>
@@ -239,6 +245,7 @@ function GroundProfileChart({
                         <Line key={k} dataKey={k} stroke={graphcolours[i]} strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} />
                     ))}
                     <Line dataKey="predicted" stroke={SIGHT_LINE} strokeWidth={1} strokeDasharray="5 3" dot={false} connectNulls={false} isAnimationActive={false} />
+                    {maxRangeKm < GROUND_MAX_KM ? <ReferenceLine x={maxRangeKm} stroke="#888888" strokeDasharray="3 3" /> : null}
                 </ComposedChart>
             </ResponsiveContainer>
             <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em', minHeight: '1.4em'}}>
@@ -263,11 +270,15 @@ export function FloorProfileChart({
     details,
     station,
     visualisation,
+    maxRangeKm,
     env
 }: {
     details: PickableFloorDetails;
     station: string;
     visualisation?: string;
+    // Capability-derived disc radius, threaded from the same source the map
+    // uses so the chart never disagrees with the disc it explains
+    maxRangeKm: number;
     env?: {NEXT_PUBLIC_DATA_URL?: string};
 }) {
     const {t} = useTranslation('common', {keyPrefix: 'details.ground'});
@@ -315,7 +326,7 @@ export function FloorProfileChart({
         const out: {km: number; alt: number}[] = [];
         for (let i = 0; i < polar.dist.length; i++) {
             const dKm = polar.dist[i];
-            if (dKm > GROUND_MAX_KM) {
+            if (dKm > maxRangeKm) {
                 continue;
             }
             let diff = Math.abs(polar.brg[i] - profile.bearing);
@@ -327,7 +338,7 @@ export function FloorProfileChart({
             }
         }
         return out;
-    }, [polar, h3data.d, profile]);
+    }, [polar, h3data.d, profile, maxRangeKm]);
 
     const terrainActive = visualisation === 'terrainFloor';
     const floorMsl = terrainActive ? details.terrainFloor : details.coverageFloor;
@@ -348,20 +359,22 @@ export function FloorProfileChart({
         // of crushing the useful range), while over flat terrain the floor
         // ray - not the terrain - sets the scale so the marker stays visible.
         // heightAtDistance is largest at full range for any angle, so the ray
-        // maximum is its 120km endpoint
+        // maximum is its endpoint at the capability range
         const terrainCap = maxElevation + Math.max(50, (maxElevation - profile.stationElevation) * 0.1);
-        const rayMax = rayAngle != null ? viewpoint + heightAtDistance(rayAngle, GROUND_MAX_KM) : -Infinity;
+        const rayMax = rayAngle != null ? viewpoint + heightAtDistance(rayAngle, maxRangeKm) : -Infinity;
         const dotMax = dots.reduce((m, p) => Math.max(m, p.alt), -Infinity);
         // Round up to a clean 50m step: the domain endpoint is rendered verbatim as the top tick
         const yCap = Math.min(FLOOR_DISPLAY_MAX_M, Math.ceil(Math.max(terrainCap, rayMax, dotMax) / 50) * 50);
         const shadow = shadowSeries(profile.points, viewpoint, yCap);
         const rows = profile.points.map(({km, elevation}, i) => {
-            const ray = rayAngle != null ? viewpoint + heightAtDistance(rayAngle, km) : null;
+            // The floor ray stops at the capability range - the disc has no
+            // cells beyond it, so drawing it further would contradict the map
+            const ray = rayAngle != null && km <= maxRangeKm ? viewpoint + heightAtDistance(rayAngle, km) : null;
             const floor = ray != null && ray <= yCap ? ray : null;
             return {km, elevation, shadow: shadow[i], floor, coverage: floor != null ? [floor, yCap] : null};
         });
         return {yCap, rows, dots: dots.filter((p) => p.alt <= yCap)};
-    }, [profile, stationAgl, rayAngle, dots]);
+    }, [profile, stationAgl, rayAngle, dots, maxRangeKm]);
 
     if (!data || !profile || distanceKm == null) {
         return null;
@@ -394,6 +407,7 @@ export function FloorProfileChart({
                             shape={(p: any) => <circle cx={p.cx} cy={p.cy} r={2} fill={ALTITUDE_DOT} fillOpacity={0.75} />}
                         />
                     ) : null}
+                    {maxRangeKm < GROUND_MAX_KM ? <ReferenceLine x={maxRangeKm} stroke="#888888" strokeDasharray="3 3" /> : null}
                     <ReferenceLine x={distanceKm} stroke="#888888" strokeDasharray="3 3" />
                     {floorMsl <= data.yCap ? <ReferenceDot x={distanceKm} y={floorMsl} r={4} fill={RIDGE_MARKER} stroke="#ffffff" isFront /> : null}
                 </ComposedChart>
@@ -420,6 +434,7 @@ export function GroundDetails({
     horizonHover,
     setHorizonHover,
     beaconAltitude,
+    maxRangeKm,
     env
 }: {
     station: string;
@@ -428,6 +443,9 @@ export function GroundDetails({
     // Registered receiver altitude (m MSL) from the station's location beacon,
     // via the details API - null/undefined when the station never beaconed one
     beaconAltitude?: number | null;
+    // Capability-derived maximum useful range on 868MHz; the profile chart
+    // keeps the full extent when the hover comes from a 1090 receive chart
+    maxRangeKm?: number;
     env?: {NEXT_PUBLIC_DATA_URL?: string};
 }) {
     const {t} = useTranslation('common', {keyPrefix: 'details.ground'});
@@ -482,7 +500,15 @@ export function GroundDetails({
                 </div>
             ) : null}
             {profile ? (
-                <GroundProfileChart profile={profile} bands={horizonHover?.bands} lowestAngle={lowestAngle} receivedKm={horizonHover?.distanceKm ?? null} stationAgl={stationAgl} t={t} />
+                <GroundProfileChart
+                    profile={profile}
+                    bands={horizonHover?.bands}
+                    lowestAngle={lowestAngle}
+                    receivedKm={horizonHover?.distanceKm ?? null}
+                    stationAgl={stationAgl}
+                    maxRangeKm={horizonHover?.frequency === 1090 ? GROUND_MAX_KM : maxRangeKm ?? GROUND_MAX_KM}
+                    t={t}
+                />
             ) : (
                 <GroundHorizonChart chart={chart} onHover={onHover} t={t} />
             )}

@@ -91,9 +91,9 @@ function HorizonChart({
             const x = Number(state?.activeLabel);
             const point = (state?.isTooltipActive && Number.isFinite(x) ? data[Math.round((x + 180) / BIN_DEG)] : null) ?? null;
             setHoverPoint(point);
-            onHover(point ? {source: 'receive', bearing: point.bearing, distanceKm: point.maxDistance ?? null, bands: BAND_KEYS.map((k) => point[k])} : null);
+            onHover(point ? {source: 'receive', bearing: point.bearing, distanceKm: point.maxDistance ?? null, bands: BAND_KEYS.map((k) => point[k]), frequency} : null);
         },
-        [data, onHover]
+        [data, onHover, frequency]
     );
     const chartMouseLeave = useCallback(() => {
         setHoverPoint(null);
@@ -172,7 +172,7 @@ export const HorizonDetails = memo(function HorizonDetails({
     const lastHover = useRef<string>('');
     const onHover = useCallback(
         (h: HorizonHover) => {
-            const key = h ? `${h.bearing}|${h.distanceKm}|${h.bands}` : '';
+            const key = h ? `${h.bearing}|${h.distanceKm}|${h.bands}|${h.frequency}` : '';
             if (key === lastHover.current) {
                 return;
             }

@@ -4,7 +4,7 @@ import {splitLongToH3Index, cellToLatLng, greatCircleDistance} from 'h3-js';
 
 import {initialBearingDeg, binSpan, receiveAngleAt, terrainGridFromTable, receiveAnglesFromTable, computeFloorDisc, FloorDisc} from '../../lib/react/floordata';
 import {elevationAngleDeg, heightAtDistance, BIN_COUNT} from '../../lib/react/coveragedetails/horizondata';
-import {GROUND_SAMPLES, GROUND_STEP_KM} from '../../lib/react/coveragedetails/grounddata';
+import {GROUND_SAMPLES, GROUND_STEP_KM, GROUND_MAX_KM} from '../../lib/react/coveragedetails/grounddata';
 import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M} from '../../lib/common/floor';
 import {floorHorizonFileFor} from '../../lib/react/usefloordata';
 
@@ -179,13 +179,50 @@ describe('computeFloorDisc: flat terrain', () => {
 
     it('reports monotonic progress through the sweep', () => {
         const fractions: number[] = [];
-        computeFloorDisc(groundTable(flatRay), null, 868, (f) => fractions.push(f));
+        computeFloorDisc(groundTable(flatRay), null, 868, GROUND_MAX_KM, (f) => fractions.push(f));
         expect(fractions.length).toBeGreaterThan(2);
         expect(fractions[0]).toBe(0);
         for (let i = 1; i < fractions.length; i++) {
             expect(fractions[i]).toBeGreaterThan(fractions[i - 1]);
         }
         expect(fractions[fractions.length - 1]).toBeLessThanOrEqual(1);
+    });
+});
+
+describe('computeFloorDisc: capability-reduced range', () => {
+    const full = computeFloorDisc(groundTable(flatRay), null, 868)!;
+    const reduced = computeFloorDisc(groundTable(flatRay), null, 868, 60)!;
+
+    it('caps the disc at the reduced range', () => {
+        let maxD = 0;
+        for (const c of locate(reduced)) {
+            maxD = Math.max(maxD, c.d);
+        }
+        expect(maxD).toBeGreaterThan(59);
+        expect(maxD).toBeLessThanOrEqual(60);
+    });
+
+    it('produces a proportionally smaller disc', () => {
+        // Area scales with radius squared: a 60km disc is ~a quarter of 120km
+        expect(reduced.length).toBeLessThan(full.length / 3);
+        expect(reduced.length).toBeGreaterThan(10000);
+    });
+
+    it('computes identical floors inside the reduced range', () => {
+        const fullLocated = locate(full);
+        const reducedLocated = locate(reduced);
+        const f = cellAt(fullLocated, 0, 30);
+        const r = cellAt(reducedLocated, 0, 30);
+        expect(reduced.terrainFloor[r.i]).toBe(full.terrainFloor[f.i]);
+    });
+
+    it('never extends past the terrain rays regardless of the requested range', () => {
+        const wild = computeFloorDisc(groundTable(flatRay), null, 868, 500)!;
+        let maxD = 0;
+        for (const c of locate(wild)) {
+            maxD = Math.max(maxD, c.d);
+        }
+        expect(maxD).toBeLessThanOrEqual(GROUND_MAX_KM);
     });
 });
 

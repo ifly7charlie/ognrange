@@ -6,15 +6,17 @@ import {computeFloorDisc} from './floordata';
 
 // Off-main-thread coverage-floor computation: fetch the station's
 // ground-horizon and receive-horizon arrow files and sweep the shadow-envelope
-// math over the whole 120km disc (~61k cells). Progress is posted as a single
-// 0-1 fraction spanning both downloads and the computation; results carry
-// transferred buffers. A stale requestId means the map moved on and the
-// message is dropped by the hook
+// math over the receiver's disc (capability-capped, up to 120km / ~61k cells).
+// Progress is posted as a single 0-1 fraction spanning both downloads and the
+// computation; results carry transferred buffers. A stale requestId means the
+// map moved on and the message is dropped by the hook
 
 export interface FloorWorkerRequest {
     groundUrl: string;
     horizonUrl: string;
     frequency: number;
+    // Maximum range (km) of the disc - the station's capability-derived cap
+    maxKm: number;
     requestId: number;
 }
 
@@ -45,7 +47,7 @@ async function fetchTable(url: string, onProgress: (fraction: number) => void): 
 }
 
 self.onmessage = async (e: MessageEvent<FloorWorkerRequest>) => {
-    const {groundUrl, horizonUrl, frequency, requestId} = e.data;
+    const {groundUrl, horizonUrl, frequency, maxKm, requestId} = e.data;
     const post = (phase: 'fetch' | 'compute', progress: number) => self.postMessage({type: 'progress', requestId, phase, progress});
 
     try {
@@ -59,7 +61,7 @@ self.onmessage = async (e: MessageEvent<FloorWorkerRequest>) => {
         // No receive horizon just means terrain-only floors; no ground horizon
         // (mobile/new station) means no disc at all
         const disc = groundTable //
-            ? computeFloorDisc(groundTable, horizonTable, frequency, (f) => post('compute', HORIZON_FETCH_END + f * (1 - HORIZON_FETCH_END)))
+            ? computeFloorDisc(groundTable, horizonTable, frequency, maxKm, (f) => post('compute', HORIZON_FETCH_END + f * (1 - HORIZON_FETCH_END)))
             : null;
         if (!disc) {
             self.postMessage({type: 'result', requestId, length: 0});

@@ -76,6 +76,8 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `lastBeacon` | `u32?` | Unix timestamp of the last Status beacon |
 | `status` | `string?` | Body text from the most recent Status beacon |
 | `notice` | `string?` | Human-readable move/bounce notice (empty string if no significant movement) |
+| `rfCapabilityDb` | `f32?` | Receiver RF capability: the cumulative `+X.XdB@10km[n]` figure from Status beacons. Only updated when the beacon parses, `n >= 5000` and `\|dB\| <= 45`, so alternating weather-status lines and post-restart beacons never clobber a mature value |
+| `rfCapabilityN` | `u32?` | Sample count `n` behind `rfCapabilityDb`, to judge the value's maturity |
 | `moved` | `bool` | Station move confirmed after `STATION_MOVE_CONFIRM_DAYS` at new location (triggers data purge) |
 | `bouncing` | `bool` | Station is oscillating between two locations, or a move is pending confirmation |
 | `mobile` | `bool` | Station appears to be on a moving vehicle (3+ consecutive new locations) |
@@ -170,6 +172,7 @@ The Arrow IPC stream files contain the same station data in columnar format, wit
 | `lastPacket` | `UInt32` | no | Last packet Unix timestamp (0 if never) |
 | `layerMask` | `UInt8` | no | Protocol layer bitmask |
 | `uptime` | `Float32` | yes | Today's uptime percentage (null if no activity today) |
+| `rfCapabilityDb` | `Float32` | yes | Receiver RF capability (cumulative dB@10km from Status beacons). **`NaN` when never reported** — the web client reads the raw values buffer without the null bitmap, so absence is encoded in the value itself |
 
 Stations are sorted by `id` ascending in the Arrow output.
 

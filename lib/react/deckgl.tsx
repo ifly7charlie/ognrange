@@ -39,7 +39,7 @@ const altitudeFunctions = {
     minAgl: (f) => f.g
 };
 
-import {useStationListMeta, useStationMeta, StationMeta} from './stationmeta';
+import {useStationListMeta, useStationListMetaUnfiltered, useStationMeta, StationMeta} from './stationmeta';
 import {destinationPoint, BAND_KEYS, BAND_RANGES_KM, HorizonHover} from './coveragedetails/horizondata';
 import graphcolours from './graphcolours';
 
@@ -52,7 +52,8 @@ import {useDisplayedH3s} from './displayedh3s';
 import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
 import {useFloorData} from './usefloordata';
 import type {FloorDisc} from './floordata';
-import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, FLOOR_VISUALISATION_SET} from '../common/floor';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, FLOOR_VISUALISATION_SET, floorFrequencyFor} from '../common/floor';
+import {capabilityMaxRangeKm, CAPABILITY_MAX_RANGE_KM} from '../common/capability';
 import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 
 // Precomputed colour for every possible layerMask bitmask value (0–255)
@@ -307,11 +308,16 @@ export function CoverageMap(props: {
     const airspaceKey = props.env.NEXT_PUBLIC_AIRSPACE_API_KEY || process.env.NEXT_PUBLIC_AIRSPACE_API_KEY;
 
     // Coverage-floor disc, only computed while a floor visualisation is
-    // selected for a station. ADS-B is the only 1090MHz layer; everything
-    // else receives on 868 so uses that receive horizon
+    // selected for a station. The disc radius is capped by the receiver's
+    // RF capability on 868; the ADS-B (1090) receive chain is separate
+    // hardware the capability figure says nothing about, so it keeps the
+    // full range. Gated on station meta having loaded so the disc isn't
+    // computed once at the default range and again when capability arrives
     const isFloorVis = FLOOR_VISUALISATION_SET.has(props.visualisation);
-    const floorFrequency = (params.get('layers') || 'combined') === 'adsb' ? 1090 : 868;
-    const {disc: floorData, loadingLayer: floorLoadingLayer} = useFloorData(isFloorVis && !!props.station, props.station, props.file, floorFrequency, props.env.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL);
+    const floorFrequency = floorFrequencyFor(params.get('layers'));
+    const floorMaxKm = floorFrequency === 868 ? capabilityMaxRangeKm(selectedStationMeta?.rfCapabilityDb) : CAPABILITY_MAX_RANGE_KM;
+    const stationMetaLoaded = useStationListMetaUnfiltered() != null;
+    const {disc: floorData, loadingLayer: floorLoadingLayer} = useFloorData(isFloorVis && !!props.station && stationMetaLoaded, props.station, props.file, floorFrequency, floorMaxKm, props.env.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL);
 
     const toColour = router.query.toColour || defaultToColour;
     const fromColour = router.query.fromColour || defaultFromColour;

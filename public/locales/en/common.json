@@ -198,7 +198,11 @@
             "profile_title": "Terrain profile {{bearing}}° ({{compass}})",
             "profile_horizon": "Terrain horizon {{angle}}° at {{distance}} km — solid: lowest receive angle per distance band, dashed: predicted, red dotted: terrain shadowed behind each crest",
             "antenna_warning": "⚠️ Receiver position is registered at {{beacon}}m AMSL — less than 2m above the ground here ({{ground}}m AMSL)",
-            "antenna_info": "Antenna is {{agl}}m above the ground, which is {{ground}}m AMSL"
+            "antenna_info": "Antenna is {{agl}}m above the ground, which is {{ground}}m AMSL",
+            "capability": "Estimated 868 MHz max range {{km}} km — based on the station's reported {{db}} dB average signal strength at 10 km",
+            "capability_max": "868 MHz range model {{model}} km — based on the station's reported {{db}} dB average signal strength at 10 km, capped at the {{max}} km data limit",
+            "capability_min": "868 MHz range model {{model}} km — based on the station's reported {{db}} dB average signal strength at 10 km, raised to the {{min}} km minimum",
+            "capability_none": "No reported signal strength at 10 km from this station — using the full {{max}} km range"
         },
         "times": {
             "title": "Times",

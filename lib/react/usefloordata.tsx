@@ -46,6 +46,7 @@ export function useFloorData(
     station: string | null | undefined,
     dateStart: string | undefined,
     frequency: number,
+    maxKm: number,
     dataUrl: string
 ): {disc: FloorDisc | null; loadingLayer: React.ReactNode | null} {
     const {t} = useTranslation();
@@ -53,7 +54,7 @@ export function useFloorData(
     const [progress, setProgress] = useState<FloorProgress | null>(null);
 
     const horizonFile = floorHorizonFileFor(dateStart);
-    const key = station ? `${dataUrl}${station}|${horizonFile}|${frequency}` : null;
+    const key = station ? `${dataUrl}${station}|${horizonFile}|${frequency}|${maxKm}` : null;
     const loaded = data?.key === key;
 
     useEffect(() => {
@@ -75,6 +76,7 @@ export function useFloorData(
             groundUrl: groundUrl(dataUrl, station),
             horizonUrl: `${dataUrl}${station}/${station}.${horizonFile}.horizon.arrow`,
             frequency,
+            maxKm,
             requestId: 0
         });
 

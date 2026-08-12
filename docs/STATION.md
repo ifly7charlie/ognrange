@@ -39,6 +39,8 @@ The file contains all `StationDetails` fields (see [STATIONS.md](./STATIONS.md#s
   "lastLocation": 1741968000,
   "lastBeacon": 1741967400,
   "status": "v0.2.8.RPI-GPU CPU:0.7 ...",
+  "rfCapabilityDb": 10.7,
+  "rfCapabilityN": 23481,
   "moved": false,
   "bouncing": false,
   "mobile": false,

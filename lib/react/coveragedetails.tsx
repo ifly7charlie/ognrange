@@ -36,7 +36,8 @@ import {GroundDetails, FloorProfileChart} from './coveragedetails/grounddetails'
 import type {HorizonHover} from './coveragedetails/horizondata';
 import {elevationAngleDeg} from './coveragedetails/horizondata';
 import {initialBearingDeg} from './floordata';
-import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M} from '../common/floor';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, floorFrequencyFor} from '../common/floor';
+import {capabilityRange, CAPABILITY_MAX_RANGE_KM, CAPABILITY_MIN_RANGE_KM} from '../common/capability';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 import {GlobalUptimeCard} from './coveragedetails/globaluptime';
 import {StationStatsDashboard, StationHourlyDetailChart} from './coveragedetails/stationstats';
@@ -267,6 +268,14 @@ export function CoverageDetails({
 
     const stationMeta = useStationMeta(station ?? '');
 
+    // Capability-derived maximum useful range: same source (stations.arrow via
+    // stationMeta) as the map's floor disc, so panel and map always agree.
+    // Only the 868MHz chain is described by the RF figure; adsb keeps the
+    // full extent
+    const capabilityDb = stationMeta?.rfCapabilityDb;
+    const capRange = capabilityRange(capabilityDb);
+    const maxRangeKm = floorFrequencyFor(layersParam) === 868 ? capRange.km : CAPABILITY_MAX_RANGE_KM;
+
     // Station ground elevation (m MSL) from the latest station JSON, used to compute
     // the elevation angle to the hexagon's lowest point. Ground elevation is static
     // so the latest file is correct for historical periods too
@@ -351,7 +360,7 @@ export function CoverageDetails({
                 <br style={{clear: 'both'}} />
                 <FloorDetailsBody details={details} station={station} visualisation={visualisation} />
                 <hr />
-                <FloorProfileChart details={details} station={station} visualisation={visualisation} env={env} />
+                <FloorProfileChart details={details} station={station} visualisation={visualisation} maxRangeKm={maxRangeKm} env={env} />
             </div>
         );
     }
@@ -461,7 +470,16 @@ export function CoverageDetails({
                 <UptimeBar uptime={stationData?.uptime} />
                 <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} exportedAt={stationData?.exportedAt} />
                 <HorizonDetails station={station} period={dateRange?.start || file} env={env} setHorizonHover={setHorizonHover} groundHoverBearing={horizonHover?.source === 'ground' ? horizonHover.bearing : null} />
-                <GroundDetails station={station} horizonHover={horizonHover} setHorizonHover={setHorizonHover} beaconAltitude={stationData?.beaconAltitude ?? null} env={env} />
+                <GroundDetails station={station} horizonHover={horizonHover} setHorizonHover={setHorizonHover} beaconAltitude={stationData?.beaconAltitude ?? null} maxRangeKm={maxRangeKm} env={env} />
+                <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>
+                    {capRange.modelKm == null
+                        ? t('ground.capability_none', {max: CAPABILITY_MAX_RANGE_KM})
+                        : capRange.clamped === 'max'
+                          ? t('ground.capability_max', {db: capabilityDb!.toFixed(1), model: Math.round(capRange.modelKm), max: CAPABILITY_MAX_RANGE_KM})
+                          : capRange.clamped === 'min'
+                            ? t('ground.capability_min', {db: capabilityDb!.toFixed(1), model: Math.max(1, Math.round(capRange.modelKm)), min: CAPABILITY_MIN_RANGE_KM})
+                            : t('ground.capability', {db: capabilityDb!.toFixed(1), km: Math.round(capRange.km)})}
+                </div>
                 {serverUptimePercent != null && serverUptimePercent < 100 && (
                     <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
                 )}

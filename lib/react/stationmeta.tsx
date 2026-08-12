@@ -23,6 +23,9 @@ export interface StationMeta {
     valid?: boolean[];
     lastPacket?: Uint32Array;
     layerMask?: Uint8Array;
+    // Receiver capability (cumulative dB@10km from status beacons); NaN when
+    // never reported, absent in files written before the column existed
+    rfCapabilityDb?: Float32Array;
 
     length: number;
 }
@@ -33,6 +36,7 @@ export interface SingleStationMeta {
     lng: number;
     id: number;
     layerMask: number;
+    rfCapabilityDb?: number;
 }
 
 /** Returns the filtered station list (filtered by selected layers and online/offline) */
@@ -59,7 +63,8 @@ export function useStationMeta(stationName: string): SingleStationMeta | null {
             lat: raw.lat[idx],
             lng: raw.lng[idx],
             id: raw.id[idx],
-            layerMask: mask || (1 << LAYER_BIT[Layer.COMBINED])
+            layerMask: mask || (1 << LAYER_BIT[Layer.COMBINED]),
+            rfCapabilityDb: raw.rfCapabilityDb?.[idx]
         };
     }, [stationName, ctx?.unfilteredList]);
 }
@@ -120,7 +125,8 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
                 lat: data.lat.filter(passesFilter),
                 id: data.id.filter(passesFilter),
                 valid: data.valid?.filter(passesFilter),
-                layerMask: data.layerMask?.filter(passesFilter)
+                layerMask: data.layerMask?.filter(passesFilter),
+                rfCapabilityDb: data.rfCapabilityDb?.filter(passesFilter)
             };
             setFilteredList({...filteredData, length: filteredData.id.length});
         },

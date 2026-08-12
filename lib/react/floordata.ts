@@ -187,23 +187,28 @@ export interface FloorDisc {
     length: number;
 }
 
-// gridDisk rings needed to reach GROUND_MAX_KM: res-8 centre spacing dips to
-// ~0.66km where the icosahedron distorts, so 200 rings plus the per-cell
-// distance filter always covers the 120km disc
-const DISC_RINGS = 200;
+// gridDisk rings needed to reach maxKm: res-8 centre spacing dips to ~0.66km
+// where the icosahedron distorts, so ceil(maxKm/0.66) rings plus the per-cell
+// distance filter always covers the disc; +18 margin reproduces the previous
+// fixed 200 rings at the full 120km
+const DISC_RINGS_MAX = 200;
+const discRings = (maxKm: number) => Math.min(DISC_RINGS_MAX, Math.ceil(maxKm / 0.66) + 18);
 
 function clampFloor(v: number): number {
     return Number.isFinite(v) ? Math.max(-32768, Math.min(FLOOR_UNKNOWN - 1, Math.round(v))) : FLOOR_UNKNOWN;
 }
 
-export function computeFloorDisc(groundTable: Table, horizonTable: Table | null, frequency: number, onProgress?: (fraction: number) => void): FloorDisc | null {
+export function computeFloorDisc(groundTable: Table, horizonTable: Table | null, frequency: number, maxKm: number = GROUND_MAX_KM, onProgress?: (fraction: number) => void): FloorDisc | null {
     const grid = terrainGridFromTable(groundTable);
     if (!grid) {
         return null;
     }
+    // The terrain rays end at GROUND_MAX_KM, so a capability-derived range can
+    // only shrink the disc, never extend it
+    const rangeKm = maxKm > 0 ? Math.min(maxKm, GROUND_MAX_KM) : GROUND_MAX_KM;
     const receive = horizonTable ? receiveAnglesFromTable(horizonTable, frequency) : null;
 
-    const cells = gridDisk(latLngToCell(grid.stationLat, grid.stationLng, H3_STATION_CELL_LEVEL), DISC_RINGS);
+    const cells = gridDisk(latLngToCell(grid.stationLat, grid.stationLng, H3_STATION_CELL_LEVEL), discRings(rangeKm));
     const h3lo = new Uint32Array(cells.length);
     const h3hi = new Uint32Array(cells.length);
     const ground = new Int16Array(cells.length);
@@ -220,7 +225,7 @@ export function computeFloorDisc(groundTable: Table, horizonTable: Table | null,
         }
         const [clat, clng] = cellToLatLng(cell);
         const d = greatCircleDistance([grid.stationLat, grid.stationLng], [clat, clng], 'km');
-        if (d > GROUND_MAX_KM) {
+        if (d > rangeKm) {
             continue;
         }
         // The station's own cell: bearing is meaningless, clamp to the first ray sample

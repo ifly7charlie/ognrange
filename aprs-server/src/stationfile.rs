@@ -64,7 +64,7 @@ pub fn produce_station_file(
         Err(e) => error!("stations.json serialization error: {}", e),
     }
 
-    // 2. Arrow file - columns: id, name, lat, lng, valid, lastPacket, layerMask, activity, uptime
+    // 2. Arrow file - columns: id, name, lat, lng, valid, lastPacket, layerMask, activity, uptime, rfCapabilityDb
     let mut sorted = active_stations;
     sorted.sort_by_key(|s| s.id.0);
 
@@ -82,6 +82,13 @@ pub fn produce_station_file(
         .iter()
         .map(|s| s.uptime)
         .collect();
+    // NaN in the values buffer, not validity-nulls: the web client's loaders.gl
+    // reads the raw buffer without applying the null bitmap, so a null slot
+    // would surface as 0.0 dB (a real, very low capability)
+    let rf_capabilities: Vec<f32> = sorted
+        .iter()
+        .map(|s| s.rf_capability_db.unwrap_or(f32::NAN))
+        .collect();
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::UInt32, false),
@@ -92,6 +99,7 @@ pub fn produce_station_file(
         Field::new("lastPacket", DataType::UInt32, false),
         Field::new("layerMask", DataType::UInt8, false),
         Field::new("uptime", DataType::Float32, true),
+        Field::new("rfCapabilityDb", DataType::Float32, true),
     ]));
 
     let batch = match RecordBatch::try_new(
@@ -105,6 +113,7 @@ pub fn produce_station_file(
             Arc::new(UInt32Array::from(last_packets)) as ArrayRef,
             Arc::new(UInt8Array::from(layer_masks)) as ArrayRef,
             Arc::new(Float32Array::from(uptimes)) as ArrayRef,
+            Arc::new(Float32Array::from(rf_capabilities)) as ArrayRef,
         ],
     ) {
         Ok(b) => b,

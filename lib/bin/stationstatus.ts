@@ -23,6 +23,8 @@ export interface StationDetails {
     lastBeacon?: Epoch; // epoch
     status?: string;
     notice?: string;
+    rfCapabilityDb?: number;
+    rfCapabilityN?: number;
     moved?: boolean;
     bouncing?: boolean;
     valid?: boolean;

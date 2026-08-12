@@ -14,6 +14,8 @@ interface StationJson {
     previous_location?: [number, number] | null;
     status?: string;
     notice?: string;
+    rfCapabilityDb?: number | null;
+    rfCapabilityN?: number | null;
     moved?: boolean;
     bouncing?: boolean;
     mobile?: boolean;
@@ -90,6 +92,8 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
         lng: latest.lng,
         status: latest.status,
         notice: latest.notice,
+        rfCapabilityDb: latest.rfCapabilityDb,
+        rfCapabilityN: latest.rfCapabilityN,
         primary_location: latest.primary_location,
         previous_location: latest.previous_location,
         moved: latest.moved,

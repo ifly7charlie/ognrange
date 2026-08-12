@@ -77,6 +77,16 @@ pub struct StationDetails {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
+    /// Receiver RF capability: the cumulative `+X.XdB@10km[n]` figure from OGN
+    /// status beacons. Only updated when a beacon parses AND n >=
+    /// RF_CAPABILITY_MIN_SAMPLES — receivers alternate status message types
+    /// (weather lines have no RF:) and reset n on restart, so a good value is
+    /// never clobbered
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rf_capability_db: Option<f32>,
+    /// Sample count n behind rf_capability_db, to judge the value's maturity
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rf_capability_n: Option<u32>,
     #[serde(default)]
     pub moved: bool,
     #[serde(default)]
@@ -332,6 +342,8 @@ impl StationManager {
             last_beacon: None,
             status: None,
             notice: None,
+            rf_capability_db: None,
+            rf_capability_n: None,
             moved: false,
             bouncing: false,
             mobile: false,
@@ -552,6 +564,12 @@ impl StationManager {
         };
         details.last_beacon = Some(timestamp);
         details.status = Some(body.to_string());
+        if let Some((db, n)) = parse_rf_capability(body) {
+            if n >= RF_CAPABILITY_MIN_SAMPLES {
+                details.rf_capability_db = Some(db);
+                details.rf_capability_n = Some(n);
+            }
+        }
         self.update(&details);
     }
 
@@ -728,6 +746,8 @@ impl StationManager {
             last_beacon: None,
             status: None,
             notice: None,
+            rf_capability_db: None,
+            rf_capability_n: None,
             moved: false,
             bouncing: false,
             mobile: false,
@@ -756,6 +776,29 @@ impl StationManager {
         );
         result
     }
+}
+
+/// Minimum sample count before a status beacon's RF capability figure is
+/// trusted (receivers reset n on restart; low-n values are noise)
+const RF_CAPABILITY_MIN_SAMPLES: u32 = 5000;
+/// Parse suspects: no real receiver reports beyond this
+const RF_CAPABILITY_MAX_ABS_DB: f32 = 45.0;
+
+/// Extract the cumulative RF capability (`+X.XdB@10km[n]`) from an OGN status
+/// beacon body, e.g.
+/// "... RF:+38+2.5ppm/-0.3dB/+10.7dB@10km[23481]/+12.3dB@10km[7/13]".
+/// The third RF field (cumulative) is wanted; the recent-window field's
+/// bracket holds "x/y" so `\[([0-9]+)\]` cannot false-match it. Returns None
+/// for weather/short RF lines, unparseable numbers, or |dB| beyond
+/// RF_CAPABILITY_MAX_ABS_DB (parse suspects)
+pub(crate) fn parse_rf_capability(body: &str) -> Option<(f32, u32)> {
+    static RE_RF_CAPABILITY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"RF:[^ ]*?/([+-]?[0-9]+(?:\.[0-9]+)?)dB@10km\[([0-9]+)\]").unwrap()
+    });
+    let caps = RE_RF_CAPABILITY.captures(body)?;
+    let db: f32 = caps[1].parse().ok()?;
+    let n: u32 = caps[2].parse().ok()?;
+    (db.abs() <= RF_CAPABILITY_MAX_ABS_DB).then_some((db, n))
 }
 
 /// Haversine great-circle distance in kilometers
@@ -791,6 +834,8 @@ mod tests {
             last_beacon: None,
             status: None,
             notice: None,
+            rf_capability_db: None,
+            rf_capability_n: None,
             moved: false,
             bouncing: false,
             mobile: false,
@@ -833,6 +878,85 @@ mod tests {
         let restored: StationDetails = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.last_seen_at_primary, Some(Epoch(1000000)));
         assert_eq!(restored.last_seen_at_previous, Some(Epoch(900000)));
+    }
+
+    const RF_STATUS: &str = "v0.3.2.RPI-GPU CPU:1.4 RAM:463.6/970.3MB NTP:0.5ms/-8.6ppm 2/2Acfts[1h] RF:+38+2.5ppm/-0.3dB/+10.7dB@10km[23481]/+12.3dB@10km[7/13]";
+    const WEATHER_STATUS: &str = "82:0 2.562s/0ms 35dB/-2kHz 131/9/14kt 82.6F 26.2% UVI:20.4 0.0mm/h";
+
+    #[test]
+    fn test_parse_rf_capability() {
+        assert_eq!(parse_rf_capability(RF_STATUS), Some((10.7, 23481)));
+        // weather line has no RF: block
+        assert_eq!(parse_rf_capability(WEATHER_STATUS), None);
+        // short RF line without the @10km fields
+        assert_eq!(parse_rf_capability("RF:+41+56.0ppm/+1.5dB"), None);
+        // negative capability values are real (deaf receivers)
+        assert_eq!(
+            parse_rf_capability("RF:-3-1.0ppm/-0.71dB/-15.8dB@10km[9000]/-13.8dB@10km[2/3]"),
+            Some((-15.8, 9000))
+        );
+        // parse suspects rejected
+        assert_eq!(parse_rf_capability("RF:+0+0.0ppm/+1.0dB/+55.0dB@10km[9000]"), None);
+        // recent-window bracket [x/y] must not be matched when cumulative is absent
+        assert_eq!(parse_rf_capability("RF:+0+0.0ppm/+1.0dB/+12.3dB@10km[7/13]"), None);
+    }
+
+    #[test]
+    fn test_beacon_rf_capability_updates() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // mature beacon stores the value
+        mgr.update_station_beacon(&name, RF_STATUS, Epoch(1000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, Some(10.7));
+        assert_eq!(d.rf_capability_n, Some(23481));
+
+        // an alternating weather beacon must not clobber it
+        mgr.update_station_beacon(&name, WEATHER_STATUS, Epoch(2000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, Some(10.7));
+        assert_eq!(d.status.as_deref(), Some(WEATHER_STATUS));
+
+        // a post-restart beacon (low n) must not clobber it either
+        mgr.update_station_beacon(&name, "RF:+38+2.5ppm/-0.3dB/+2.1dB@10km[143]", Epoch(3000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, Some(10.7));
+        assert_eq!(d.rf_capability_n, Some(23481));
+
+        // once n matures again the fresh value wins
+        mgr.update_station_beacon(&name, "RF:+38+2.5ppm/-0.3dB/+9.9dB@10km[5000]", Epoch(4000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, Some(9.9));
+        assert_eq!(d.rf_capability_n, Some(5000));
+    }
+
+    #[test]
+    fn test_beacon_rf_capability_low_n_first_stays_none() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+        mgr.update_station_beacon(&name, "RF:+0+0.0ppm/+1.0dB/+3.0dB@10km[42]", Epoch(1000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, None);
+        assert_eq!(d.rf_capability_n, None);
+    }
+
+    #[test]
+    fn test_rf_capability_serde() {
+        let mut details = make_test_details();
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(!json.contains("rfCapabilityDb"));
+        assert!(!json.contains("rfCapabilityN"));
+
+        details.rf_capability_db = Some(10.7);
+        details.rf_capability_n = Some(23481);
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(json.contains("\"rfCapabilityDb\":10.7"));
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.rf_capability_db, Some(10.7));
+        assert_eq!(restored.rf_capability_n, Some(23481));
     }
 
     // Locations for movement tests

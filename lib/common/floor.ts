@@ -19,3 +19,9 @@ export const FLOOR_VISUALISATION_SET: Set<string> = new Set(FLOOR_VISUALISATIONS
 export function isFloorKnown(v: number): boolean {
     return v !== FLOOR_UNKNOWN;
 }
+
+// ADS-B is the only 1090MHz layer; everything else receives on 868. Shared so
+// the map and the details panel can never disagree about which cap applies
+export function floorFrequencyFor(layersParam: string | null | undefined): 868 | 1090 {
+    return (layersParam || 'combined') === 'adsb' ? 1090 : 868;
+}
