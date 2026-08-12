@@ -285,6 +285,7 @@ export default function CombinePage(props) {
                                 setLayers={setLayers}
                                 isPresenceOnly={displayedH3s.isPresenceOnly}
                                 setHorizonHover={setHorizonHover}
+                                horizonHover={horizonHover}
                                 hoverDetails={hoverDetails}
                                 setSelectedDetails={setSelectedDetails}
                                 selectedDetails={selectedDetails}

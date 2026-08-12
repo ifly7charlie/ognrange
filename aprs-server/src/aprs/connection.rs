@@ -3,7 +3,8 @@
 //! Connects to an APRS-IS server (e.g., aprs.glidernet.org:14580),
 //! authenticates, applies a traffic filter, and streams packets.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use socket2::SockRef;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -12,11 +13,16 @@ use tracing::{info, warn};
 
 use crate::config;
 
+/// Cumulative count of packets shed because the event channel was full
+/// (the processor fell too far behind). Read by the periodic stats log.
+pub static DROPPED_PACKETS: AtomicU64 = AtomicU64::new(0);
+
 /// Messages sent from the APRS connection to the main processing loop
 #[derive(Debug)]
 pub enum AprsEvent {
-    /// A raw APRS packet line
-    Packet(String),
+    /// A raw APRS packet line, stamped with its arrival time so the
+    /// processor can measure how far behind the backlog it is running
+    Packet { raw: String, received: Instant },
     /// Server comment/keepalive line
     ServerMessage(String),
     /// Connection lost or errored
@@ -172,8 +178,10 @@ async fn connect_and_stream(
                         if line.starts_with('#') || line.starts_with("user") {
                             let _ = event_tx.try_send(AprsEvent::ServerMessage(line));
                         } else if !line.is_empty() {
-                            if event_tx.try_send(AprsEvent::Packet(line)).is_err() {
+                            let event = AprsEvent::Packet { raw: line, received: Instant::now() };
+                            if event_tx.try_send(event).is_err() {
                                 dropped_packets += 1;
+                                DROPPED_PACKETS.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                     }

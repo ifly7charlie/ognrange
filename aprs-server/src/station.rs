@@ -49,6 +49,16 @@ pub struct StationDetails {
     /// Ground elevation (m MSL) at lat/lng, resolved during rollup; cleared on move
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elevation: Option<f64>,
+    /// Antenna altitude (m MSL) from the station's location beacon (/A=);
+    /// cleared on move. Antenna height above ground for the horizon viewpoint
+    /// is derived from this against the DEM ground, sanity-window checked
+    /// (see ground_horizon::antenna_agl_m)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_altitude: Option<f64>,
+    /// Position the ground-horizon terrain file was generated for; cleared on
+    /// move so the file is rebuilt for the new location
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ground_horizon_pos: Option<[f64; 2]>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "primary_location",
             deserialize_with = "deserialize_coord_pair")]
     pub primary_location: Option<[f64; 2]>,
@@ -312,6 +322,8 @@ impl StationManager {
             lat: None,
             lng: None,
             elevation: None,
+            beacon_altitude: None,
+            ground_horizon_pos: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,
@@ -434,6 +446,7 @@ impl StationManager {
         name: &StationName,
         lat: f64,
         lng: f64,
+        altitude: Option<f64>,
         timestamp: Epoch,
         raw_packet: &str,
     ) {
@@ -441,6 +454,12 @@ impl StationManager {
             Some(d) => d,
             None => return,
         };
+
+        // Beaconed antenna altitude (m MSL) - sanity-checked against the DEM
+        // ground only when the horizon viewpoint is derived from it
+        if altitude.is_some() {
+            details.beacon_altitude = altitude;
+        }
 
         if details.primary_location.is_none() {
             details.primary_location = Some([lat, lng]);
@@ -507,8 +526,16 @@ impl StationManager {
             details.primary_location = Some([lat, lng]);
             details.last_seen_at_primary = Some(timestamp);
             details.bouncing = true;
-            // Ground elevation belongs to the old location - re-resolve at next rollup
+            // Ground elevation and the terrain horizon belong to the old
+            // location - re-resolve/regenerate at next rollup. Likewise the
+            // beaconed altitude: this packet's value (set above) is already
+            // the new location's, but without one the old-location altitude
+            // must not linger against the new ground.
             details.elevation = None;
+            details.ground_horizon_pos = None;
+            if altitude.is_none() {
+                details.beacon_altitude = None;
+            }
         }
 
         details.lat = Some(lat);
@@ -691,6 +718,8 @@ impl StationManager {
             lat: None,
             lng: None,
             elevation: None,
+            beacon_altitude: None,
+            ground_horizon_pos: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,
@@ -752,6 +781,8 @@ mod tests {
             lat: None,
             lng: None,
             elevation: None,
+            beacon_altitude: None,
+            ground_horizon_pos: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,
@@ -825,7 +856,7 @@ mod tests {
 
         // Repeated packets at same location
         for i in 0..5 {
-            mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000 + i * 1000), "raw");
+            mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000 + i * 1000), "raw");
         }
         let s = get_station(&mgr, "TEST");
         assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
@@ -842,10 +873,10 @@ mod tests {
         let name = StationName("TEST".to_string());
 
         // Establish at LOC_A
-        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
 
         // Packet from LOC_B - new location, bouncing starts
-        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw2");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw2");
         let s = get_station(&mgr, "TEST");
         assert!(s.bouncing);
         assert!(!s.mobile);
@@ -855,7 +886,7 @@ mod tests {
         assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
 
         // Back to LOC_A - hits "at previous" branch, both timestamps fresh
-        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(3000), "raw3");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(3000), "raw3");
         let s = get_station(&mgr, "TEST");
         assert!(s.bouncing);
         assert!(!s.mobile);
@@ -869,7 +900,7 @@ mod tests {
             } else {
                 (LOC_A, 4000 + i * 100)
             };
-            mgr.check_station_moved(&name, loc.0, loc.1, Epoch(ts), "raw_repeat");
+            mgr.check_station_moved(&name, loc.0, loc.1, None, Epoch(ts), "raw_repeat");
         }
         let s = get_station(&mgr, "TEST");
         assert!(s.bouncing);
@@ -883,17 +914,17 @@ mod tests {
         let name = StationName("TEST".to_string());
 
         // Establish at LOC_A
-        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
 
         // Move to LOC_B
-        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw2");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw2");
         let s = get_station(&mgr, "TEST");
         assert!(s.bouncing);
         assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
 
         // Only packets from LOC_B - last_seen_at_previous stays stale
         for i in 1..5 {
-            mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000 + i * 1000), "raw_b");
+            mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000 + i * 1000), "raw_b");
         }
         let s = get_station(&mgr, "TEST");
         assert!(s.bouncing);
@@ -908,26 +939,26 @@ mod tests {
         let name = StationName("TEST".to_string());
 
         // Establish at LOC_A
-        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
 
         // Consecutive packets at new locations: B, C, D - all far from each other
-        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw2");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw2");
         let s = get_station(&mgr, "TEST");
         assert!(!s.mobile);
         assert_eq!(s.new_location_count, 1);
 
-        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(3000), "raw3");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(3000), "raw3");
         let s = get_station(&mgr, "TEST");
         assert!(!s.mobile);
         assert_eq!(s.new_location_count, 2);
 
-        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(4000), "raw4");
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, None, Epoch(4000), "raw4");
         let s = get_station(&mgr, "TEST");
         assert!(s.mobile);
         assert_eq!(s.new_location_count, 3);
 
         // Further new locations keep mobile=true
-        mgr.check_station_moved(&name, LOC_A.0 + 1.0, LOC_A.1 + 1.0, Epoch(5000), "raw5");
+        mgr.check_station_moved(&name, LOC_A.0 + 1.0, LOC_A.1 + 1.0, None, Epoch(5000), "raw5");
         let s = get_station(&mgr, "TEST");
         assert!(s.mobile);
     }
@@ -940,13 +971,13 @@ mod tests {
         // Establish at origin
         let base_lat = -37.0;
         let base_lng = 143.0;
-        mgr.check_station_moved(&name, base_lat, base_lng, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, base_lat, base_lng, None, Epoch(1000), "raw");
 
         // Drift 300m per step (well above 200m threshold)
         // ~0.003 degrees latitude ≈ 333m
         for i in 1..=4 {
             let lat = base_lat + (i as f64) * 0.003;
-            mgr.check_station_moved(&name, lat, base_lng, Epoch(1000 + i * 1000), "raw");
+            mgr.check_station_moved(&name, lat, base_lng, None, Epoch(1000 + i * 1000), "raw");
         }
         let s = get_station(&mgr, "TEST");
         assert!(s.mobile);
@@ -959,15 +990,15 @@ mod tests {
         let name = StationName("TEST".to_string());
 
         // Establish, then become mobile
-        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
-        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw");
-        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(3000), "raw");
-        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(4000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, None, Epoch(4000), "raw");
         let s = get_station(&mgr, "TEST");
         assert!(s.mobile);
 
         // Now the primary is LOC_D. Send 2 packets from LOC_D - station stops
-        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(5000), "raw");
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, None, Epoch(5000), "raw");
         let s = get_station(&mgr, "TEST");
         // First packet at primary clears mobile
         assert!(!s.mobile);
@@ -984,16 +1015,16 @@ mod tests {
         let name = StationName("TEST".to_string());
 
         // Establish at LOC_A, move around, become mobile
-        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
-        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw");
-        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(3000), "raw");
-        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, Epoch(4000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, None, Epoch(4000), "raw");
         let s = get_station(&mgr, "TEST");
         assert!(s.mobile);
 
         // After LOC_D as primary, previous is LOC_C
         // Now send a packet from LOC_C (previous location)
-        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(5000), "raw");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(5000), "raw");
         let s = get_station(&mgr, "TEST");
         // Stops mobile, but bouncing=true because two locations remain
         assert!(!s.mobile);
@@ -1025,14 +1056,14 @@ mod tests {
         let name = StationName("TEST".to_string());
 
         // Establish at LOC_A with timestamp 1000
-        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
         let s = get_station(&mgr, "TEST");
         assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
         assert_eq!(s.last_seen_at_primary, Some(Epoch(1000)));
 
         // Move to LOC_B with timestamp 2000
         // Old primary (LOC_A, ts=1000) becomes previous
-        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
         let s = get_station(&mgr, "TEST");
         assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
         assert_eq!(s.last_seen_at_primary, Some(Epoch(2000)));
@@ -1041,7 +1072,7 @@ mod tests {
 
         // Move to LOC_C with timestamp 3000
         // Old primary (LOC_B, ts=2000) becomes previous
-        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(3000), "raw");
         let s = get_station(&mgr, "TEST");
         assert_eq!(s.primary_location, Some([LOC_C.0, LOC_C.1]));
         assert_eq!(s.last_seen_at_primary, Some(Epoch(3000)));
@@ -1053,7 +1084,7 @@ mod tests {
     fn test_first_packet_sets_primary_and_last_seen() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
-        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
         let s = get_station(&mgr, "TEST");
         assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
         assert!(!s.moved);

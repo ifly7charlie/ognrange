@@ -32,6 +32,7 @@ import {UptimeBar} from './coveragedetails/uptimebar';
 import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {StationPosition} from './coveragedetails/stationposition';
 import {HorizonDetails} from './coveragedetails/horizondetails';
+import {GroundDetails} from './coveragedetails/grounddetails';
 import type {HorizonHover} from './coveragedetails/horizondata';
 import {elevationAngleDeg} from './coveragedetails/horizondata';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
@@ -127,6 +128,7 @@ export function CoverageDetails({
     setLayers,
     dateRange,
     setHorizonHover,
+    horizonHover,
     env
 }: //
 {
@@ -141,6 +143,7 @@ export function CoverageDetails({
     setLayers?: (l: string[]) => void;
     dateRange?: {start: string; end: string};
     setHorizonHover?: (h: HorizonHover) => void;
+    horizonHover?: HorizonHover;
     env: any;
 }) {
     // Tidy up code later by simplifying typescript types
@@ -375,7 +378,8 @@ export function CoverageDetails({
                 <ActivityDetails activity={stationData?.activity} />
                 <UptimeBar uptime={stationData?.uptime} />
                 <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} exportedAt={stationData?.exportedAt} />
-                <HorizonDetails station={station} period={dateRange?.start || file} env={env} setHorizonHover={setHorizonHover} />
+                <HorizonDetails station={station} period={dateRange?.start || file} env={env} setHorizonHover={setHorizonHover} groundHoverBearing={horizonHover?.source === 'ground' ? horizonHover.bearing : null} />
+                <GroundDetails station={station} horizonHover={horizonHover} setHorizonHover={setHorizonHover} beaconAltitude={stationData?.beaconAltitude ?? null} env={env} />
                 {serverUptimePercent != null && serverUptimePercent < 100 && (
                     <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
                 )}

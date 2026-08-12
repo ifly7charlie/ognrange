@@ -1,43 +1,22 @@
-import {useMemo, useState, useCallback, useEffect, useRef} from 'react';
+import {memo, useMemo, useState, useCallback, useEffect, useRef} from 'react';
 import useSWR from 'swr';
 import {useTranslation} from 'next-i18next';
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer} from 'recharts';
-import {tableFromIPC, Table} from 'apache-arrow';
 
 import {NEXT_PUBLIC_DATA_URL} from '../../common/config';
 import graphcolours from '../graphcolours';
 
-import {chartsFromTable, horizonFileFor, heightAtDistance, BAND_RANGES_KM, BAND_KEYS, BIN_DEG, HorizonPoint, HorizonHover} from './horizondata';
+import {arrowFetcher} from './arrowfetcher';
+import {chartsFromTable, horizonFileFor, heightAtDistance, BAND_RANGES_KM, BAND_KEYS, BIN_DEG, COMPASS, X_TICKS, X_TICK_LABELS, HorizonPoint, HorizonHover} from './horizondata';
 
 const SERIES: {key: string; label: string; colour: string; width: number}[] = [
     {key: 'lowestAngle', label: 'any_distance', colour: '#333333', width: 2},
-    {key: 'angle5km', label: 'band_5', colour: graphcolours[0], width: 1},
-    {key: 'angle10km', label: 'band_10', colour: graphcolours[1], width: 1},
-    {key: 'angle20km', label: 'band_20', colour: graphcolours[2], width: 1},
-    {key: 'angle30km', label: 'band_30', colour: graphcolours[3], width: 1},
-    {key: 'angle50km', label: 'band_50', colour: graphcolours[4], width: 1},
-    {key: 'angle90km', label: 'band_90', colour: graphcolours[5], width: 1}
+    {key: 'angle10km', label: 'band_10', colour: graphcolours[0], width: 1},
+    {key: 'angle20km', label: 'band_20', colour: graphcolours[1], width: 1},
+    {key: 'angle30km', label: 'band_30', colour: graphcolours[2], width: 1},
+    {key: 'angle50km', label: 'band_50', colour: graphcolours[3], width: 1},
+    {key: 'angle90km', label: 'band_90', colour: graphcolours[4], width: 1}
 ];
-
-const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
-
-// North in the middle: x is the signed offset from north, S(-180) W(-90) N(0) E(90) S(180)
-const X_TICKS = [-180, -90, 0, 90, 180];
-const X_TICK_LABELS: Record<number, string> = {[-180]: 'S', [-90]: 'W', 0: 'N', 90: 'E', 180: 'S'};
-
-const arrowFetcher = async (url: string): Promise<Table | null> => {
-    const res = await fetch(url);
-    if (!res.ok) {
-        return null;
-    }
-    const buffer = await res.arrayBuffer();
-    try {
-        return tableFromIPC(new Uint8Array(buffer));
-    } catch (e) {
-        console.log(`horizon: unable to parse ${url}: ${e}`);
-        return null;
-    }
-};
 
 // Stable no-op tooltip content - keeps the recharts hover cursor and active
 // dots without drawing a box over the plot; the data goes to HorizonReadout
@@ -90,6 +69,7 @@ function HorizonChart({
     hidden,
     toggleSeries,
     onHover,
+    groundBearing,
     t
 }: {
     frequency: number;
@@ -97,6 +77,7 @@ function HorizonChart({
     hidden: Record<string, boolean>;
     toggleSeries: (key: string) => void;
     onHover: (h: HorizonHover) => void;
+    groundBearing: number | null;
     t: (key: string, opts?: any) => string;
 }) {
     const [hoverPoint, setHoverPoint] = useState<HorizonPoint | null>(null);
@@ -110,7 +91,7 @@ function HorizonChart({
             const x = Number(state?.activeLabel);
             const point = (state?.isTooltipActive && Number.isFinite(x) ? data[Math.round((x + 180) / BIN_DEG)] : null) ?? null;
             setHoverPoint(point);
-            onHover(point ? {bearing: point.bearing, distanceKm: point.maxDistance ?? null, bands: BAND_KEYS.map((k) => point[k])} : null);
+            onHover(point ? {source: 'receive', bearing: point.bearing, distanceKm: point.maxDistance ?? null, bands: BAND_KEYS.map((k) => point[k])} : null);
         },
         [data, onHover]
     );
@@ -118,6 +99,12 @@ function HorizonChart({
         setHoverPoint(null);
         onHover(null);
     }, [onHover]);
+
+    // While the ground chart below is hovered, track its bearing here too:
+    // same 0.5° bins, so the shared bearing maps straight to a bin index.
+    // The mouse can't be over both charts, so local hover always wins
+    const groundPoint = groundBearing != null ? (data[Math.round(((groundBearing + 180) % 360) / BIN_DEG) % data.length] ?? null) : null;
+    const point = hoverPoint ?? groundPoint;
 
     return (
         <>
@@ -135,6 +122,8 @@ function HorizonChart({
                     />
                     <YAxis domain={['auto', 'auto']} tickFormatter={(v: number) => `${v}°`} style={{fontSize: '0.7rem'}} />
                     <ReferenceLine y={0} stroke="#888888" strokeDasharray="3 3" />
+                    {/* Stand-in for the hover cursor when the bearing comes from the ground chart */}
+                    {!hoverPoint && groundPoint ? <ReferenceLine x={groundPoint.x} stroke="#888888" /> : null}
                     <Tooltip content={noTooltipContent} cursor={{stroke: '#888888'}} />
                     {SERIES.map((s) => (
                         <Line
@@ -151,23 +140,30 @@ function HorizonChart({
                     ))}
                 </LineChart>
             </ResponsiveContainer>
-            <HorizonReadout point={hoverPoint} hidden={hidden} toggleSeries={toggleSeries} t={t} />
+            <HorizonReadout point={point} hidden={hidden} toggleSeries={toggleSeries} t={t} />
         </>
     );
 }
 
 // Receive-horizon chart(s) for the station details panel - one chart per RF
-// frequency group present in the station's horizon.arrow file
-export function HorizonDetails({
+// frequency group present in the station's horizon.arrow file.
+// Memoized: the parent re-renders on every hovered horizon bin (horizonHover
+// feeds the ground chart below), and these LineCharts are the heaviest thing
+// in the panel; while a receive chart is hovered all props are referentially
+// stable (groundHoverBearing only changes while the ground chart is hovered,
+// when these charts do need to redraw the synced cursor)
+export const HorizonDetails = memo(function HorizonDetails({
     station,
     period,
     env,
-    setHorizonHover
+    setHorizonHover,
+    groundHoverBearing
 }: {
     station: string;
     period?: string;
     env?: {NEXT_PUBLIC_DATA_URL?: string};
     setHorizonHover?: (h: HorizonHover) => void;
+    groundHoverBearing?: number | null;
 }) {
     const {t} = useTranslation('common', {keyPrefix: 'details.horizon'});
     const DATA_URL = env?.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL;
@@ -185,6 +181,16 @@ export function HorizonDetails({
         },
         [setHorizonHover]
     );
+
+    // The ground chart writes to the same shared hover state, so once it has
+    // hovered, our last-pushed key no longer describes that state - without
+    // this, re-hovering the same receive bin as before would be deduped away
+    // and the profile swap / map line wouldn't come back
+    useEffect(() => {
+        if (groundHoverBearing != null) {
+            lastHover.current = '';
+        }
+    }, [groundHoverBearing]);
 
     // Don't leave a stale bearing line when the station changes or the panel closes
     useEffect(() => {
@@ -219,8 +225,8 @@ export function HorizonDetails({
             <b>{t('title')}</b>
             <br />
             {charts.map(({frequency, data}) => (
-                <HorizonChart key={frequency} frequency={frequency} data={data} hidden={hidden} toggleSeries={toggleSeries} onHover={onHover} t={t} />
+                <HorizonChart key={frequency} frequency={frequency} data={data} hidden={hidden} toggleSeries={toggleSeries} onHover={onHover} groundBearing={groundHoverBearing ?? null} t={t} />
             ))}
         </>
     );
-}
+});

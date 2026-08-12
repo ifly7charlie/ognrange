@@ -21,9 +21,11 @@ use crate::station::{great_circle_distance, StationDetails};
 
 /// Bearing bins per full circle (0.5 degree)
 pub const HORIZON_BINS: usize = 720;
-/// Cells nearer than this produce meaninglessly steep angles (the cell-centre
-/// position quantisation alone is ~0.5km at H3 res 8) and are excluded
-pub const HORIZON_MIN_DISTANCE_KM: f64 = 2.0;
+/// Cells nearer than this are excluded: close to the station the signal is
+/// strong enough to be received well below the true terrain skyline, so
+/// min-angle selection there reads an artificially low horizon (and the
+/// cell-centre position quantisation alone is ~0.5km at H3 res 8)
+pub const HORIZON_MIN_DISTANCE_KM: f64 = 5.0;
 /// Cells further than this are excluded entirely. Min-angle selection is
 /// extremely sensitive to corrupted positions already in the coverage data
 /// (a single garbage cell thousands of km out shows as a huge negative
@@ -35,10 +37,11 @@ pub const HORIZON_MAX_DISTANCE_KM: f64 = 120.0;
 /// about the horizon
 pub const HORIZON_MIN_ANGLE_DEG: f32 = -3.0;
 pub const HORIZON_MAX_ANGLE_DEG: f32 = 50.0;
-/// Distance band upper edges (km). The top band ends at the cell-match
-/// distance where a 0.5 degree bin arc equals the cell width:
+/// Distance band upper edges (km). The first band starts at
+/// HORIZON_MIN_DISTANCE_KM; the top band ends at the cell-match distance
+/// where a 0.5 degree bin arc equals the cell width:
 /// 0.8km / (0.5 degree in radians) ~= 91km
-pub const HORIZON_DISTANCE_BANDS_KM: [f64; 6] = [5.0, 10.0, 20.0, 30.0, 50.0, 90.0];
+pub const HORIZON_DISTANCE_BANDS_KM: [f64; 5] = [10.0, 20.0, 30.0, 50.0, 90.0];
 /// Half the across-flats width of an H3 res-8 cell (√3·461m/2). If
 /// H3_STATION_CELL_LEVEL is ever made variable this should derive from it
 const CELL_HALF_WIDTH_KM: f64 = 0.4;
@@ -182,10 +185,14 @@ impl HorizonCollector {
     /// elevation - the horizon is skipped entirely for this cycle
     pub fn from_station(meta: &StationDetails) -> Option<Self> {
         let (lat, lng) = (meta.lat?, meta.lng?);
-        let elevation_m = meta.elevation?;
+        let ground_m = meta.elevation?;
         if !lat.is_finite() || !lng.is_finite() || (lat == 0.0 && lng == 0.0) {
             return None;
         }
+        // The viewpoint is the antenna, not the ground - same reference as
+        // the ground horizon so the two charts stay directly comparable
+        let elevation_m =
+            ground_m + crate::ground_horizon::antenna_agl_m(meta.beacon_altitude, ground_m);
         Some(HorizonCollector {
             lat,
             lng,
@@ -313,6 +320,9 @@ mod tests {
             lat: Some(STATION_LAT),
             lng: Some(STATION_LNG),
             elevation: Some(STATION_ELEVATION),
+            // Antenna at ground level so angle expectations stay in ground
+            // terms; without this the default AGL (10m) shifts them all
+            beacon_altitude: Some(STATION_ELEVATION),
             ..Default::default()
         }
     }
@@ -382,10 +392,10 @@ mod tests {
 
     #[test]
     fn band_boundaries() {
-        assert_eq!(band_index(3.0), Some(0));
-        assert_eq!(band_index(5.0), Some(0));
-        assert_eq!(band_index(5.1), Some(1));
-        assert_eq!(band_index(90.0), Some(5));
+        assert_eq!(band_index(7.0), Some(0));
+        assert_eq!(band_index(10.0), Some(0));
+        assert_eq!(band_index(10.1), Some(1));
+        assert_eq!(band_index(90.0), Some(4));
         assert_eq!(band_index(90.1), None);
     }
 
@@ -408,9 +418,26 @@ mod tests {
     }
 
     #[test]
+    fn antenna_viewpoint_raises_reference() {
+        // Sane beaconed altitude: antenna 10m over ground lifts the viewpoint
+        let mut s = test_station();
+        s.beacon_altitude = Some(STATION_ELEVATION + 10.0);
+        let c = HorizonCollector::from_station(&s).unwrap();
+        assert_eq!(c.elevation_m, STATION_ELEVATION + 10.0);
+        // Insane altitude (feet-as-metres etc) falls back to the default AGL
+        let mut s = test_station();
+        s.beacon_altitude = Some(STATION_ELEVATION + 5000.0);
+        let c = HorizonCollector::from_station(&s).unwrap();
+        assert_eq!(c.elevation_m, STATION_ELEVATION + *crate::config::GROUND_STATION_AGL_M);
+    }
+
+    #[test]
     fn near_cells_excluded() {
         let mut c = HorizonCollector::from_station(&test_station()).unwrap();
         c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(1.0, 600, 100)]);
+        // Under HORIZON_MIN_DISTANCE_KM the strong near-field signal is
+        // received below the true skyline - excluded despite being plausible
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(4.0, 700, 200)]);
         assert!(c.build_files().is_empty());
     }
 
@@ -482,8 +509,8 @@ mod tests {
         assert_eq!(row.lowest_distance, 40);
         assert_eq!(row.max_distance, 40);
         // Both cells land in different bands: (10,20] and (30,50]
-        let b20 = row.band_angles[2].unwrap();
-        let b50 = row.band_angles[4].unwrap();
+        let b20 = row.band_angles[1].unwrap();
+        let b50 = row.band_angles[3].unwrap();
         assert!(b50 < b20, "b50 {} b20 {}", b50, b20);
         // Any-distance is the lower envelope of the bands
         assert_eq!(row.lowest_angle, b50);
@@ -495,8 +522,9 @@ mod tests {
         let mut c = HorizonCollector::from_station(&test_station()).unwrap();
         // Below the floor: claims 0m MSL, 500m under the station at 8km (~-3.6 deg)
         c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(8.0, 0, 0)]);
-        // Above the ceiling: ~4500m above the station at 3km (~56 deg)
-        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(3.0, 5000, 100)]);
+        // Above the ceiling: ~9500m above the station at 6km (~57 deg even
+        // after cell-centre snapping stretches the distance)
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(6.0, 10000, 100)]);
         assert!(c.build_files().is_empty());
         // A normal cell still passes
         c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(20.0, 800, 100)]);
@@ -539,10 +567,12 @@ mod tests {
     #[test]
     fn arc_spreading_fills_adjacent_bins() {
         let mut c = HorizonCollector::from_station(&test_station()).unwrap();
-        // A single cell at 5km should fill ~18 bins around north
-        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(5.0, 700, 100)]);
+        // A single cell at 6km (safely inside the 5km minimum - the cell
+        // centre lands slightly off the nominal distance) should fill ~15
+        // bins around north
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(6.0, 700, 100)]);
         let files = c.build_files();
         let n = files[0].rows.len();
-        assert!((15..=22).contains(&n), "rows {}", n);
+        assert!((12..=19).contains(&n), "rows {}", n);
     }
 }

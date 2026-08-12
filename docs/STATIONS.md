@@ -66,7 +66,9 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `station` | `string` | Station callsign |
 | `lat` | `f64?` | Current latitude (from most recent Location packet) |
 | `lng` | `f64?` | Current longitude |
-| `elevation` | `f64?` | Ground elevation (m MSL) at `lat`/`lng`, resolved via the terrain service during rollup; cleared when the station moves. Required for horizon output |
+| `elevation` | `f64?` | Ground elevation (m MSL) at `lat`/`lng`, resolved via the terrain service during rollup; cleared when the station moves. Required for horizon output. The Terrarium DEM includes ocean bathymetry, so all elevation lookups clamp to a per-location floor: sea level everywhere except a small built-in table of genuine below-sea-level land regions (Dead Sea, Caspian shore, Death Valley, Dutch polders, ...), each floored at its known lowest surface |
+| `beaconAltitude` | `f64?` | Antenna altitude (m MSL) from the station's most recent location beacon (`/A=`); cleared on a confirmed move when the moving beacon carries no altitude. The horizon viewpoint uses `beaconAltitude − elevation` when that difference is 0–300 m, otherwise the `GROUND_STATION_AGL_M` default (10 m) |
+| `groundHorizonPos` | `[f64, f64]?` | Position the ground-horizon terrain file was generated for; cleared when the station moves so the file is regenerated |
 | `primary_location` | `[f64, f64]?` | Reference location `[lat, lng]` used for move detection |
 | `previous_location` | `[f64, f64]?` | Prior location before the most recent move |
 | `lastPacket` | `u32?` | Unix timestamp of the last packet processed for coverage |

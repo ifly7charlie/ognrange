@@ -419,33 +419,42 @@ export function CoverageMap(props: {
         if (!props.horizonHover || !selectedStationMeta || isNaN(selectedStationMeta.lat)) {
             return [];
         }
-        const {bearing, distanceKm, bands} = props.horizonHover;
+        const {source, bearing, distanceKm, bands} = props.horizonHover;
         const {lat, lng} = selectedStationMeta;
         const at = (d: number) => destinationPoint(lat, lng, bearing, d);
 
         type Segment = {from: [number, number]; to: [number, number]; color: [number, number, number, number]};
         const segments: Segment[] = [];
         const boundaries: number[] = [];
-        BAND_KEYS.forEach((k, i) => {
-            if (bands?.[i] == null) {
-                return;
+        if (source === 'ground') {
+            // Hover came from the ground (terrain) chart - a plain line in the
+            // chart's terrain brown, with a tick at the terrain ridge
+            segments.push({from: [lng, lat], to: at(distanceKm ?? 30), color: [122, 92, 68, 224]});
+            if (distanceKm != null) {
+                boundaries.push(distanceKm);
             }
-            // The outermost band is clipped to the furthest received cell
-            const [bandStart, bandEnd] = BAND_RANGES_KM[k];
-            const end = distanceKm != null ? Math.min(bandEnd, distanceKm) : bandEnd;
-            if (end > bandStart) {
-                segments.push({from: at(bandStart), to: at(end), color: horizonBandColours[i]});
-                boundaries.push(bandStart, end);
+        } else {
+            BAND_KEYS.forEach((k, i) => {
+                if (bands?.[i] == null) {
+                    return;
+                }
+                // The outermost band is clipped to the furthest received cell
+                const [bandStart, bandEnd] = BAND_RANGES_KM[k];
+                const end = distanceKm != null ? Math.min(bandEnd, distanceKm) : bandEnd;
+                if (end > bandStart) {
+                    segments.push({from: at(bandStart), to: at(end), color: horizonBandColours[i]});
+                    boundaries.push(bandStart, end);
+                }
+            });
+            // Cells beyond the last band (>90 km) have no band series - grey tail
+            if (distanceKm != null && distanceKm > 90) {
+                segments.push({from: at(90), to: at(distanceKm), color: [51, 51, 51, 224]});
+                boundaries.push(90, distanceKm);
             }
-        });
-        // Cells beyond the last band (>90 km) have no band series - grey tail
-        if (distanceKm != null && distanceKm > 90) {
-            segments.push({from: at(90), to: at(distanceKm), color: [51, 51, 51, 224]});
-            boundaries.push(90, distanceKm);
-        }
-        if (!segments.length) {
-            // Nothing received at this bearing - just show the direction
-            segments.push({from: [lng, lat], to: at(distanceKm ?? 30), color: [255, 16, 240, 192]});
+            if (!segments.length) {
+                // Nothing received at this bearing - just show the direction
+                segments.push({from: [lng, lat], to: at(distanceKm ?? 30), color: [255, 16, 240, 192]});
+            }
         }
         return [
             new LineLayer({

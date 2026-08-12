@@ -4,12 +4,12 @@ import type {Table} from 'apache-arrow';
 // band columns are the minimum elevation angle within each distance band (nullable)
 export const BIN_COUNT = 720;
 export const BIN_DEG = 360 / BIN_COUNT;
-export const BAND_KEYS = ['angle5km', 'angle10km', 'angle20km', 'angle30km', 'angle50km', 'angle90km'] as const;
+export const BAND_KEYS = ['angle10km', 'angle20km', 'angle30km', 'angle50km', 'angle90km'] as const;
 
 // Distance range (km) each band column covers; the first band starts at the
-// writer's 2 km minimum-distance window
+// writer's 5 km minimum-distance window (closer in, the signal is strong
+// enough to be received below the true skyline, so those cells are excluded)
 export const BAND_RANGES_KM: Record<(typeof BAND_KEYS)[number], [number, number]> = {
-    angle5km: [2, 5],
     angle10km: [5, 10],
     angle20km: [10, 20],
     angle30km: [20, 30],
@@ -20,10 +20,21 @@ export const BAND_RANGES_KM: Record<(typeof BAND_KEYS)[number], [number, number]
 const EFFECTIVE_EARTH_RADIUS_M = (4 / 3) * 6_371_000;
 const EARTH_RADIUS_KM = 6371;
 
-// Hovered bin on the horizon chart, used to draw a bearing line on the map.
-// distanceKm is the bin's furthest received cell, null for empty bins; bands
-// holds the bin's per-band angles in BAND_KEYS order (null = band has no data)
-export type HorizonHover = {bearing: number; distanceKm: number | null; bands?: (number | null)[]} | null;
+export const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+
+// North in the middle: x is the signed offset from north, S(-180) W(-90) N(0) E(90) S(180)
+export const X_TICKS = [-180, -90, 0, 90, 180];
+export const X_TICK_LABELS: Record<number, string> = {[-180]: 'S', [-90]: 'W', 0: 'N', 90: 'E', 180: 'S'};
+
+// Hovered bearing bin, shared between the receive-horizon charts, the ground
+// chart and the map so they all track the same bearing. source says which
+// chart the mouse is over: 'receive' flips the ground chart into profile mode
+// and draws the banded bearing line on the map; 'ground' fills the receive
+// charts' readouts and draws a plain terrain-coloured line. distanceKm is the
+// bin's furthest received cell ('receive') or the terrain ridge distance
+// ('ground'), null when the bin is empty; bands holds the bin's per-band
+// angles in BAND_KEYS order (receive hovers only)
+export type HorizonHover = {source: 'receive' | 'ground'; bearing: number; distanceKm: number | null; bands?: (number | null)[]} | null;
 
 // Great-circle destination from (lat, lng) along a bearing.
 // Returns [lng, lat] to match deck.gl position order
@@ -62,7 +73,6 @@ export interface HorizonPoint {
     lowestDistance: number | null;
     maxDistance: number | null;
     count: number | null;
-    angle5km: number | null;
     angle10km: number | null;
     angle20km: number | null;
     angle30km: number | null;
@@ -79,7 +89,6 @@ export function emptyPoint(x: number, bearing: number): HorizonPoint {
         lowestDistance: null,
         maxDistance: null,
         count: null,
-        angle5km: null,
         angle10km: null,
         angle20km: null,
         angle30km: null,

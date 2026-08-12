@@ -5,6 +5,7 @@ mod config;
 mod coverage;
 mod elevation;
 mod global_uptime;
+mod ground_horizon;
 mod h3cache;
 mod horizon;
 mod json_io;
@@ -25,11 +26,11 @@ mod types;
 mod syslog;
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use aprs::parser::{self, extract_crc, extract_rotation, extract_signal_db, extract_vertical_speed};
 use aprs::{AprsConnection, AprsPacket, PacketType};
@@ -39,9 +40,14 @@ use layers::{
     get_write_layers, is_presence_only, layer_from_dest_callsign, layer_mask_from_set, Layer,
     PRESENCE_SIGNAL,
 };
-use station::StationManager;
+use station::{StationDetails, StationManager};
 use db::Storage;
 use types::{Epoch, H3Index, StationId, StationName};
+
+/// Event queue between the APRS connection and the packet processor.
+/// ~75s of headroom at peak rates; the connection sheds packets (with a
+/// warning) rather than blocking when this fills - see connection.rs
+const EVENT_CHANNEL_CAPACITY: usize = 50_000;
 
 /// Aircraft tracking for gap calculation and stationary detection
 struct AircraftState {
@@ -66,6 +72,12 @@ struct AppState {
     /// Mutex to serialize cache flushes and rollups - rollup acquires this,
     /// does a full flush, then rolls up, ensuring no concurrent DB access.
     flush_lock: Mutex<()>,
+    /// Backlog monitoring, written by the packet processor: peak event-queue
+    /// depth and max packet age at dequeue since the last periodic log tick
+    /// (which resets both), plus the age of the most recent packet.
+    backlog_peak: AtomicU64,
+    lag_max_ms: AtomicU64,
+    lag_last_ms: AtomicU64,
 }
 
 impl AppState {
@@ -91,6 +103,13 @@ async fn main() {
 
     if *ROLLUP_PERIOD_MINUTES < 12.0 {
         warn!("ROLLUP_PERIOD_MINUTES is too short, it must be more than 12 minutes");
+    }
+
+    if std::env::var("MAX_GROUND_HORIZONS_PER_ROLLUP").is_ok() {
+        warn!(
+            "MAX_GROUND_HORIZONS_PER_ROLLUP is no longer used - ground horizons run as a \
+             serial background queue; set GROUND_HORIZON_PAUSED=1 to disable it"
+        );
     }
 
     info!(
@@ -139,6 +158,9 @@ async fn main() {
         aircraft_station: Mutex::new(HashMap::new()),
         case_insensitive,
         flush_lock: Mutex::new(()),
+        backlog_peak: AtomicU64::new(0),
+        lag_max_ms: AtomicU64::new(0),
+        lag_last_ms: AtomicU64::new(0),
     });
 
     // Initialise reject log (logs if active)
@@ -156,9 +178,7 @@ async fn main() {
 
     // Start APRS listener
     info!("Starting APRS...");
-    // ~75s of headroom at peak rates; the connection sheds packets (with a
-    // warning) rather than blocking when this fills - see connection.rs
-    let (event_tx, event_rx) = mpsc::channel(50_000);
+    let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
     let _aprs_conn = AprsConnection::start(event_tx, gv.clone());
 
     // Spawn packet processor
@@ -176,6 +196,10 @@ async fn main() {
     // Spawn status writer (server stats + per-station JSON, independent of rollup)
     let state_clone = state.clone();
     let mut status_writer_handle = tokio::spawn(status_writer(state_clone));
+
+    // Spawn ground-horizon queue (terrain file backfill between rollups)
+    let state_clone = state.clone();
+    let mut ground_horizon_handle = tokio::spawn(ground_horizon_task(state_clone));
 
     // Wait for shutdown signal. The background tasks never return in normal
     // operation - one ending (a panic) would otherwise leave a half-dead daemon
@@ -205,6 +229,10 @@ async fn main() {
             error!("Status writer exited unexpectedly: {:?}", res);
             fatal = Some("status writer died");
         }
+        res = &mut ground_horizon_handle => {
+            error!("Ground horizon task exited unexpectedly: {:?}", res);
+            fatal = Some("ground horizon task died");
+        }
     }
 
     // Signal rollup iterations to stop, then abort background tasks
@@ -213,6 +241,7 @@ async fn main() {
     periodic.abort();
     rollup_timer_handle.abort();
     status_writer_handle.abort();
+    ground_horizon_handle.abort();
 
     // Wait for any in-flight spawn_blocking DB writes to complete
     let _flush_guard = state.flush_lock.lock().await;
@@ -312,7 +341,17 @@ async fn signal_term() {
 async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<aprs::connection::AprsEvent>) {
     while let Some(event) = event_rx.recv().await {
         match event {
-            aprs::connection::AprsEvent::Packet(raw) => {
+            aprs::connection::AprsEvent::Packet { raw, received } => {
+                // Backlog telemetry: queue depth behind this packet and how
+                // long it sat in the channel. Peaks are reset by the
+                // periodic stats log.
+                let lag_ms = received.elapsed().as_millis() as u64;
+                state.lag_last_ms.store(lag_ms, Ordering::Relaxed);
+                state.lag_max_ms.fetch_max(lag_ms, Ordering::Relaxed);
+                state
+                    .backlog_peak
+                    .fetch_max(event_rx.len() as u64, Ordering::Relaxed);
+
                 state
                     .global_stats
                     .raw_count
@@ -381,6 +420,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                                                 &sn,
                                                 lat,
                                                 lng,
+                                                packet.altitude,
                                                 Epoch(ts),
                                                 &raw,
                                             );
@@ -419,7 +459,13 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
             }
             aprs::connection::AprsEvent::ServerMessage(msg) => {
                 let raw_count = state.global_stats.raw_count.load(Ordering::Relaxed);
-                info!("{} # {}", msg, raw_count);
+                let queued = event_rx.len();
+                if queued > 0 {
+                    let lag = state.lag_last_ms.load(Ordering::Relaxed) as f64 / 1000.0;
+                    info!("{} # {} backlog {} lag {:.1}s", msg, raw_count, queued, lag);
+                } else {
+                    info!("{} # {}", msg, raw_count);
+                }
                 state.global_uptime.record_keepalive(&msg);
             }
             aprs::connection::AprsEvent::Disconnected(reason) => {
@@ -801,6 +847,8 @@ async fn periodic_tasks(state: Arc<AppState>) {
     let mut last_count = 0u64;
     let mut last_raw_count = 0u64;
     let mut last_h3_total = 0usize;
+    let mut last_tile = elevation::TileCacheStats::default();
+    let mut last_dropped = 0u64;
     let flush_secs = *H3_CACHE_FLUSH_PERIOD_MS as f64 / 1000.0;
 
     // Aircraft purge: first one after FORGET_AIRCRAFT_AFTER_SECS, then every hour
@@ -876,20 +924,66 @@ async fn periodic_tasks(state: Arc<AppState>) {
         }
 
         let (stats, pre) = state.global_stats.snapshot();
-        let packets = stats.accepted - last_count;
+        // The day-rotation rollup resets the global stats (write_and_maybe_reset),
+        // so these cumulative counters can go backwards between ticks; a plain
+        // subtraction underflows (panics in debug builds, observed 2026-08-07).
+        // Saturate: the first tick after a reset reports 0/s for that interval.
+        let packets = stats.accepted.saturating_sub(last_count);
         let raw_count = pre.raw_count;
-        let raw_packets = raw_count - last_raw_count;
+        let raw_packets = raw_count.saturating_sub(last_raw_count);
         let pps = packets as f64 / flush_secs;
         let raw_pps = raw_packets as f64 / flush_secs;
         let h3_total = flush_stats.total;
         let h3_delta = h3_total as i64 - last_h3_total as i64;
-        let elevation_cache_size = state.elevation.cache_size_async().await;
 
+        // Backlog since last tick: peak queue depth and max packet age at
+        // dequeue (both reset here), plus packets shed by the connection
+        let backlog_peak = state.backlog_peak.swap(0, Ordering::Relaxed);
+        let lag_max_ms = state.lag_max_ms.swap(0, Ordering::Relaxed);
+        let dropped_total = aprs::connection::DROPPED_PACKETS.load(Ordering::Relaxed);
+        let dropped = dropped_total.saturating_sub(last_dropped);
+        last_dropped = dropped_total;
         info!(
-            "elevation cache: {}, total stations: {}",
-            elevation_cache_size,
+            "backlog: peak {}/{} queued, max lag {:.1}s, dropped {} ({} total)",
+            backlog_peak,
+            EVENT_CHANNEL_CAPACITY,
+            lag_max_ms as f64 / 1000.0,
+            dropped,
+            dropped_total
+        );
+
+        // Tile cache: inventory now, lookup counters as deltas since last tick
+        let tile = state.elevation.stats().await;
+        let ram_d = tile.ram_hits.saturating_sub(last_tile.ram_hits);
+        let disk_d = tile.disk_hits.saturating_sub(last_tile.disk_hits);
+        let net_d = tile.net_fetches.saturating_sub(last_tile.net_fetches);
+        let fail_d = tile.net_failures.saturating_sub(last_tile.net_failures);
+        let net_secs = tile.net_time_ms.saturating_sub(last_tile.net_time_ms) as f64 / 1000.0;
+        let lookups = ram_d + disk_d + net_d + fail_d;
+        let per_zoom = tile
+            .per_zoom
+            .iter()
+            .map(|(z, n)| format!("z{}:{}", z, n))
+            .collect::<Vec<_>>()
+            .join(" ");
+        info!(
+            "tile cache: {}/{} tiles ({}) {:.0}MB, total stations: {}",
+            tile.tiles,
+            tile.max_tiles,
+            per_zoom,
+            tile.bytes as f64 / (1024.0 * 1024.0),
             state.station_manager.next_station_id() - 1
         );
+        info!(
+            "tile lookups: {} ({:.1}% ram, {} disk, {} net, {} failed, {:.1}s fetching)",
+            lookups,
+            if lookups > 0 { ram_d as f64 * 100.0 / lookups as f64 } else { 0.0 },
+            disk_d,
+            net_d,
+            fail_d,
+            net_secs
+        );
+        last_tile = tile;
         info!(
             "valid: {} ({:.1}/s), total: {} ({:.1}/s), {}{}",
             packets, pps, raw_packets, raw_pps, stats, pre
@@ -939,6 +1033,144 @@ async fn status_writer(state: Arc<AppState>) {
 
         // Write per-station status JSONs from live in-memory data
         state.station_manager.write_status_snapshots(&acc);
+    }
+}
+
+/// A station the ground-horizon queue should generate a terrain file for:
+/// real, non-mobile, valid, positioned, and missing/stale file. Returns the
+/// position to generate at
+fn ground_horizon_candidate(details: &StationDetails) -> Option<(f64, f64)> {
+    if details.station.as_str() == "global" || details.mobile || !details.valid {
+        return None;
+    }
+    let (lat, lng) = (details.lat?, details.lng?);
+    if !lat.is_finite() || !lng.is_finite() || (lat == 0.0 && lng == 0.0) {
+        return None;
+    }
+    let output_dir = config::output_dir(details.station.as_str());
+    ground_horizon::needs_regeneration(
+        &output_dir,
+        details.station.as_str(),
+        details.ground_horizon_pos,
+        lat,
+        lng,
+    )
+    .then_some((lat, lng))
+}
+
+/// Background ground-horizon generation: a serial FIFO of stations needing a
+/// terrain file, processed one at a time strictly between rollups. Serial is
+/// the throttle - coarse-to-fine sampling makes each station a handful of
+/// tile fetches - and newly seen or moved stations join the back of the
+/// queue as the periodic rescan finds them.
+async fn ground_horizon_task(state: Arc<AppState>) {
+    use std::collections::{HashSet, VecDeque};
+
+    if *GROUND_HORIZON_PAUSED {
+        info!("ground-horizon generation paused (GROUND_HORIZON_PAUSED)");
+        // Park rather than return - a returned task trips the fatal watchdog
+        std::future::pending::<()>().await;
+    }
+
+    let mut queue: VecDeque<StationName> = VecDeque::new();
+    let mut queued: HashSet<StationName> = HashSet::new();
+    let mut written = 0usize;
+    let mut failed = 0usize;
+
+    loop {
+        // Strictly between rollups: wait out any in-progress rollup
+        if rollup::rollup_in_progress() {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
+
+        // Rescan for candidates; newcomers join the back of the queue.
+        // Sorted so a fleet backfill proceeds in a predictable order
+        let mut discovered: Vec<StationName> = state
+            .station_manager
+            .all_stations()
+            .iter()
+            .filter(|d| ground_horizon_candidate(d).is_some())
+            .map(|d| d.station.clone())
+            .filter(|name| !queued.contains(name))
+            .collect();
+        discovered.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        for name in discovered {
+            queued.insert(name.clone());
+            queue.push_back(name);
+        }
+
+        let Some(name) = queue.pop_front() else {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+        };
+        queued.remove(&name);
+
+        // Re-check at pop time - the station may have moved, gone invalid or
+        // been generated for while it sat in the queue
+        let Some(details) = state.station_manager.get(&name) else {
+            continue;
+        };
+        let Some((lat, lng)) = ground_horizon_candidate(&details) else {
+            continue;
+        };
+
+        let started = std::time::Instant::now();
+        let generated = match ground_horizon::compute(
+            &state.elevation,
+            lat,
+            lng,
+            details.beacon_altitude,
+        )
+        .await
+        {
+            Some(gh) => {
+                let output_dir = config::output_dir(name.as_str());
+                match ground_horizon::write_arrow(&output_dir, name.as_str(), &gh) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        warn!("{}: ground-horizon write failed: {} - requeued", name, e);
+                        false
+                    }
+                }
+            }
+            None => {
+                warn!("{}: ground-horizon DEM sampling failed - requeued at the back", name);
+                false
+            }
+        };
+
+        if generated {
+            written += 1;
+            if let Some(mut details) = state.station_manager.get(&name) {
+                details.ground_horizon_pos = Some([lat, lng]);
+                // Persisted by the next rollup's flush_all; worst case after
+                // an unclean shutdown is one redundant regeneration
+                state.station_manager.update(&details);
+            }
+            debug!(
+                "{}: ground-horizon written in {:.1}s ({} queued)",
+                name,
+                started.elapsed().as_secs_f64(),
+                queue.len()
+            );
+            if written % 25 == 0 || queue.is_empty() {
+                info!(
+                    "ground-horizon backfill: {} written, {} failed attempts, {} queued",
+                    written,
+                    failed,
+                    queue.len()
+                );
+            }
+        } else {
+            failed += 1;
+            queued.insert(name.clone());
+            queue.push_back(name);
+            // Back off so a dead tile endpoint cycles the queue slowly
+            // instead of hammering it (each failure already ate the HTTP
+            // timeouts)
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
     }
 }
 

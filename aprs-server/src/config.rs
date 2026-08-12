@@ -150,6 +150,17 @@ pub static MAX_ELEVATION_TILES: Lazy<usize> = Lazy::new(|| env_parse("MAX_ELEVAT
 pub static ELEVATION_TILE_RESOLUTION: Lazy<u32> =
     Lazy::new(|| env_parse("ELEVATION_TILE_RESOLUTION", 11));
 
+/// Disable the background ground-horizon generation queue entirely
+/// (operational kill-switch; replaces MAX_GROUND_HORIZONS_PER_ROLLUP - the
+/// queue is serial and coarse-to-fine, so pacing is no longer needed)
+pub static GROUND_HORIZON_PAUSED: Lazy<bool> =
+    Lazy::new(|| env_parse("GROUND_HORIZON_PAUSED", 0) != 0);
+
+/// Default antenna height above ground (m) when a station's beaconed altitude
+/// is missing or fails the sanity window against the DEM ground. Used as the
+/// viewpoint for both the ground and receive horizons
+pub static GROUND_STATION_AGL_M: Lazy<f64> = Lazy::new(|| env_parse("GROUND_STATION_AGL_M", 10.0));
+
 // Reject log rotation
 pub static REJECT_LOG_MAX_MB: Lazy<u64> = Lazy::new(|| env_parse("REJECT_LOG_MAX_MB", 50));
 

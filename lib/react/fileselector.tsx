@@ -54,7 +54,7 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
     setDateRange: (r: {start: string; end: string}) => void;
     layers?: string[];
 }) {
-    const {data} = useSWR(`/api/station/${station || 'global'}`, fetcher, {revalidateOnFocus: false});
+    const {data, error} = useSWR(`/api/station/${station || 'global'}`, fetcher, {revalidateOnFocus: false});
     const {t} = useTranslation('common', {keyPrefix: 'period'});
     const {t: tLayer} = useTranslation('common', {keyPrefix: 'layers'});
     const formatPartialOption = (opt: Option) => <FormatPartialOption opt={opt} title={t('partial_option_title')} />;
@@ -242,6 +242,22 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
         return false;
     }, [from.date, to.date, currentType, partialDatesByType]);
 
+    // No-data banner: no selected layer has any file in the current selection.
+    // Covers stations with no data at all (and single-layer selections, which can
+    // never be "partial" since partial is computed across the selected layers).
+    const producingLayers = useMemo(() => {
+        const layersToCheck = layers?.length ? layers : ['combined'];
+        return layersToCheck.filter((l) => shouldProduceOutput(l as Layer, currentType));
+    }, [layers, currentType]);
+
+    const noDataForSelection = useMemo(() => {
+        if (!data && !error) return false; // still loading the station file list
+        if (!producingLayers.length) return false; // unsupported-period banner covers this
+        const f = from.date ? dateToInput(currentType, from.date) : null;
+        const t2 = to.date ? dateToInput(to.type, to.date) : null;
+        return !dates.some((d) => (!f || d >= f) && (!t2 || d <= t2));
+    }, [data, error, producingLayers, dates, from.date, to.date, currentType, to.type]);
+
     const missingLayersInRange = missingLayersByType[currentType];
 
     // Separate expected-missing (e.g. ADS-B doesn't produce daily) from unexpected-missing
@@ -307,6 +323,12 @@ export function FileSelector({station, dateRange, setDateRange, layers}: {
                     </>
                 )}
             </div>
+            {/* Warning banner: no data at all for the selected layers/period */}
+            {noDataForSelection ? (
+                <div style={{marginTop: '4px', padding: '4px 8px', background: '#fff3cd', border: '1px solid #f0c040', borderRadius: '4px', fontSize: '0.85em'}}>
+                    ⚠ {t('no_data_warning', {layers: producingLayers.map((l) => tLayer(l, l)).join(', ')})}
+                </div>
+            ) : null}
             {/* Warning banner: partial coverage in selected range */}
             {hasPartialInRange && unexpectedMissing.size ? (
                 <div style={{marginTop: '4px', padding: '4px 8px', background: '#fff3cd', border: '1px solid #f0c040', borderRadius: '4px', fontSize: '0.85em'}}>

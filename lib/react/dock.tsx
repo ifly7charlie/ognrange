@@ -26,6 +26,7 @@ export function Dock(props: {
     visualisation: string;
     isPresenceOnly?: boolean;
     setHorizonHover?: (h: HorizonHover) => void;
+    horizonHover?: HorizonHover;
     updateUrl: (a: Record<string, string>) => void;
     expanded: boolean;
     env: any;
@@ -67,6 +68,7 @@ export function Dock(props: {
                         setLayers={props.setLayers}
                         dateRange={props.dateRange}
                         setHorizonHover={props.setHorizonHover}
+                        horizonHover={props.horizonHover}
                         env={props.env}
                     />
                 ) : null}

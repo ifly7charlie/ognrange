@@ -65,7 +65,7 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
     const workerRef = useRef<Worker | null>(null);
     const requestIdRef = useRef(0);
 
-    const {data: stationData} = useSWR(`/api/station/${station || 'global'}`, fetcher);
+    const {data: stationData, error: stationError} = useSWR(`/api/station/${station || 'global'}`, fetcher);
 
     const DATA_URL = props.env?.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL;
     const stationName = station || 'global';
@@ -93,9 +93,10 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
         return {urls, presenceOnly, layerList, urlLayers};
     }, [isTypeOnly, stationName, layerList, dateStart, DATA_URL]);
 
-    // Date-range URLs — only computed when stationData is available and not type-only
+    // Date-range URLs — only computed when stationData is available and not type-only.
+    // A failed station lookup counts as "no files" so the previous station's map clears.
     const rangeBuildUrls = useMemo(() => {
-        if (isTypeOnly || !stationData) return null;
+        if (isTypeOnly || (!stationData && !stationError)) return null;
         const rangeType = dateStart.split('.')[0];
         const typeFiles = (stationData || {})[rangeType] as Record<string, string[]> | undefined;
 
@@ -116,12 +117,11 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
             }
         }
         return {urls, presenceOnly, layerList, urlLayers};
-    }, [isTypeOnly, stationName, layerList, dateStart, dateEnd, stationData, DATA_URL]);
+    }, [isTypeOnly, stationName, layerList, dateStart, dateEnd, stationData, stationError, DATA_URL]);
 
-    const buildUrls = useMemo(
-        () => typeOnlyBuildUrls ?? rangeBuildUrls ?? {urls: [], presenceOnly: [], layerList: [], urlLayers: []},
-        [typeOnlyBuildUrls, rangeBuildUrls]
-    );
+    // null while the station file list is still loading; empty urls means the
+    // selection genuinely has no data and the display should be cleared
+    const buildUrls = useMemo(() => typeOnlyBuildUrls ?? rangeBuildUrls, [typeOnlyBuildUrls, rangeBuildUrls]);
 
     function clearProgress() {
         setLoadProgress(null);
@@ -145,7 +145,24 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
     // while the user is still adjusting date range controls
     useEffect(() => {
         const worker = workerRef.current;
-        if (!worker || !buildUrls.urls.length) return;
+        if (!worker || !buildUrls) return;
+
+        if (!buildUrls.urls.length) {
+            // Nothing to load for this station/layer/date selection — clear the
+            // previous coverage rather than leaving the old station's map up
+            const timer = setTimeout(() => {
+                const prevId = requestIdRef.current;
+                if (prevId > 0) {
+                    // Drop the old handler first so an abort's partial result
+                    // (or a late completion) can't repaint the old station
+                    worker.onmessage = null;
+                    worker.postMessage({type: 'abort', requestId: prevId});
+                }
+                clearProgress();
+                setDisplayedH3s({length: 0});
+            }, 300);
+            return () => clearTimeout(timer);
+        }
 
         const {urls, presenceOnly, layerList, urlLayers} = buildUrls;
         const timer = setTimeout(() => {
