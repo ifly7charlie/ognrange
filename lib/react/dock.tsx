@@ -69,6 +69,7 @@ export function Dock(props: {
                         dateRange={props.dateRange}
                         setHorizonHover={props.setHorizonHover}
                         horizonHover={props.horizonHover}
+                        visualisation={props.visualisation}
                         env={props.env}
                     />
                 ) : null}

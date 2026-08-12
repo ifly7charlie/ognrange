@@ -24,7 +24,22 @@ export interface PickableStationDetails {
     id: number;
 }
 
-export type PickableDetails = PickableStationDetails | PickableH3Details | {type: 'none'};
+// A cell of the computed coverage-floor disc (floordata.ts) - angles are the
+// ones the floors were computed from so the readout always matches the map
+export interface PickableFloorDetails {
+    type: 'floor';
+    i: number;
+    h: [number, number];
+    h3: string;
+    ground: number;
+    terrainFloor: number;
+    coverageFloor: number;
+    terrainAngle: number | null;
+    receiveAngle: number | null;
+    length: number;
+}
+
+export type PickableDetails = PickableStationDetails | PickableH3Details | PickableFloorDetails | {type: 'none'};
 
 import {prefixWithZeros} from '../common/prefixwithzeros';
 
@@ -99,6 +114,20 @@ export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | a
         }
         console.log('unexpected layer data', d);
         return {type: 'none'};
+    } else if (layer?.props?.data && 'terrainFloor' in layer.props.data) {
+        const dF = layer.props.data;
+        return {
+            type: 'floor',
+            i,
+            h: [dF.h3lo[i], dF.h3hi[i]] as [number, number],
+            h3: prefixWithZeros(8, dF.h3hi[i].toString(16)) + prefixWithZeros(8, dF.h3lo[i].toString(16)),
+            ground: dF.ground[i],
+            terrainFloor: dF.terrainFloor[i],
+            coverageFloor: dF.coverageFloor[i],
+            terrainAngle: Number.isNaN(dF.terrainAngle[i]) ? null : dF.terrainAngle[i],
+            receiveAngle: Number.isNaN(dF.receiveAngle[i]) ? null : dF.receiveAngle[i],
+            length: dF.length
+        };
     } else if (layer?.props?.data && i < layer.props.data.length) {
         const dS = layer?.props?.data;
         return {

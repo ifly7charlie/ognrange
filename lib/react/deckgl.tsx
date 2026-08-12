@@ -50,6 +50,10 @@ const horizonBandColours: [number, number, number, number][] = BAND_KEYS.map((_k
 });
 import {useDisplayedH3s} from './displayedh3s';
 import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
+import {useFloorData} from './usefloordata';
+import type {FloorDisc} from './floordata';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, FLOOR_VISUALISATION_SET} from '../common/floor';
+import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 
 // Precomputed colour for every possible layerMask bitmask value (0–255)
 const layerMaskColors: [number, number, number, number][] = Array.from({length: 256}, (_, mask) => {
@@ -86,6 +90,7 @@ function makeLayers(
     file: string,
     highlightStations: HighlightStationIndicies,
     visualisation: string,
+    floorData: FloorDisc | null,
     map2d: boolean,
     onClick: (a: any) => void,
     lockedH3: string,
@@ -178,25 +183,58 @@ function makeLayers(
           })
         : undefined;
 
+    // Floor visualisations render the computed floor disc instead of the
+    // coverage cells; floors above the display ceiling (or unknown) draw nothing
+    const isFloorVis = FLOOR_VISUALISATION_SET.has(visualisation);
+    const floorValues = isFloorVis && floorData ? (visualisation === 'terrainFloor' ? floorData.terrainFloor : floorData.coverageFloor) : null;
+
     // So we can check loading status
-    const hexLayer = new H3HexagonLayer<typeof displayedh3s>({
-        id: (station || 'global') + (file || 'year'),
-        data: displayedh3s,
-        pickable: true,
-        wireframe: false,
-        filled: true,
-        stroked: false,
-        extruded: false,
-        elevationScale: 0,
-        getHexagon: ((_d, {index}) => [displayedh3s.d!.h3lo[index], displayedh3s.d!.h3hi[index]]) as any,
-        getFillColor: (_d, {index}) => visualisationFunction(displayedh3s.d!, index),
-        getElevation: map2d ? (d) => 0 : (d) => altitudeFunction(d),
-        updateTriggers: {
-            getFillColor: [visualisation, colours],
-            getElevation: [map2d ? false : visualisation]
-        },
-        onClick: onClick
-    });
+    const hexLayer = isFloorVis
+        ? floorValues
+            ? new H3HexagonLayer({
+                  id: 'floor' + (station || ''),
+                  data: floorData as any,
+                  pickable: true,
+                  wireframe: false,
+                  filled: true,
+                  stroked: false,
+                  extruded: false,
+                  elevationScale: 0,
+                  // Instanced hexagons overlap where H3 cells distort (high
+                  // latitudes, icosahedron seams) and the picking buffer
+                  // doesn't blend - hovering a coloured cell could pick an
+                  // invisible clipped neighbour drawn on top. True per-cell
+                  // polygons keep picked == visible (~100ms for the disc)
+                  highPrecision: true,
+                  getHexagon: ((_d, {index}) => [floorData!.h3lo[index], floorData!.h3hi[index]]) as any,
+                  getFillColor: ((_d, {index}): [number, number, number, number] => {
+                      const v = floorValues[index];
+                      // 0-2400m over the full ramp, ~10m per step
+                      return v === FLOOR_UNKNOWN || v > FLOOR_DISPLAY_MAX_M ? [0, 0, 0, 0] : colourise(v / 10);
+                  }) as any,
+                  updateTriggers: {
+                      getFillColor: [visualisation, colours]
+                  }
+              })
+            : null
+        : new H3HexagonLayer<typeof displayedh3s>({
+              id: (station || 'global') + (file || 'year'),
+              data: displayedh3s,
+              pickable: true,
+              wireframe: false,
+              filled: true,
+              stroked: false,
+              extruded: false,
+              elevationScale: 0,
+              getHexagon: ((_d, {index}) => [displayedh3s.d!.h3lo[index], displayedh3s.d!.h3hi[index]]) as any,
+              getFillColor: (_d, {index}) => visualisationFunction(displayedh3s.d!, index),
+              getElevation: map2d ? (d) => 0 : (d) => altitudeFunction(d),
+              updateTriggers: {
+                  getFillColor: [visualisation, colours],
+                  getElevation: [map2d ? false : visualisation]
+              },
+              onClick: onClick
+          });
 
     // Add a layer for the recent points for each pilot
     let layers = [
@@ -267,6 +305,13 @@ export function CoverageMap(props: {
     const details = props.selectedDetails.type === 'none' ? props.hoverDetails : props.selectedDetails;
 
     const airspaceKey = props.env.NEXT_PUBLIC_AIRSPACE_API_KEY || process.env.NEXT_PUBLIC_AIRSPACE_API_KEY;
+
+    // Coverage-floor disc, only computed while a floor visualisation is
+    // selected for a station. ADS-B is the only 1090MHz layer; everything
+    // else receives on 868 so uses that receive horizon
+    const isFloorVis = FLOOR_VISUALISATION_SET.has(props.visualisation);
+    const floorFrequency = (params.get('layers') || 'combined') === 'adsb' ? 1090 : 868;
+    const {disc: floorData, loadingLayer: floorLoadingLayer} = useFloorData(isFloorVis && !!props.station, props.station, props.file, floorFrequency, props.env.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL);
 
     const toColour = router.query.toColour || defaultToColour;
     const fromColour = router.query.fromColour || defaultFromColour;
@@ -349,7 +394,7 @@ export function CoverageMap(props: {
             }
 
             // Add highlight to all stations that are referenced by the point
-            if (object.type === 'hexagon' && (props.hoverDetails.type !== 'hexagon' || object.i != props.hoverDetails.i)) {
+            if ((object.type === 'hexagon' || object.type === 'floor') && (props.hoverDetails.type !== object.type || object.i != (props.hoverDetails as any).i)) {
                 props.setHoverDetails(object);
             }
 
@@ -359,6 +404,7 @@ export function CoverageMap(props: {
                         <CoverageDetailsToolTip
                             details={object} //
                             station={props.station}
+                            visualisation={props.visualisation}
                         />
                     </I18nextProvider>
                 );
@@ -391,6 +437,7 @@ export function CoverageMap(props: {
                 props.file,
                 highlightStations,
                 props.visualisation,
+                floorData,
                 map2d,
                 onClick,
                 props.selectedDetails.type === 'hexagon' ? props.selectedDetails.h3 : null,
@@ -401,6 +448,7 @@ export function CoverageMap(props: {
             props.station,
             props.file,
             displayedh3s,
+            floorData,
             map2d,
             props.visualisation,
             highlightStations, //
@@ -531,7 +579,7 @@ export function CoverageMap(props: {
                 <ScaleControl position="bottom-left" />
                 <NavigationControl showCompass showZoom position="bottom-left" />
             </Map>
-            {displayedh3s.loadingLayer ?? null}
+            {floorLoadingLayer ?? displayedh3s.loadingLayer ?? null}
         </>
     );
 }

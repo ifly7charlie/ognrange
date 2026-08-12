@@ -1,12 +1,19 @@
 import {useMemo, useState, useCallback, useRef} from 'react';
 import useSWR from 'swr';
 import {useTranslation} from 'next-i18next';
-import {Line, ComposedChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer} from 'recharts';
+import {Line, ComposedChart, Area, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ReferenceDot, ResponsiveContainer} from 'recharts';
+
+import {cellToLatLng, greatCircleDistance, splitLongToH3Index} from 'h3-js';
 
 import {NEXT_PUBLIC_DATA_URL} from '../../common/config';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M} from '../../common/floor';
 
 import graphcolours from '../graphcolours';
 
+import {useStationMeta} from '../stationmeta';
+import {useDisplayedH3s} from '../displayedh3s';
+import {initialBearingDeg} from '../floordata';
+import type {PickableFloorDetails} from '../pickabledetails';
 import {arrowFetcher} from './arrowfetcher';
 import {COMPASS, X_TICKS, X_TICK_LABELS, heightAtDistance, elevationAngleDeg, BAND_KEYS, BAND_RANGES_KM, HorizonHover} from './horizondata';
 import {groundChartFromTable, profileForBearing, groundUrl, groundMeta, GroundChart, GroundProfile, GROUND_BIN_DEG, GROUND_MAX_KM, GROUND_STEP_KM} from './grounddata';
@@ -18,6 +25,9 @@ const TERRAIN_LINE = '#7a5c44';
 const TERRAIN_STROKE = '#6b4f3a';
 const TERRAIN_FILL = '#a0785a';
 const RIDGE_MARKER = '#cc4444';
+const COVERAGE_FILL = '#4caf50';
+// Observed minimum altitudes from the coverage data, dotted over the predicted floor
+const ALTITUDE_DOT = '#3366cc';
 // The predicted sight line matches the receive chart's any-distance series colour
 const SIGHT_LINE = '#333333';
 // Atmospheric perspective for the panorama: foreground crest lines darken the
@@ -28,6 +38,35 @@ const RIDGE_SHADES = ['#41301f', '#553f2a', '#6b4f3a', '#83644a', '#9a7a5c'];
 const noTooltipContent = () => null;
 
 const compassFor = (bearing: number) => COMPASS[Math.round(bearing / 22.5) % 16];
+
+// Shadow envelope for a terrain profile: walk outward keeping the max
+// elevation angle seen so far (from the antenna); where the ray from that
+// angle sits above the ground the terrain is radio-shadowed. maxAngle
+// deliberately lags one sample so crest samples themselves read as ground
+// contact. Returns the per-sample envelope value to draw, null where there is
+// nothing to draw: the trailing stretch behind the final crest (the horizon)
+// never returns to ground so it has no endpoint, and anything above yCap is
+// off the terrain scale
+function shadowSeries(points: GroundProfile['points'], viewpoint: number, yCap: number): (number | null)[] {
+    let maxAngle = -Infinity;
+    const shadowed: boolean[] = [];
+    const envelope: number[] = [];
+    points.forEach(({km, elevation}, i) => {
+        const ray = i > 0 && maxAngle > -Infinity ? viewpoint + heightAtDistance(maxAngle, km) : elevation;
+        shadowed.push(ray > elevation + 0.01);
+        envelope.push(Math.max(ray, elevation));
+        if (i > 0) {
+            maxAngle = Math.max(maxAngle, elevationAngleDeg(elevation - viewpoint, km));
+        }
+    });
+    let lastContact = shadowed.length - 1;
+    while (lastContact > 0 && shadowed[lastContact]) {
+        lastContact--;
+    }
+    // Ground-contact samples on either side are included so each shadow
+    // segment starts and ends on the terrain
+    return points.map((_p, i) => (i <= lastContact && (shadowed[i] || shadowed[i - 1] || shadowed[i + 1]) && envelope[i] <= yCap ? envelope[i] : null));
+}
 
 // Mode A: skyline panorama by bearing - the same north-centred degree axis as
 // the receive horizon so the two are directly comparable. The shaded area's
@@ -160,37 +199,13 @@ function GroundProfileChart({
             predictedAngle = lowestAngle;
         }
 
-        // Shadow envelope: walk outward keeping the max elevation angle seen so
-        // far (from the antenna); where the ray from that angle sits above the
-        // ground the terrain is shadowed. maxAngle deliberately lags one sample
-        // so crest samples themselves read as ground contact
-        let maxAngle = -Infinity;
-        const shadowed: boolean[] = [];
-        const envelope: number[] = [];
-        profile.points.forEach(({km, elevation}, i) => {
-            const ray = i > 0 && maxAngle > -Infinity ? viewpoint + heightAtDistance(maxAngle, km) : elevation;
-            shadowed.push(ray > elevation + 0.01);
-            envelope.push(Math.max(ray, elevation));
-            if (i > 0) {
-                maxAngle = Math.max(maxAngle, elevationAngleDeg(elevation - viewpoint, km));
-            }
-        });
-        // A shadow segment runs crest -> next ground intersection. Behind the
-        // final crest (the horizon) the ray never meets ground again, so there
-        // is no endpoint to draw to - left in, it just climbs to the top of
-        // the chart and stretches the y-axis with it
-        let lastContact = shadowed.length - 1;
-        while (lastContact > 0 && shadowed[lastContact]) {
-            lastContact--;
-        }
+        const shadow = shadowSeries(profile.points, viewpoint, yCap);
 
         return profile.points.map(({km, elevation}, i) => {
             const row: Record<string, number | null> = {
                 km,
                 elevation,
-                // Ground-contact samples on either side are included so each
-                // shadow segment starts and ends on the terrain
-                shadow: i <= lastContact && (shadowed[i] || shadowed[i - 1] || shadowed[i + 1]) && envelope[i] <= yCap ? envelope[i] : null,
+                shadow: shadow[i],
                 // Starts one sample early so it joins the end of the solid segment
                 predicted: predictedAngle != null && km > predictedFrom - GROUND_STEP_KM ? at(predictedAngle, km) : null
             };
@@ -224,6 +239,163 @@ function GroundProfileChart({
                         <Line key={k} dataKey={k} stroke={graphcolours[i]} strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} />
                     ))}
                     <Line dataKey="predicted" stroke={SIGHT_LINE} strokeWidth={1} strokeDasharray="5 3" dot={false} connectNulls={false} isAnimationActive={false} />
+                </ComposedChart>
+            </ResponsiveContainer>
+            <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em', minHeight: '1.4em'}}>
+                {profile.horizonAngle != null && profile.horizonDistance != null ? (
+                    <span style={{color: TERRAIN_STROKE}}>
+                        {t('profile_horizon', {angle: profile.horizonAngle.toFixed(2), distance: profile.horizonDistance})}
+                    </span>
+                ) : null}
+            </div>
+        </>
+    );
+}
+
+// Terrain side profile along the bearing of a hovered coverage-floor cell:
+// the same silhouette as the receive-hover profile, with the ray that sets
+// the displayed floor (terrain-only or terrain+receive depending on the
+// active visualisation) drawn from the antenna, and a marker on it at the
+// hovered cell's distance. Values come off the cell (pickabledetails 'floor')
+// so ray, marker and readout all agree with the map; the ground-horizon fetch
+// shares GroundDetails' SWR cache. Renders nothing until the table is loaded
+export function FloorProfileChart({
+    details,
+    station,
+    visualisation,
+    env
+}: {
+    details: PickableFloorDetails;
+    station: string;
+    visualisation?: string;
+    env?: {NEXT_PUBLIC_DATA_URL?: string};
+}) {
+    const {t} = useTranslation('common', {keyPrefix: 'details.ground'});
+    const DATA_URL = env?.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL;
+    const stationMeta = useStationMeta(station ?? '');
+    const url = station ? groundUrl(DATA_URL, station) : null;
+    const {data: table} = useSWR(url, arrowFetcher, {revalidateOnFocus: false});
+
+    const hasPos = stationMeta && !isNaN(stationMeta.lat);
+    const cellPos = cellToLatLng(details.h);
+    const bearing = hasPos ? initialBearingDeg(stationMeta.lat, stationMeta.lng, cellPos[0], cellPos[1]) : null;
+    const distanceKm = hasPos ? greatCircleDistance([stationMeta.lat, stationMeta.lng], cellPos, 'km') : null;
+
+    // Keyed on the 0.5° bin, not the raw bearing, so sweeping across cells in
+    // the same direction doesn't recompute the profile
+    const bin = bearing == null ? null : Math.round(bearing / GROUND_BIN_DEG);
+    const profile = useMemo(() => (table && bearing != null ? profileForBearing(table, bearing) : null), [table, bin]);
+    const stationAgl = useMemo(() => (table ? groundMeta(table).stationAgl : 0), [table]);
+
+    // Observed minimum altitudes from the displayed coverage data: polar
+    // coordinates computed once per data load, then filtered per bearing bin.
+    // Presence-only layers carry synthetic values, not real altitudes
+    const h3data = useDisplayedH3s();
+    const polar = useMemo(() => {
+        const d = h3data.d;
+        if (!d || h3data.isPresenceOnly || !hasPos) {
+            return null;
+        }
+        const n = d.h3lo.length;
+        const dist = new Float32Array(n);
+        const brg = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+            const [lat, lng] = cellToLatLng(splitLongToH3Index(d.h3lo[i], d.h3hi[i]));
+            dist[i] = greatCircleDistance([stationMeta.lat, stationMeta.lng], [lat, lng], 'km');
+            brg[i] = initialBearingDeg(stationMeta.lat, stationMeta.lng, lat, lng);
+        }
+        return {dist, brg};
+    }, [h3data.d, h3data.isPresenceOnly, hasPos, hasPos ? stationMeta.lat : 0, hasPos ? stationMeta.lng : 0]);
+    // A cell is on the profile's ray when the bearing difference is within the
+    // half-angle the cell subtends at its distance (the binSpan rule)
+    const dots = useMemo(() => {
+        if (!polar || !h3data.d || !profile) {
+            return [];
+        }
+        const out: {km: number; alt: number}[] = [];
+        for (let i = 0; i < polar.dist.length; i++) {
+            const dKm = polar.dist[i];
+            if (dKm > GROUND_MAX_KM) {
+                continue;
+            }
+            let diff = Math.abs(polar.brg[i] - profile.bearing);
+            if (diff > 180) {
+                diff = 360 - diff;
+            }
+            if (diff <= (Math.atan2(0.4, dKm) * 180) / Math.PI) {
+                out.push({km: dKm, alt: h3data.d.minAlt[i]});
+            }
+        }
+        return out;
+    }, [polar, h3data.d, profile]);
+
+    const terrainActive = visualisation === 'terrainFloor';
+    const floorMsl = terrainActive ? details.terrainFloor : details.coverageFloor;
+    // The angle whose antenna ray sets the displayed floor at this cell; an
+    // unknown floor (nothing ever received over the cell's arc) has no ray
+    const rayAngle =
+        details.terrainAngle == null || floorMsl === FLOOR_UNKNOWN ? null : terrainActive ? details.terrainAngle : Math.max(details.terrainAngle, details.receiveAngle ?? -Infinity);
+
+    const data = useMemo(() => {
+        if (!profile) {
+            return null;
+        }
+        const maxElevation = profile.points.reduce((m, p) => Math.max(m, p.elevation), profile.stationElevation);
+        const viewpoint = profile.stationElevation + stationAgl;
+        // Y axis locked to min(display clip, highest thing on the graph):
+        // floors above FLOOR_DISPLAY_MAX_M are transparent on the map so the
+        // chart never scales past it (Alpine skylines clip at the top instead
+        // of crushing the useful range), while over flat terrain the floor
+        // ray - not the terrain - sets the scale so the marker stays visible.
+        // heightAtDistance is largest at full range for any angle, so the ray
+        // maximum is its 120km endpoint
+        const terrainCap = maxElevation + Math.max(50, (maxElevation - profile.stationElevation) * 0.1);
+        const rayMax = rayAngle != null ? viewpoint + heightAtDistance(rayAngle, GROUND_MAX_KM) : -Infinity;
+        const dotMax = dots.reduce((m, p) => Math.max(m, p.alt), -Infinity);
+        // Round up to a clean 50m step: the domain endpoint is rendered verbatim as the top tick
+        const yCap = Math.min(FLOOR_DISPLAY_MAX_M, Math.ceil(Math.max(terrainCap, rayMax, dotMax) / 50) * 50);
+        const shadow = shadowSeries(profile.points, viewpoint, yCap);
+        const rows = profile.points.map(({km, elevation}, i) => {
+            const ray = rayAngle != null ? viewpoint + heightAtDistance(rayAngle, km) : null;
+            const floor = ray != null && ray <= yCap ? ray : null;
+            return {km, elevation, shadow: shadow[i], floor, coverage: floor != null ? [floor, yCap] : null};
+        });
+        return {yCap, rows, dots: dots.filter((p) => p.alt <= yCap)};
+    }, [profile, stationAgl, rayAngle, dots]);
+
+    if (!data || !profile || distanceKm == null) {
+        return null;
+    }
+
+    return (
+        <>
+            <b>{t('profile_title', {bearing: profile.bearing.toFixed(1), compass: compassFor(profile.bearing)})}</b>
+            <br />
+            <ResponsiveContainer width="100%" height={190}>
+                <ComposedChart data={data.rows} margin={{top: 5, right: 5, left: 0, bottom: 5}}>
+                    <XAxis
+                        dataKey="km"
+                        type="number"
+                        domain={[0, GROUND_MAX_KM]}
+                        ticks={[0, 30, 60, 90, 120]}
+                        tickFormatter={(v: number) => `${v}km`}
+                        style={{fontSize: '0.7rem'}}
+                    />
+                    <YAxis domain={['dataMin', data.yCap]} allowDataOverflow tickFormatter={(v: number) => `${Math.round(v)}m`} style={{fontSize: '0.7rem'}} />
+                    <Area dataKey="coverage" stroke="none" fill={COVERAGE_FILL} fillOpacity={0.18} connectNulls={false} isAnimationActive={false} />
+                    <Area dataKey="elevation" stroke={TERRAIN_STROKE} fill={TERRAIN_FILL} fillOpacity={0.9} baseValue="dataMin" isAnimationActive={false} />
+                    <Line dataKey="shadow" stroke={RIDGE_MARKER} strokeWidth={1} strokeDasharray="1 3" dot={false} connectNulls={false} isAnimationActive={false} />
+                    <Line dataKey="floor" stroke={SIGHT_LINE} strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} />
+                    {data.dots.length ? (
+                        <Scatter
+                            data={data.dots}
+                            dataKey="alt"
+                            isAnimationActive={false}
+                            shape={(p: any) => <circle cx={p.cx} cy={p.cy} r={2} fill={ALTITUDE_DOT} fillOpacity={0.75} />}
+                        />
+                    ) : null}
+                    <ReferenceLine x={distanceKm} stroke="#888888" strokeDasharray="3 3" />
+                    {floorMsl <= data.yCap ? <ReferenceDot x={distanceKm} y={floorMsl} r={4} fill={RIDGE_MARKER} stroke="#ffffff" isFront /> : null}
                 </ComposedChart>
             </ResponsiveContainer>
             <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em', minHeight: '1.4em'}}>

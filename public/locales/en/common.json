@@ -54,6 +54,8 @@
         "stations": "Number of stations",
         "primaryStation": "Primary station",
         "layerCoverage": "Protocol coverage type",
+        "coverageFloor": "Coverage floor (lowest likely altitude)",
+        "terrainFloor": "Terrain floor (line of sight)",
         "layerCoverageBlend": "Overlapping protocols show blended colours",
         "presenceOnlySignalWarning": "{{layers}} use a synthetic signal value — signal-based visualisations may be misleading for this layer selection"
     },
@@ -85,6 +87,20 @@
         "unlock": "Unlock",
         "distance": "Distance to {{station}}: {{km}}km",
         "angle": "Elevation angle to lowest point: {{angle}}°",
+        "floor": {
+            "title": "Coverage floor",
+            "bearing": "Bearing from station: {{bearing}}°",
+            "ground": "Terrain elevation: {{ground}}m",
+            "terrain": "Terrain visible above: {{msl}}m ({{agl}}m agl)",
+            "angles": "Skyline: {{terrain}}°, receive horizon: {{receive}}°",
+            "anglesNoReceive": "Skyline: {{terrain}}°, nothing received this way yet",
+            "coverage": "Likely coverage above: {{msl}}m ({{agl}}m agl)",
+            "coverageUnknown": "Likely coverage: unknown — nothing received this way",
+            "clipped": "Above the {{max}}m display limit — not coloured on the map",
+            "unknown": "No terrain data for this cell",
+            "loadingFetch": "loading horizon data",
+            "loadingCompute": "computing coverage floor"
+        },
         "lowest": {
             "title": "Lowest point",
             "summary": "{{strength}} dB @ {{altitude}}m ({{agl}}m agl)",

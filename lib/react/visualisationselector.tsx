@@ -3,6 +3,7 @@ import {useTranslation} from 'next-i18next';
 
 import Select from 'react-select';
 import {Layer, layerMaskFromSet, ALL_LAYER_NAMES, PRESENCE_ONLY} from '../common/layers';
+import {FLOOR_VISUALISATIONS, FLOOR_VISUALISATION_SET} from '../common/floor';
 import {LayerBadges} from './layerbadges';
 
 const normalVisualisations = ['avgSig', 'maxSig', 'count', 'minAlt', 'minAgl', 'minAltSig', 'avgCrc', 'avgGap'];
@@ -52,7 +53,7 @@ export function VisualisationSelector({
     const [visualisations, selectedVisualisation] = useMemo((): [any, any] => {
         const allVis = [
             ...normalVisualisations,
-            ...((station || 'global') == 'global' ? globalVisualisations : []),
+            ...((station || 'global') == 'global' ? globalVisualisations : FLOOR_VISUALISATIONS),
             ...(multiLayer ? ['layerCoverage'] : [])
         ];
         const filtered = isPresenceOnly ? allVis.filter((v) => !signalVisualisations.has(v)) : allVis;
@@ -72,6 +73,13 @@ export function VisualisationSelector({
             setVisualisation(defaultVisualisation);
         }
     }, [multiLayer]);
+
+    // Floor visualisations are per-station - fall back when the station is deselected
+    useEffect(() => {
+        if ((station || 'global') == 'global' && visualisation && FLOOR_VISUALISATION_SET.has(visualisation)) {
+            setVisualisation(defaultVisualisation);
+        }
+    }, [station]);
 
     const selectVisualisationOnChange = useCallback((v) => setVisualisation(v.value), [setVisualisation]);
 

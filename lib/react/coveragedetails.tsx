@@ -32,9 +32,11 @@ import {UptimeBar} from './coveragedetails/uptimebar';
 import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {StationPosition} from './coveragedetails/stationposition';
 import {HorizonDetails} from './coveragedetails/horizondetails';
-import {GroundDetails} from './coveragedetails/grounddetails';
+import {GroundDetails, FloorProfileChart} from './coveragedetails/grounddetails';
 import type {HorizonHover} from './coveragedetails/horizondata';
 import {elevationAngleDeg} from './coveragedetails/horizondata';
+import {initialBearingDeg} from './floordata';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M} from '../common/floor';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 import {GlobalUptimeCard} from './coveragedetails/globaluptime';
 import {StationStatsDashboard, StationHourlyDetailChart} from './coveragedetails/stationstats';
@@ -43,7 +45,65 @@ import {formatEpoch} from './formatdate';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-export function CoverageDetailsToolTip({details, station}) {
+// Readout for a hovered coverage-floor cell, shared between the tooltip and
+// the details panel. All values come straight off the computed disc
+// (pickabledetails 'floor' type) so they match the map colouring exactly;
+// the active visualisation decides which floor is emphasised and whether the
+// display-limit note applies (it refers to the value colouring the map)
+function FloorDetailsBody({details, station, visualisation}: {details: import('./pickabledetails').PickableFloorDetails; station: string; visualisation?: string}) {
+    const {t} = useTranslation('common', {keyPrefix: 'details'});
+    const stationMeta = useStationMeta(station ?? '');
+    const hasPos = stationMeta && !isNaN(stationMeta.lat);
+    const cellPos = cellToLatLng(details.h);
+    const known = details.terrainFloor !== FLOOR_UNKNOWN;
+    // Terrain can be known while coverage is not: nothing was ever received
+    // over the cell's arc, so there is no likely-coverage claim to show
+    const coverageKnown = details.coverageFloor !== FLOOR_UNKNOWN;
+    const terrainActive = visualisation === 'terrainFloor';
+    const displayedFloor = terrainActive ? details.terrainFloor : details.coverageFloor;
+    // Floors in front of the first obstruction sit below the cell's own ground
+    // (line of sight at ground level) - show that as 0m above ground
+    const agl = (msl: number) => Math.max(msl - details.ground, 0);
+    const emphasise = (active: boolean, text: string) => (active ? <b>{text}</b> : text);
+    return (
+        <>
+            {hasPos ? (
+                <>
+                    {t('distance', {station, km: greatCircleDistance(cellPos, [stationMeta.lat, stationMeta.lng], 'km').toFixed(0)})}
+                    <br />
+                    {t('floor.bearing', {bearing: initialBearingDeg(stationMeta.lat, stationMeta.lng, cellPos[0], cellPos[1]).toFixed(0)})}
+                    <br />
+                </>
+            ) : null}
+            <hr />
+            {known ? (
+                <>
+                    {t('floor.ground', {ground: details.ground})}
+                    <br />
+                    {emphasise(terrainActive, t('floor.terrain', {msl: details.terrainFloor, agl: agl(details.terrainFloor)}))}
+                    <br />
+                    {details.receiveAngle != null
+                        ? t('floor.angles', {terrain: details.terrainAngle?.toFixed(2), receive: details.receiveAngle.toFixed(2)})
+                        : t('floor.anglesNoReceive', {terrain: details.terrainAngle?.toFixed(2)})}
+                    <br />
+                    {coverageKnown
+                        ? emphasise(!terrainActive, t('floor.coverage', {msl: details.coverageFloor, agl: agl(details.coverageFloor)}))
+                        : emphasise(!terrainActive, t('floor.coverageUnknown'))}
+                    {displayedFloor !== FLOOR_UNKNOWN && displayedFloor > FLOOR_DISPLAY_MAX_M ? (
+                        <>
+                            <br />
+                            <i>{t('floor.clipped', {max: FLOOR_DISPLAY_MAX_M})}</i>
+                        </>
+                    ) : null}
+                </>
+            ) : (
+                t('floor.unknown')
+            )}
+        </>
+    );
+}
+
+export function CoverageDetailsToolTip({details, station, visualisation}: {details: any; station: string; visualisation?: string}) {
     //
     const {t} = useTranslation();
     const stationMeta = useStationMeta(station ?? '');
@@ -110,6 +170,14 @@ export function CoverageDetailsToolTip({details, station}) {
                 {t('packets.summary', {count: details.c})}
             </div>
         );
+    } else if (details.type === 'floor') {
+        return (
+            <div>
+                <b>{t('details.floor.title')}</b>
+                <br />
+                <FloorDetailsBody details={details} station={station} visualisation={visualisation} />
+            </div>
+        );
     }
     return <div> </div>;
 }
@@ -129,6 +197,7 @@ export function CoverageDetails({
     dateRange,
     setHorizonHover,
     horizonHover,
+    visualisation,
     env
 }: //
 {
@@ -144,6 +213,7 @@ export function CoverageDetails({
     dateRange?: {start: string; end: string};
     setHorizonHover?: (h: HorizonHover) => void;
     horizonHover?: HorizonHover;
+    visualisation?: string;
     env: any;
 }) {
     // Tidy up code later by simplifying typescript types
@@ -273,6 +343,18 @@ export function CoverageDetails({
     const clearSelectedH3 = useCallback(() => setSelectedDetails({type: 'none'}), [false]);
 
     delayedUpdateFrom(key);
+
+    if (details.type === 'floor') {
+        return (
+            <div>
+                <b>{t('title_mouse')}</b>
+                <br style={{clear: 'both'}} />
+                <FloorDetailsBody details={details} station={station} visualisation={visualisation} />
+                <hr />
+                <FloorProfileChart details={details} station={station} visualisation={visualisation} env={env} />
+            </div>
+        );
+    }
 
     if (details.type === 'hexagon') {
         const distanceKm = stationMeta ? greatCircleDistance(cellToLatLng(details.h), [stationMeta.lat, stationMeta.lng], 'km') : null;
