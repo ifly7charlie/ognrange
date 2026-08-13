@@ -2,7 +2,7 @@ import type {Table} from 'apache-arrow';
 import {gridDisk, latLngToCell, cellToLatLng, h3IndexToSplitLong, greatCircleDistance} from 'h3-js';
 
 import {elevationAngleDeg, heightAtDistance, BAND_KEYS, BAND_RANGES_KM, BIN_COUNT, BIN_DEG} from './coveragedetails/horizondata';
-import {GROUND_SAMPLES, GROUND_STEP_KM, GROUND_MAX_KM, groundMeta} from './coveragedetails/grounddata';
+import {GROUND_SAMPLES, GROUND_STEP_KM, GROUND_MAX_KM, DEFAULT_STATION_AGL_M, groundMeta} from './coveragedetails/grounddata';
 import {FLOOR_UNKNOWN} from '../common/floor';
 import {H3_STATION_CELL_LEVEL} from '../common/config';
 
@@ -48,6 +48,9 @@ export function binSpan(bearingDeg: number, distanceKm: number): [number, number
 export interface TerrainGrid {
     stationLat: number;
     stationLng: number;
+    // Station ground m MSL - ray sample 0; the display ceiling is relative
+    // to this, not to sea level
+    stationGround: number;
     // Antenna m MSL: ray sample 0 + the file's stationAgl metadata
     viewpoint: number;
     // BIN_COUNT x GROUND_SAMPLES row-major, m MSL
@@ -66,6 +69,7 @@ export function terrainGridFromTable(table: Table): TerrainGrid | null {
 
     const elev = new Int16Array(BIN_COUNT * GROUND_SAMPLES);
     const prefixMax = new Float32Array(BIN_COUNT * GROUND_SAMPLES).fill(NaN);
+    let stationGround: number | null = null;
     let viewpoint: number | null = null;
     for (let i = 0; i < table.numRows; i++) {
         const cell = elevations.get(i);
@@ -74,7 +78,8 @@ export function terrainGridFromTable(table: Table): TerrainGrid | null {
         }
         const bin = (Math.round((bearing.get(i) as number) / BIN_DEG) % BIN_COUNT + BIN_COUNT) % BIN_COUNT;
         const values = cell.toArray() as ArrayLike<number>;
-        viewpoint = viewpoint ?? (values[0] ?? 0) + meta.stationAgl;
+        stationGround = stationGround ?? values[0] ?? 0;
+        viewpoint = viewpoint ?? stationGround + (meta.stationAgl ?? DEFAULT_STATION_AGL_M);
         const base = bin * GROUND_SAMPLES;
         elev[base] = values[0];
         let maxAngle = -Infinity;
@@ -87,10 +92,10 @@ export function terrainGridFromTable(table: Table): TerrainGrid | null {
             prefixMax[base + s] = maxAngle;
         }
     }
-    if (viewpoint == null) {
+    if (viewpoint == null || stationGround == null) {
         return null;
     }
-    return {stationLat: meta.stationLat, stationLng: meta.stationLng, viewpoint, elev, prefixMax};
+    return {stationLat: meta.stationLat, stationLng: meta.stationLng, stationGround, viewpoint, elev, prefixMax};
 }
 
 // Receive-horizon band angles for one frequency reshaped to per-bin arrays;
@@ -173,6 +178,9 @@ export function receiveAngleAt(receive: ReceiveAngles, firstBin: number, binCoun
 export interface FloorDisc {
     h3lo: Uint32Array;
     h3hi: Uint32Array;
+    // Station ground m MSL: the FLOOR_DISPLAY_MAX_M ceiling is measured from
+    // here so a mountain station isn't clipped to nothing
+    stationGround: number;
     // Cell ground m MSL from the nearest terrain-ray sample (~1km resolution
     // in the far field - fine for readouts, not a DEM)
     ground: Int16Array;
@@ -278,6 +286,7 @@ export function computeFloorDisc(groundTable: Table, horizonTable: Table | null,
     return {
         h3lo: h3lo.slice(0, n),
         h3hi: h3hi.slice(0, n),
+        stationGround: grid.stationGround,
         ground: ground.slice(0, n),
         terrainFloor: terrainFloor.slice(0, n),
         coverageFloor: coverageFloor.slice(0, n),

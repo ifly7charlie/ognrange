@@ -502,7 +502,13 @@ pub async fn rollup_all(
             {
                 continue;
             }
-            let (Some(lat), Some(lng)) = (station.lat, station.lng) else {
+            // Primary location, not the live fix: a bouncing station's
+            // elevation (and so the receive-horizon viewpoint) must refer to
+            // the same site the ground-horizon file is generated for
+            let Some([lat, lng]) = station
+                .primary_location
+                .or_else(|| station.lat.zip(station.lng).map(|(la, lo)| [la, lo]))
+            else {
                 continue;
             };
             if lookups >= MAX_ELEVATION_LOOKUPS_PER_ROLLUP {

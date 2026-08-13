@@ -6,9 +6,10 @@
 // handling
 export const FLOOR_UNKNOWN = 32767;
 
-// Cells whose floor is above this (m MSL) are not drawn - coverage that only
-// exists that high isn't useful, and the clip lets the colour ramp span
-// 0-2400m at ~10m per step
+// Cells whose floor is more than this above the STATION's ground level (not
+// sea level - an Alpine station would otherwise clip to nothing) are not
+// drawn: coverage that only exists that high isn't useful, and the clip lets
+// the colour ramp span 0-2400m above the station at ~10m per step
 export const FLOOR_DISPLAY_MAX_M = 2400;
 
 // Map visualisations computed from the floor disc rather than the coverage

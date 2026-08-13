@@ -90,10 +90,11 @@ function FloorDetailsBody({details, station, visualisation}: {details: import('.
                     {coverageKnown
                         ? emphasise(!terrainActive, t('floor.coverage', {msl: details.coverageFloor, agl: agl(details.coverageFloor)}))
                         : emphasise(!terrainActive, t('floor.coverageUnknown'))}
-                    {displayedFloor !== FLOOR_UNKNOWN && displayedFloor > FLOOR_DISPLAY_MAX_M ? (
+                    {displayedFloor !== FLOOR_UNKNOWN && displayedFloor > details.stationGround + FLOOR_DISPLAY_MAX_M ? (
                         <>
                             <br />
-                            <i>{t('floor.clipped', {max: FLOOR_DISPLAY_MAX_M})}</i>
+                            {/* The ceiling is FLOOR_DISPLAY_MAX_M above the station ground; the banner quotes it in MSL like every other readout */}
+                            <i>{t('floor.clipped', {max: details.stationGround + FLOOR_DISPLAY_MAX_M})}</i>
                         </>
                     ) : null}
                 </>

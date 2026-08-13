@@ -1,7 +1,18 @@
 import {describe, it, expect} from 'vitest';
 import {tableFromIPC, tableToIPC, vectorFromArray, Table, Schema, Field, Float32, Int16, FixedSizeList} from 'apache-arrow';
 
-import {groundChartFromTable, profileForBearing, groundMeta, groundUrl, visibleCrests, GROUND_BIN_COUNT, GROUND_SAMPLES, GROUND_STEP_KM} from '../../lib/react/coveragedetails/grounddata';
+import {
+    groundChartFromTable,
+    profileForBearing,
+    groundMeta,
+    groundUrl,
+    minGroundElevation,
+    visibleCrests,
+    DEFAULT_STATION_AGL_M,
+    GROUND_BIN_COUNT,
+    GROUND_SAMPLES,
+    GROUND_STEP_KM
+} from '../../lib/react/coveragedetails/grounddata';
 import {elevationAngleDeg} from '../../lib/react/coveragedetails/horizondata';
 
 // A sparse three-row table (real files always have all 720 bins - sparseness
@@ -29,7 +40,10 @@ const RAYS = [
     ray(STATION, {sample: 240, elevation: -40})
 ];
 
-function makeTable(metadata?: Map<string, string>): Table {
+// Default metadata pins the viewpoint at ground level so the expected angles
+// below stay the writer-formula values; pass an explicit map (possibly empty)
+// to exercise the beacon-height fallbacks
+function makeTable(metadata: Map<string, string> = new Map([['stationAgl', '0.0']])): Table {
     const elevType = new FixedSizeList(GROUND_SAMPLES, new Field('item', new Int16(), false));
     const table = new Table({
         bearing: vectorFromArray(BEARINGS, new Float32()),
@@ -123,6 +137,15 @@ describe('groundChartFromTable', () => {
         expect(north.horizonAngle).toBeLessThan(SKYLINE_ANGLE);
     });
 
+    it('assumes the default height when stationAgl is NaN or absent', () => {
+        const expected = elevationAngleDeg(2400 - STATION - DEFAULT_STATION_AGL_M, 40 * GROUND_STEP_KM);
+        // NaN = the writer fell back to its default; absent = pre-capture file
+        for (const table of [makeTable(new Map([['stationAgl', 'NaN']])), makeTable(new Map())]) {
+            const north = groundChartFromTable(table)!.points[GROUND_BIN_COUNT / 2];
+            expect(north.horizonAngle).toBeCloseTo(expected, 5);
+        }
+    });
+
     it('leaves unpopulated bins as null gap points', () => {
         expect(points[1].horizonAngle).toBeNull();
         expect(points[1].horizonDistance).toBeNull();
@@ -168,6 +191,18 @@ describe('profileForBearing', () => {
     });
 });
 
+describe('minGroundElevation', () => {
+    it('finds the lowest sample across all bearings', () => {
+        // The 240.5 ray dips to -40; every ray includes the station ground
+        expect(minGroundElevation(makeTable())).toBe(-40);
+    });
+
+    it('returns null when the elevations column is missing', () => {
+        const noElev = tableFromIPC(tableToIPC(new Table({bearing: vectorFromArray([0], new Float32())})));
+        expect(minGroundElevation(noElev)).toBeNull();
+    });
+});
+
 describe('groundMeta', () => {
     it('parses the writer metadata', () => {
         const meta = groundMeta(
@@ -192,12 +227,16 @@ describe('groundMeta', () => {
     });
 
     it('falls back to defaults when metadata is absent', () => {
-        const meta = groundMeta(makeTable());
+        const meta = groundMeta(makeTable(new Map()));
         expect(meta.stationLat).toBeNull();
-        // Pre-viewpoint files carry no stationAgl: ground-level sight line
-        expect(meta.stationAgl).toBe(0);
+        // Pre-viewpoint files carry no stationAgl: height unknown
+        expect(meta.stationAgl).toBeNull();
         expect(meta.stepKm).toBe(0.5);
         expect(meta.maxKm).toBe(120);
         expect(meta.generatedAt).toBeNull();
+    });
+
+    it('reports a NaN stationAgl (writer assumed its default) as null', () => {
+        expect(groundMeta(makeTable(new Map([['stationAgl', 'NaN']]))).stationAgl).toBeNull();
     });
 });

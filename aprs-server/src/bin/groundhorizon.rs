@@ -9,8 +9,9 @@
 //!   groundhorizon <STATION> <LAT> <LNG> [BEACON_ALT_M]
 //!
 //! BEACON_ALT_M is the station's beaconed antenna altitude (m MSL); without
-//! it the viewpoint falls back to ground + GROUND_STATION_AGL_M (default 10m),
-//! exactly as the daemon does for a station that never beaconed an altitude.
+//! it the viewpoint falls back to ground + GROUND_STATION_AGL_M (default 3m,
+//! persisted as stationAgl=NaN), exactly as the daemon does for a station
+//! that never beaconed an altitude.
 
 // Shared modules are included via #[path]; each bin only uses part of them, so
 // suppress the resulting dead-code/unused noise crate-wide for this tool.
@@ -68,13 +69,16 @@ async fn main() {
             let station_m = gh.elevations[0];
             let max_angle = gh.horizon_angle.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             println!(
-                "wrote {} rows to {}/{}.ground-horizon.arrow.gz in {:.1}s (station {}m MSL, antenna +{:.1}m, max horizon {:.2} deg)",
+                "wrote {} rows to {}/{}.ground-horizon.arrow.gz in {:.1}s (station {}m MSL, antenna {}, max horizon {:.2} deg)",
                 rows,
                 out,
                 name,
                 started.elapsed().as_secs_f64(),
                 station_m,
-                gh.agl_m,
+                gh.agl_m.map_or_else(
+                    || format!("+{:.1}m (default)", *config::GROUND_STATION_AGL_M),
+                    |a| format!("+{:.1}m", a)
+                ),
                 max_angle
             );
         }

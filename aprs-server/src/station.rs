@@ -59,6 +59,14 @@ pub struct StationDetails {
     /// move so the file is rebuilt for the new location
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ground_horizon_pos: Option<[f64; 2]>,
+    /// Beacon altitude (m MSL, the raw /A= input) the ground-horizon file was
+    /// generated with; None = no beacon was known then. Compared against the
+    /// live beacon_altitude so an operator correcting their configured
+    /// altitude gets the file regenerated without moving the station.
+    /// Records written before this field existed read as None, which forces
+    /// one regeneration for beacon-carrying stations - deliberate healing
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ground_horizon_beacon: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "primary_location",
             deserialize_with = "deserialize_coord_pair")]
     pub primary_location: Option<[f64; 2]>,
@@ -334,6 +342,7 @@ impl StationManager {
             elevation: None,
             beacon_altitude: None,
             ground_horizon_pos: None,
+            ground_horizon_beacon: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,
@@ -467,12 +476,6 @@ impl StationManager {
             None => return,
         };
 
-        // Beaconed antenna altitude (m MSL) - sanity-checked against the DEM
-        // ground only when the horizon viewpoint is derived from it
-        if altitude.is_some() {
-            details.beacon_altitude = altitude;
-        }
-
         if details.primary_location.is_none() {
             details.primary_location = Some([lat, lng]);
         }
@@ -492,6 +495,12 @@ impl StationManager {
 
         // 1. At primary location - station is where we expect it
         if dist_primary <= threshold {
+            // Beaconed antenna altitude (m MSL) belongs to the primary site -
+            // sanity-checked against the DEM ground only when the horizon
+            // viewpoint is derived from it
+            if altitude.is_some() {
+                details.beacon_altitude = altitude;
+            }
             details.last_seen_at_primary = Some(timestamp);
             details.new_location_count = 0;
             if details.mobile {
@@ -503,7 +512,10 @@ impl StationManager {
                 details.last_seen_at_previous = details.last_seen_at_primary;
             }
         }
-        // 2. At previous location - bouncing between two known locations
+        // 2. At previous location - bouncing between two known locations.
+        // This packet's altitude is deliberately ignored: a bouncing
+        // partner's beacon must not clobber the primary site's
+        // beacon_altitude and churn the ground-horizon file
         else if dist_previous <= threshold {
             details.last_seen_at_previous = Some(timestamp);
             details.bouncing = true;
@@ -540,14 +552,13 @@ impl StationManager {
             details.bouncing = true;
             // Ground elevation and the terrain horizon belong to the old
             // location - re-resolve/regenerate at next rollup. Likewise the
-            // beaconed altitude: this packet's value (set above) is already
-            // the new location's, but without one the old-location altitude
-            // must not linger against the new ground.
+            // beaconed altitude: this packet's value is the new primary's,
+            // and without one the old-location altitude must not linger
+            // against the new ground.
             details.elevation = None;
             details.ground_horizon_pos = None;
-            if altitude.is_none() {
-                details.beacon_altitude = None;
-            }
+            details.ground_horizon_beacon = None;
+            details.beacon_altitude = altitude;
         }
 
         details.lat = Some(lat);
@@ -738,6 +749,7 @@ impl StationManager {
             elevation: None,
             beacon_altitude: None,
             ground_horizon_pos: None,
+            ground_horizon_beacon: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,
@@ -826,6 +838,7 @@ mod tests {
             elevation: None,
             beacon_altitude: None,
             ground_horizon_pos: None,
+            ground_horizon_beacon: None,
             primary_location: None,
             previous_location: None,
             last_packet: None,
@@ -977,6 +990,7 @@ mod tests {
     fn test_stationary_station() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
 
         // Repeated packets at same location
         for i in 0..5 {
@@ -995,6 +1009,7 @@ mod tests {
     fn test_bouncing_two_locations() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
 
         // Establish at LOC_A
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
@@ -1033,9 +1048,43 @@ mod tests {
     }
 
     #[test]
+    fn test_beacon_altitude_follows_primary() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish at LOC_A with a beaconed altitude
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(1000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(240.0));
+
+        // Rotation to LOC_B takes the new primary's beacon with it
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(15.0), Epoch(2000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(15.0));
+
+        // Bouncing back at LOC_A (now previous): its beacon must not clobber
+        // the primary's - that flap would churn the ground-horizon file
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(3000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert_eq!(s.beacon_altitude, Some(15.0));
+
+        // At the primary: a fresh value updates, an altitude-less location
+        // packet leaves it alone
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(17.0), Epoch(4000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(17.0));
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(5000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(17.0));
+
+        // A rotation without an altitude clears the old site's beacon
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(6000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, None);
+    }
+
+    #[test]
     fn test_relocation() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
 
         // Establish at LOC_A
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
@@ -1061,6 +1110,7 @@ mod tests {
     fn test_mobile_fast() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
 
         // Establish at LOC_A
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
@@ -1091,6 +1141,7 @@ mod tests {
     fn test_mobile_slow() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
 
         // Establish at origin
         let base_lat = -37.0;
@@ -1112,6 +1163,7 @@ mod tests {
     fn test_mobile_stops() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
 
         // Establish, then become mobile
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
@@ -1137,6 +1189,7 @@ mod tests {
     fn test_mobile_stops_at_previous() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
 
         // Establish at LOC_A, move around, become mobile
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
@@ -1178,6 +1231,7 @@ mod tests {
     fn test_timestamp_follows_coordinates() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
 
         // Establish at LOC_A with timestamp 1000
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
@@ -1208,6 +1262,7 @@ mod tests {
     fn test_first_packet_sets_primary_and_last_seen() {
         let mgr = StationManager::new_for_test();
         let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
         mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
         let s = get_station(&mgr, "TEST");
         assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));

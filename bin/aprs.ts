@@ -596,7 +596,7 @@ async function processPacket(packet: AprsLocationPacket) {
         // Extract signal strength - reject only if no dB value present in comment
         const dbMatch = packet.comment.match(reExtractDb);
         if (dbMatch) {
-            signal = Math.min(Math.max(Math.round(Math.max(parseFloat(dbMatch[1]), 0) * 4), 1), 63);
+            signal = Math.min(Math.max(Math.round(Math.max(parseFloat(dbMatch[1]), 0) * 4), 1), 255);
         } else {
             signal = 0;
         }

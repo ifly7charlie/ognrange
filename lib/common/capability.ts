@@ -25,7 +25,7 @@ export interface CapabilityRange {
 /**
  * Range model for a receiver's reported average signal at 10 km, with the
  * clamp state kept visible so the UI can say whether the shown range is the
- * model output, the terrain-data limit, or the display floor.
+ * model output, the 120 km visualisation limit, or the display floor.
  * null/undefined/NaN (never reported, or an old stations file without the
  * column) keeps the previous fixed-range behaviour.
  */

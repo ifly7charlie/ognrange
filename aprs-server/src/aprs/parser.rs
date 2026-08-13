@@ -69,6 +69,13 @@ pub fn extract_signal_db(comment: &str) -> Option<f32> {
         .and_then(|m| m.as_str().parse::<f32>().ok())
 }
 
+/// Quantise a reported dB signal to storage units: quarter-dB, clamped to
+/// [1, 255] so full scale is 63.75dB. 0 is reserved for "no signal report",
+/// so any present report floors to 1 even if it parsed as zero or negative.
+pub fn quantise_signal_db(raw_db: f32) -> u8 {
+    ((raw_db.max(0.0) * 4.0).round() as u16).min(255).max(1) as u8
+}
+
 /// Extract CRC error count from comment
 pub fn extract_crc(comment: &str) -> u8 {
     RE_EXTRACT_CRC
@@ -438,6 +445,19 @@ mod tests {
         assert!((extract_signal_db(comment).unwrap() - 7.0).abs() < 0.01);
         assert_eq!(extract_crc(comment), 0);
         assert!((extract_rotation(comment) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_quantise_signal_db() {
+        assert_eq!(quantise_signal_db(7.0), 28);
+        assert_eq!(quantise_signal_db(15.75), 63);
+        // strong near-station reports must keep full quarter-dB range, not cap at 63
+        assert_eq!(quantise_signal_db(40.0), 160);
+        assert_eq!(quantise_signal_db(63.75), 255);
+        assert_eq!(quantise_signal_db(99.0), 255);
+        // 0 means "no report"; present-but-zero or negative reports floor to 1
+        assert_eq!(quantise_signal_db(0.0), 1);
+        assert_eq!(quantise_signal_db(-2.5), 1);
     }
 
     #[test]

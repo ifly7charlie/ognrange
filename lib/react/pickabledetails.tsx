@@ -31,6 +31,8 @@ export interface PickableFloorDetails {
     i: number;
     h: [number, number];
     h3: string;
+    // Station ground m MSL - the display ceiling is measured from here
+    stationGround: number;
     ground: number;
     terrainFloor: number;
     coverageFloor: number;
@@ -121,6 +123,7 @@ export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | a
             i,
             h: [dF.h3lo[i], dF.h3hi[i]] as [number, number],
             h3: prefixWithZeros(8, dF.h3hi[i].toString(16)) + prefixWithZeros(8, dF.h3lo[i].toString(16)),
+            stationGround: dF.stationGround,
             ground: dF.ground[i],
             terrainFloor: dF.terrainFloor[i],
             coverageFloor: dF.coverageFloor[i],

@@ -125,7 +125,7 @@ function makeLayers(
         maxSig: (f, i) => colourise(Math.min(f.maxSig[i] * 1.3, 254)),
         minAlt: (f, i) => colourise(Math.min(f.minAlt[i] / 20, 254)),
         minAgl: (f, i) => colourise(Math.min(f.minAgl[i] / 20, 254)),
-        minAltSig: (f, i) => colourise(f.minAltSig[i]),
+        minAltSig: (f, i) => colourise(Math.min(f.minAltSig[i], 254)),
         avgCrc: (f, i) => colourise(255 - Math.min(f.avgCrc[i] * 5, 254)),
         avgGap: (f, i) => colourise(Math.log2(Math.max(f.avgGap[i], 4) - 3) * 31.75), // it shouldn't be less than 3 seconds so offset but no log2(0) => inf
         expectedGap: (f, i) => colourise(Math.log2((f.expectedGap?.[i] ?? f.avgGap?.[i]) || 1) * 31.75),
@@ -210,8 +210,11 @@ function makeLayers(
                   getHexagon: ((_d, {index}) => [floorData!.h3lo[index], floorData!.h3hi[index]]) as any,
                   getFillColor: ((_d, {index}): [number, number, number, number] => {
                       const v = floorValues[index];
-                      // 0-2400m over the full ramp, ~10m per step
-                      return v === FLOOR_UNKNOWN || v > FLOOR_DISPLAY_MAX_M ? [0, 0, 0, 0] : colourise(v / 10);
+                      // Ceiling and ramp measured from the station's own
+                      // ground, not sea level: 0-2400m above the station over
+                      // the full ramp, ~10m per step. Downhill cells (floor
+                      // below station ground) clamp to the ramp bottom
+                      return v === FLOOR_UNKNOWN || v > floorData!.stationGround + FLOOR_DISPLAY_MAX_M ? [0, 0, 0, 0] : colourise(Math.max(v - floorData!.stationGround, 0) / 10);
                   }) as any,
                   updateTriggers: {
                       getFillColor: [visualisation, colours]

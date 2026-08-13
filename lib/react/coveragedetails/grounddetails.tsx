@@ -16,7 +16,7 @@ import {initialBearingDeg} from '../floordata';
 import type {PickableFloorDetails} from '../pickabledetails';
 import {arrowFetcher} from './arrowfetcher';
 import {COMPASS, X_TICKS, X_TICK_LABELS, heightAtDistance, elevationAngleDeg, BAND_KEYS, BAND_RANGES_KM, HorizonHover} from './horizondata';
-import {groundChartFromTable, profileForBearing, groundUrl, groundMeta, GroundChart, GroundProfile, GROUND_BIN_DEG, GROUND_MAX_KM, GROUND_STEP_KM} from './grounddata';
+import {groundChartFromTable, profileForBearing, groundUrl, groundMeta, minGroundElevation, GroundChart, GroundProfile, DEFAULT_STATION_AGL_M, GROUND_BIN_DEG, GROUND_MAX_KM, GROUND_STEP_KM} from './grounddata';
 
 // Earth tones for the terrain itself, deliberately outside the Tableau-10
 // palette - the profile's per-band sight segments reuse the receive chart's
@@ -162,6 +162,7 @@ function GroundProfileChart({
     lowestAngle,
     receivedKm,
     stationAgl,
+    minElevation,
     maxRangeKm,
     t
 }: {
@@ -170,6 +171,9 @@ function GroundProfileChart({
     lowestAngle: number | null;
     receivedKm: number | null;
     stationAgl: number;
+    // Lowest terrain sample across ALL bearings: the y-axis bottom, so the
+    // baseline holds still as the hover sweeps from bearing to bearing
+    minElevation: number | null;
     // Capability-derived maximum useful range: the prediction stops there and
     // a dashed marker is drawn when it's under the chart's full extent
     maxRangeKm: number;
@@ -238,8 +242,8 @@ function GroundProfileChart({
                         tickFormatter={(v: number) => `${v}km`}
                         style={{fontSize: '0.7rem'}}
                     />
-                    <YAxis domain={['dataMin', 'auto']} tickFormatter={(v: number) => `${v}m`} style={{fontSize: '0.7rem'}} />
-                    <Area dataKey="elevation" stroke={TERRAIN_STROKE} fill={TERRAIN_FILL} fillOpacity={0.9} baseValue="dataMin" isAnimationActive={false} />
+                    <YAxis domain={[minElevation ?? 'dataMin', 'auto']} tickFormatter={(v: number) => `${v}m`} style={{fontSize: '0.7rem'}} />
+                    <Area dataKey="elevation" stroke={TERRAIN_STROKE} fill={TERRAIN_FILL} fillOpacity={0.9} baseValue={minElevation ?? 'dataMin'} isAnimationActive={false} />
                     <Line dataKey="shadow" stroke={RIDGE_MARKER} strokeWidth={1} strokeDasharray="1 3" dot={false} connectNulls={false} isAnimationActive={false} />
                     {BAND_KEYS.map((k, i) => (
                         <Line key={k} dataKey={k} stroke={graphcolours[i]} strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} />
@@ -296,7 +300,8 @@ export function FloorProfileChart({
     // the same direction doesn't recompute the profile
     const bin = bearing == null ? null : Math.round(bearing / GROUND_BIN_DEG);
     const profile = useMemo(() => (table && bearing != null ? profileForBearing(table, bearing) : null), [table, bin]);
-    const stationAgl = useMemo(() => (table ? groundMeta(table).stationAgl : 0), [table]);
+    const stationAgl = useMemo(() => (table ? groundMeta(table).stationAgl ?? DEFAULT_STATION_AGL_M : 0), [table]);
+    const minElevation = useMemo(() => (table ? minGroundElevation(table) : null), [table]);
 
     // Observed minimum altitudes from the displayed coverage data: polar
     // coordinates computed once per data load, then filtered per bearing bin.
@@ -354,17 +359,18 @@ export function FloorProfileChart({
         const maxElevation = profile.points.reduce((m, p) => Math.max(m, p.elevation), profile.stationElevation);
         const viewpoint = profile.stationElevation + stationAgl;
         // Y axis locked to min(display clip, highest thing on the graph):
-        // floors above FLOOR_DISPLAY_MAX_M are transparent on the map so the
-        // chart never scales past it (Alpine skylines clip at the top instead
-        // of crushing the useful range), while over flat terrain the floor
-        // ray - not the terrain - sets the scale so the marker stays visible.
+        // floors above station ground + FLOOR_DISPLAY_MAX_M are transparent
+        // on the map so the chart never scales past that ceiling (Alpine
+        // skylines clip at the top instead of crushing the useful range),
+        // while over flat terrain the floor ray - not the terrain - sets the
+        // scale so the marker stays visible.
         // heightAtDistance is largest at full range for any angle, so the ray
         // maximum is its endpoint at the capability range
         const terrainCap = maxElevation + Math.max(50, (maxElevation - profile.stationElevation) * 0.1);
         const rayMax = rayAngle != null ? viewpoint + heightAtDistance(rayAngle, maxRangeKm) : -Infinity;
         const dotMax = dots.reduce((m, p) => Math.max(m, p.alt), -Infinity);
         // Round up to a clean 50m step: the domain endpoint is rendered verbatim as the top tick
-        const yCap = Math.min(FLOOR_DISPLAY_MAX_M, Math.ceil(Math.max(terrainCap, rayMax, dotMax) / 50) * 50);
+        const yCap = Math.min(profile.stationElevation + FLOOR_DISPLAY_MAX_M, Math.ceil(Math.max(terrainCap, rayMax, dotMax) / 50) * 50);
         const shadow = shadowSeries(profile.points, viewpoint, yCap);
         const rows = profile.points.map(({km, elevation}, i) => {
             // The floor ray stops at the capability range - the disc has no
@@ -394,9 +400,9 @@ export function FloorProfileChart({
                         tickFormatter={(v: number) => `${v}km`}
                         style={{fontSize: '0.7rem'}}
                     />
-                    <YAxis domain={['dataMin', data.yCap]} allowDataOverflow tickFormatter={(v: number) => `${Math.round(v)}m`} style={{fontSize: '0.7rem'}} />
+                    <YAxis domain={[minElevation ?? 'dataMin', data.yCap]} allowDataOverflow tickFormatter={(v: number) => `${Math.round(v)}m`} style={{fontSize: '0.7rem'}} />
                     <Area dataKey="coverage" stroke="none" fill={COVERAGE_FILL} fillOpacity={0.18} connectNulls={false} isAnimationActive={false} />
-                    <Area dataKey="elevation" stroke={TERRAIN_STROKE} fill={TERRAIN_FILL} fillOpacity={0.9} baseValue="dataMin" isAnimationActive={false} />
+                    <Area dataKey="elevation" stroke={TERRAIN_STROKE} fill={TERRAIN_FILL} fillOpacity={0.9} baseValue={minElevation ?? 'dataMin'} isAnimationActive={false} />
                     <Line dataKey="shadow" stroke={RIDGE_MARKER} strokeWidth={1} strokeDasharray="1 3" dot={false} connectNulls={false} isAnimationActive={false} />
                     <Line dataKey="floor" stroke={SIGHT_LINE} strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} />
                     {data.dots.length ? (
@@ -455,7 +461,12 @@ export function GroundDetails({
     const {data: table} = useSWR(url, arrowFetcher, {revalidateOnFocus: false});
 
     const chart = useMemo(() => (table ? groundChartFromTable(table) : null), [table]);
-    const stationAgl = useMemo(() => (table ? groundMeta(table).stationAgl : 0), [table]);
+    // null = no beacon-derived height in the file (default assumed by the
+    // writer, or a pre-capture file) - the fallback keeps the sight lines on
+    // the same viewpoint grounddata uses for the skyline
+    const aglMeta = useMemo(() => (table ? groundMeta(table).stationAgl : null), [table]);
+    const stationAgl = aglMeta ?? DEFAULT_STATION_AGL_M;
+    const minElevation = useMemo(() => (table ? minGroundElevation(table) : null), [table]);
 
     // Mouse-move fires per pixel but bins are 0.5°, so only push changes upward
     const lastHover = useRef<string>('');
@@ -494,11 +505,6 @@ export function GroundDetails({
 
     return (
         <>
-            {registeredLow ? (
-                <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.5em', color: RIDGE_MARKER}}>
-                    {t('antenna_warning', {beacon: Math.round(beaconAltitude!), ground: Math.round(ground!)})}
-                </div>
-            ) : null}
             {profile ? (
                 <GroundProfileChart
                     profile={profile}
@@ -506,14 +512,22 @@ export function GroundDetails({
                     lowestAngle={lowestAngle}
                     receivedKm={horizonHover?.distanceKm ?? null}
                     stationAgl={stationAgl}
+                    minElevation={minElevation}
                     maxRangeKm={horizonHover?.frequency === 1090 ? GROUND_MAX_KM : maxRangeKm ?? GROUND_MAX_KM}
                     t={t}
                 />
             ) : (
                 <GroundHorizonChart chart={chart} onHover={onHover} t={t} />
             )}
+            {registeredLow ? (
+                <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.25em', color: RIDGE_MARKER}}>
+                    {t('antenna_warning', {beacon: Math.round(beaconAltitude!), ground: Math.round(ground!)})}
+                </div>
+            ) : null}
             {ground != null ? (
-                <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>{t('antenna_info', {agl: Math.round(stationAgl), ground: Math.round(ground)})}</div>
+                <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>
+                    {t(aglMeta != null ? 'antenna_info' : 'antenna_info_default', {agl: Math.round(stationAgl), ground: Math.round(ground)})}
+                </div>
             ) : null}
         </>
     );

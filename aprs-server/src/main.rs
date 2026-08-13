@@ -32,7 +32,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
-use aprs::parser::{self, extract_crc, extract_rotation, extract_signal_db, extract_vertical_speed};
+use aprs::parser::{self, extract_crc, extract_rotation, extract_signal_db, extract_vertical_speed, quantise_signal_db};
 use aprs::{AprsConnection, AprsPacket, PacketType};
 use config::*;
 use h3cache::H3Cache;
@@ -636,7 +636,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         crc = extract_crc(comment);
 
         if let Some(raw_signal) = extract_signal_db(comment) {
-            signal = ((raw_signal.max(0.0) * 4.0).round() as u16).min(63).max(1) as u8;
+            signal = quantise_signal_db(raw_signal);
         } else {
             signal = 0;
         }
@@ -1037,13 +1037,26 @@ async fn status_writer(state: Arc<AppState>) {
 }
 
 /// A station the ground-horizon queue should generate a terrain file for:
-/// real, non-mobile, valid, positioned, and missing/stale file. Returns the
-/// position to generate at
+/// real, non-mobile, valid, positioned, and missing/stale file (moved, or
+/// the beaconed antenna altitude changed since generation). Returns the
+/// position to generate at: the primary location, not the live fix - a
+/// bouncing station (two receivers sharing a callsign) toggles lat/lng
+/// between sites on every packet, but the primary only changes on a
+/// genuine rotation, so the file doesn't churn
 fn ground_horizon_candidate(details: &StationDetails) -> Option<(f64, f64)> {
     if details.station.as_str() == "global" || details.mobile || !details.valid {
         return None;
     }
-    let (lat, lng) = (details.lat?, details.lng?);
+    // A just-rotated primary (a single packet at a brand-new location) is
+    // still pending confirmation - it may be a mobile blip or the start of a
+    // bounce, so wait for a second packet before sampling 120km of terrain
+    if details.new_location_count > 0 {
+        return None;
+    }
+    // Records that predate primary-location tracking fall back to the fix
+    let [lat, lng] = details
+        .primary_location
+        .or_else(|| details.lat.zip(details.lng).map(|(la, lo)| [la, lo]))?;
     if !lat.is_finite() || !lng.is_finite() || (lat == 0.0 && lng == 0.0) {
         return None;
     }
@@ -1052,8 +1065,10 @@ fn ground_horizon_candidate(details: &StationDetails) -> Option<(f64, f64)> {
         &output_dir,
         details.station.as_str(),
         details.ground_horizon_pos,
+        details.ground_horizon_beacon,
         lat,
         lng,
+        details.beacon_altitude,
     )
     .then_some((lat, lng))
 }
@@ -1116,11 +1131,12 @@ async fn ground_horizon_task(state: Arc<AppState>) {
         };
 
         let started = std::time::Instant::now();
+        let beacon_used = details.beacon_altitude;
         let generated = match ground_horizon::compute(
             &state.elevation,
             lat,
             lng,
-            details.beacon_altitude,
+            beacon_used,
         )
         .await
         {
@@ -1144,6 +1160,9 @@ async fn ground_horizon_task(state: Arc<AppState>) {
             written += 1;
             if let Some(mut details) = state.station_manager.get(&name) {
                 details.ground_horizon_pos = Some([lat, lng]);
+                // The beacon the file was actually computed with - a beacon
+                // arriving mid-generation is picked up by the next rescan
+                details.ground_horizon_beacon = beacon_used;
                 // Persisted by the next rollup's flush_all; worst case after
                 // an unclean shutdown is one redundant regeneration
                 state.station_manager.update(&details);
@@ -1272,5 +1291,40 @@ async fn rollup_timer(state: Arc<AppState>) {
             state.global_stats.write_and_maybe_reset(&old_acc, &new_acc);
             state.global_uptime.write_snapshot(&old_acc.day.file);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ground_horizon_candidate_uses_primary_and_waits_for_confirmation() {
+        let mgr = station::StationManager::new_for_test();
+        let name = StationName("TEST-GH".to_string());
+        let mut d = mgr.get_or_create(&name).unwrap();
+        d.valid = true;
+        // Live fix at a bouncing partner's site, primary elsewhere: the file
+        // is generated for (and staleness compared against) the primary only
+        d.lat = Some(47.0);
+        d.lng = Some(8.0);
+        d.primary_location = Some([46.0, 7.0]);
+        assert_eq!(ground_horizon_candidate(&d), Some((46.0, 7.0)));
+
+        // A just-rotated primary awaiting a confirming packet is skipped
+        d.new_location_count = 1;
+        assert_eq!(ground_horizon_candidate(&d), None);
+        d.new_location_count = 0;
+
+        // Records from before primary-location tracking fall back to the fix
+        d.primary_location = None;
+        assert_eq!(ground_horizon_candidate(&d), Some((47.0, 8.0)));
+
+        // Mobile and invalid stations are excluded
+        d.mobile = true;
+        assert_eq!(ground_horizon_candidate(&d), None);
+        d.mobile = false;
+        d.valid = false;
+        assert_eq!(ground_horizon_candidate(&d), None);
     }
 }

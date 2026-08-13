@@ -14,6 +14,11 @@ export const GROUND_STEP_KM = 0.5;
 export const GROUND_MAX_KM = 120;
 export const GROUND_SAMPLES = 241;
 
+// Antenna height assumed when the file carries no beacon-derived height
+// (stationAgl NaN, or absent in pre-capture files). Keep in sync with
+// GROUND_STATION_AGL_M in aprs-server/src/config.rs
+export const DEFAULT_STATION_AGL_M = 3;
+
 // How many foreground crest lines the bearing chart draws in front of the skyline
 export const RIDGE_SERIES_MAX = 5;
 // Foreground crests closer than this are the station's own ground rolling
@@ -102,7 +107,7 @@ export function groundChartFromTable(table: Table): GroundChart | null {
     if (!bearing || !elevations) {
         return null;
     }
-    const agl = groundMeta(table).stationAgl;
+    const agl = groundMeta(table).stationAgl ?? DEFAULT_STATION_AGL_M;
 
     const byBearing = new Map<number, GroundPoint>();
     let ridgeCount = 0;
@@ -175,7 +180,7 @@ export function profileForBearing(table: Table, bearingDeg: number): GroundProfi
         return null;
     }
     const values = Array.from(cell.toArray() as ArrayLike<number>);
-    const crests = visibleCrests(values, groundMeta(table).stationAgl);
+    const crests = visibleCrests(values, groundMeta(table).stationAgl ?? DEFAULT_STATION_AGL_M);
     const skyline = crests[crests.length - 1] ?? null;
     return {
         bearing: target,
@@ -186,12 +191,35 @@ export function profileForBearing(table: Table, bearingDeg: number): GroundProfi
     };
 }
 
+// Lowest terrain sample across every bearing ray (sample 0 - the station
+// ground - included). The profile charts pin their y-axis bottom to this so
+// the baseline doesn't jump as the hover sweeps from bearing to bearing
+export function minGroundElevation(table: Table): number | null {
+    const elevations = table.getChild('elevations');
+    if (!elevations) {
+        return null;
+    }
+    let min = Infinity;
+    for (let i = 0; i < table.numRows; i++) {
+        const cell = elevations.get(i);
+        if (!cell) {
+            continue;
+        }
+        const values = cell.toArray() as ArrayLike<number>;
+        for (let s = 0; s < values.length; s++) {
+            min = Math.min(min, values[s]);
+        }
+    }
+    return Number.isFinite(min) ? min : null;
+}
+
 export interface GroundMeta {
     stationLat: number | null;
     stationLng: number | null;
-    // Antenna height above ground (m) the horizon angles were computed from;
-    // 0 for files written before the viewpoint was added
-    stationAgl: number;
+    // Beacon-derived antenna height above ground (m); null when the writer
+    // assumed the default height (persisted NaN) or the file predates height
+    // capture - consumers then fall back to DEFAULT_STATION_AGL_M
+    stationAgl: number | null;
     stepKm: number;
     maxKm: number;
     generatedAt: number | null;
@@ -206,7 +234,7 @@ export function groundMeta(table: Table): GroundMeta {
     return {
         stationLat: num('stationLat'),
         stationLng: num('stationLng'),
-        stationAgl: num('stationAgl') ?? 0,
+        stationAgl: num('stationAgl'),
         stepKm: num('stepKm') ?? GROUND_STEP_KM,
         maxKm: num('maxKm') ?? GROUND_MAX_KM,
         generatedAt: num('generatedAt')

@@ -158,8 +158,11 @@ pub static GROUND_HORIZON_PAUSED: Lazy<bool> =
 
 /// Default antenna height above ground (m) when a station's beaconed altitude
 /// is missing or fails the sanity window against the DEM ground. Used as the
-/// viewpoint for both the ground and receive horizons
-pub static GROUND_STATION_AGL_M: Lazy<f64> = Lazy::new(|| env_parse("GROUND_STATION_AGL_M", 10.0));
+/// viewpoint for both the ground and receive horizons; the ground-horizon
+/// file then persists stationAgl as NaN so the frontend knows the height is
+/// assumed. Keep in sync with DEFAULT_STATION_AGL_M in
+/// lib/react/coveragedetails/grounddata.ts
+pub static GROUND_STATION_AGL_M: Lazy<f64> = Lazy::new(|| env_parse("GROUND_STATION_AGL_M", 3.0));
 
 // Reject log rotation
 pub static REJECT_LOG_MAX_MB: Lazy<u64> = Lazy::new(|| env_parse("REJECT_LOG_MAX_MB", 50));

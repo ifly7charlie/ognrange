@@ -115,16 +115,22 @@ fn is_candidate(coarse_angle_deg: f64, distance_km: f64, margin_m: f64, skyline_
     coarse_angle_deg + margin_deg >= skyline_deg
 }
 
-/// Antenna height above ground: the beaconed MSL altitude against the DEM
-/// ground when the difference is sane (0..=300m - OGN station altitude
-/// configs are often 0, site ground level, or feet-as-metres), otherwise the
-/// configured default. Shared with the receive horizon (horizon.rs) so both
-/// charts keep the same viewpoint reference
+/// Antenna height above ground from the beaconed MSL altitude against the
+/// DEM ground, when the difference is sane (0..=300m - OGN station altitude
+/// configs are often 0, site ground level, or feet-as-metres). None when the
+/// beacon is missing or implausible - the caller falls back to the
+/// configured default
+pub fn beacon_agl_m(beacon_altitude: Option<f64>, ground_m: f64) -> Option<f64> {
+    beacon_altitude
+        .map(|alt| alt - ground_m)
+        .filter(|agl| (0.0..=300.0).contains(agl))
+}
+
+/// The height actually used as the angle viewpoint: beacon-derived AGL or
+/// the configured default. Shared with the receive horizon (horizon.rs) so
+/// both charts keep the same viewpoint reference
 pub fn antenna_agl_m(beacon_altitude: Option<f64>, ground_m: f64) -> f64 {
-    match beacon_altitude {
-        Some(alt) if (0.0..=300.0).contains(&(alt - ground_m)) => alt - ground_m,
-        _ => *config::GROUND_STATION_AGL_M,
-    }
+    beacon_agl_m(beacon_altitude, ground_m).unwrap_or(*config::GROUND_STATION_AGL_M)
 }
 
 /// Elevation angle to a point `delta_h_m` above station ground at
@@ -167,8 +173,10 @@ fn clamp_i16(elevation_m: f64) -> i16 {
 pub struct GroundHorizon {
     pub lat: f64,
     pub lng: f64,
-    /// Antenna height above ground used as the angle viewpoint
-    pub agl_m: f64,
+    /// Beacon-derived antenna height above ground; None when the beacon was
+    /// missing or implausible and the configured default height was used
+    /// instead (persisted as stationAgl=NaN so the frontend can tell)
+    pub agl_m: Option<f64>,
     /// GROUND_BINS x GROUND_SAMPLES row-major terrain samples, m MSL.
     /// Sample 0 of every row is the station ground elevation; refined buckets
     /// hold the max over their fine-pass substeps, pruned buckets the coarse
@@ -185,10 +193,11 @@ pub struct GroundHorizon {
 
 impl GroundHorizon {
     /// Pure assembler: derive the per-bin horizon from raw ray samples,
-    /// viewed from `agl_m` above the station ground (sample 0)
-    pub fn from_samples(lat: f64, lng: f64, agl_m: f64, elevations: Vec<i16>) -> GroundHorizon {
+    /// viewed from `agl_m` (or the configured default when None) above the
+    /// station ground (sample 0)
+    pub fn from_samples(lat: f64, lng: f64, agl_m: Option<f64>, elevations: Vec<i16>) -> GroundHorizon {
         assert_eq!(elevations.len(), GROUND_BINS * GROUND_SAMPLES);
-        let viewpoint_m = elevations[0] as f64 + agl_m;
+        let viewpoint_m = elevations[0] as f64 + agl_m.unwrap_or(*config::GROUND_STATION_AGL_M);
         let mut horizon_angle = Vec::with_capacity(GROUND_BINS);
         let mut horizon_distance_km = Vec::with_capacity(GROUND_BINS);
         for bin in 0..GROUND_BINS {
@@ -225,8 +234,8 @@ pub async fn compute(
     let mut cursor = elevation.cursor();
 
     let station_m = clamp_i16(cursor.sample(lat, lng, fine_zoom).await?);
-    let agl_m = antenna_agl_m(beacon_altitude, station_m as f64);
-    let viewpoint_m = station_m as f64 + agl_m;
+    let agl_m = beacon_agl_m(beacon_altitude, station_m as f64);
+    let viewpoint_m = station_m as f64 + agl_m.unwrap_or(*config::GROUND_STATION_AGL_M);
 
     let mut elevations = Vec::with_capacity(GROUND_BINS * GROUND_SAMPLES);
     let mut ray = [0i16; GROUND_SAMPLES];
@@ -278,15 +287,36 @@ fn raw_path(output_dir: &str, station_name: &str) -> String {
     format!("{}/{}.ground-horizon.arrow", output_dir, station_name)
 }
 
+/// Beacon changes below this don't trigger a rebuild - absorbs the /A=
+/// feet->metres rounding while still catching a reconfigured antenna altitude
+const BEACON_REGEN_THRESHOLD_M: f64 = 2.0;
+
+/// Whether the live beaconed altitude differs enough from the one the file
+/// was generated with to change the viewpoint materially. A beacon appearing
+/// or disappearing always counts; the recorded value is the raw /A= input
+/// (even one compute() rejected as implausible) so a stable beacon compares
+/// stable regardless of the sanity-window outcome
+pub fn beacon_changed(current: Option<f64>, recorded: Option<f64>) -> bool {
+    match (current, recorded) {
+        (Some(c), Some(r)) => (c - r).abs() >= BEACON_REGEN_THRESHOLD_M,
+        (None, None) => false,
+        _ => true,
+    }
+}
+
 /// Whether the terrain file must be (re)generated: missing file, no recorded
-/// generation position, or the station has moved beyond the move threshold
-/// since the file was written
+/// generation position, the station has moved beyond the move threshold, or
+/// the beaconed antenna altitude has materially changed since the file was
+/// written (an operator correcting their configured altitude gets a fresh
+/// viewpoint without having to move the station)
 pub fn needs_regeneration(
     output_dir: &str,
     station_name: &str,
     recorded_pos: Option<[f64; 2]>,
+    recorded_beacon: Option<f64>,
     lat: f64,
     lng: f64,
+    beacon_altitude: Option<f64>,
 ) -> bool {
     if !std::path::Path::new(&gz_path(output_dir, station_name)).exists() {
         return true;
@@ -294,7 +324,10 @@ pub fn needs_regeneration(
     let Some([rlat, rlng]) = recorded_pos else {
         return true;
     };
-    great_circle_distance_km(rlat, rlng, lat, lng) > *config::STATION_MOVE_THRESHOLD_KM
+    if great_circle_distance_km(rlat, rlng, lat, lng) > *config::STATION_MOVE_THRESHOLD_KM {
+        return true;
+    }
+    beacon_changed(beacon_altitude, recorded_beacon)
 }
 
 fn ground_schema(gh: &GroundHorizon, item_field: &Arc<Field>) -> Schema {
@@ -305,7 +338,10 @@ fn ground_schema(gh: &GroundHorizon, item_field: &Arc<Field>) -> Schema {
     let metadata: HashMap<String, String> = [
         ("stationLat".to_string(), format!("{:.6}", gh.lat)),
         ("stationLng".to_string(), format!("{:.6}", gh.lng)),
-        ("stationAgl".to_string(), format!("{:.1}", gh.agl_m)),
+        // NaN = the configured default height was assumed (beacon missing or
+        // implausible); the frontend treats it like pre-capture files that
+        // lack the key entirely
+        ("stationAgl".to_string(), gh.agl_m.map_or("NaN".to_string(), |a| format!("{:.1}", a))),
         ("stepKm".to_string(), GROUND_STEP_KM.to_string()),
         ("maxKm".to_string(), (GROUND_MAX_KM as u32).to_string()),
         ("samples".to_string(), GROUND_SAMPLES.to_string()),
@@ -422,7 +458,7 @@ mod tests {
 
     #[test]
     fn flat_terrain_horizon_is_nearest_curvature_dip() {
-        let gh = GroundHorizon::from_samples(47.0, 8.0, 0.0, flat_samples(500));
+        let gh = GroundHorizon::from_samples(47.0, 8.0, Some(0.0), flat_samples(500));
         assert_eq!(gh.horizon_angle.len(), GROUND_BINS);
         // Level terrain: every angle is a pure curvature dip, which grows with
         // distance, so the max is the nearest sample (0.5km, ~-0.0017 deg)
@@ -438,7 +474,7 @@ mod tests {
         // +300m ridge 20km out on bearing 0: same reference values as the
         // receive-horizon angle_curvature_dip test
         samples[(20.0 / GROUND_STEP_KM) as usize] = 800;
-        let gh = GroundHorizon::from_samples(47.0, 8.0, 0.0, samples);
+        let gh = GroundHorizon::from_samples(47.0, 8.0, Some(0.0), samples);
         assert!((gh.horizon_angle[0] - 0.792).abs() < 0.01, "angle {}", gh.horizon_angle[0]);
         assert_eq!(gh.horizon_distance_km[0], 20);
         // Other bins stay flat
@@ -451,7 +487,7 @@ mod tests {
         // service clamps bathymetry to sea level, but genuine below-sea-level
         // land regions (this station is on the Dead Sea shore) keep their
         // negative elevations via the regional floor table
-        let gh = GroundHorizon::from_samples(31.5, 35.5, 0.0, flat_samples(-400));
+        let gh = GroundHorizon::from_samples(31.5, 35.5, Some(0.0), flat_samples(-400));
         assert!(gh.elevations.iter().all(|&e| e == -400));
         assert!(gh.horizon_angle.iter().all(|&a| a < 0.0));
     }
@@ -530,12 +566,16 @@ mod tests {
     fn antenna_agl_beacon_window() {
         let default = *crate::config::GROUND_STATION_AGL_M;
         // Sane mast height: beacon 510m over 500m ground
+        assert_eq!(beacon_agl_m(Some(510.0), 500.0), Some(10.0));
         assert_eq!(antenna_agl_m(Some(510.0), 500.0), 10.0);
         // Beacon equals ground (site elevation configured): 0m accepted
-        assert_eq!(antenna_agl_m(Some(500.0), 500.0), 0.0);
-        // Below ground or absurdly high (feet-as-metres etc): default
+        assert_eq!(beacon_agl_m(Some(500.0), 500.0), Some(0.0));
+        // Below ground or absurdly high (feet-as-metres etc): no beacon AGL,
+        // viewpoint falls back to the configured default
+        assert_eq!(beacon_agl_m(Some(490.0), 500.0), None);
+        assert_eq!(beacon_agl_m(Some(900.0), 500.0), None);
+        assert_eq!(beacon_agl_m(None, 500.0), None);
         assert_eq!(antenna_agl_m(Some(490.0), 500.0), default);
-        assert_eq!(antenna_agl_m(Some(900.0), 500.0), default);
         assert_eq!(antenna_agl_m(None, 500.0), default);
     }
 
@@ -543,8 +583,8 @@ mod tests {
     fn agl_lowers_ridge_angle() {
         let mut samples = flat_samples(500);
         samples[(20.0 / GROUND_STEP_KM) as usize] = 800;
-        let ground = GroundHorizon::from_samples(47.0, 8.0, 0.0, samples.clone());
-        let mast = GroundHorizon::from_samples(47.0, 8.0, 10.0, samples);
+        let ground = GroundHorizon::from_samples(47.0, 8.0, Some(0.0), samples.clone());
+        let mast = GroundHorizon::from_samples(47.0, 8.0, Some(10.0), samples);
         // A 10m mast viewpoint lowers the 300m/20km ridge angle by
         // atan(300/20km) - atan(290/20km) ~= 0.0287 deg
         let drop = ground.horizon_angle[0] - mast.horizon_angle[0];
@@ -560,7 +600,7 @@ mod tests {
 
         let mut samples = flat_samples(500);
         samples[40] = 800;
-        let gh = GroundHorizon::from_samples(47.0, 8.0, 0.0, samples);
+        let gh = GroundHorizon::from_samples(47.0, 8.0, Some(0.0), samples);
         assert_eq!(write_arrow(out, "TEST", &gh).unwrap(), GROUND_BINS);
 
         let gz = gz_path(out, "TEST");
@@ -597,23 +637,57 @@ mod tests {
     }
 
     #[test]
+    fn default_agl_persists_as_nan() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("TEST");
+        let out = out.to_str().unwrap();
+
+        let gh = GroundHorizon::from_samples(47.0, 8.0, None, flat_samples(500));
+        assert_eq!(write_arrow(out, "TEST", &gh).unwrap(), GROUND_BINS);
+
+        let file = std::fs::File::open(gz_path(out, "TEST")).unwrap();
+        let reader =
+            StreamReader::try_new(GzDecoder::new(std::io::BufReader::new(file)), None).unwrap();
+        assert_eq!(reader.schema().metadata().get("stationAgl").unwrap(), "NaN");
+    }
+
+    #[test]
     fn needs_regeneration_branches() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().to_str().unwrap();
         let pos = Some([47.0, 8.0]);
 
         // No file yet
-        assert!(needs_regeneration(out, "TEST", pos, 47.0, 8.0));
+        assert!(needs_regeneration(out, "TEST", pos, None, 47.0, 8.0, None));
 
         std::fs::write(gz_path(out, "TEST"), b"stub").unwrap();
         // File present but no recorded position (e.g. wiped station DB)
-        assert!(needs_regeneration(out, "TEST", None, 47.0, 8.0));
+        assert!(needs_regeneration(out, "TEST", None, None, 47.0, 8.0, None));
         // Unmoved
-        assert!(!needs_regeneration(out, "TEST", pos, 47.0, 8.0));
+        assert!(!needs_regeneration(out, "TEST", pos, None, 47.0, 8.0, None));
         // Within the move threshold (0.2km default): ~100m north
-        assert!(!needs_regeneration(out, "TEST", pos, 47.0009, 8.0));
+        assert!(!needs_regeneration(out, "TEST", pos, None, 47.0009, 8.0, None));
         // Beyond it: ~1km north
-        assert!(needs_regeneration(out, "TEST", pos, 47.009, 8.0));
+        assert!(needs_regeneration(out, "TEST", pos, None, 47.009, 8.0, None));
+
+        // Unmoved but the beaconed altitude changed materially (the
+        // Lennrtsns case: operator reconfigured /A= from 79ft to 138ft)
+        assert!(needs_regeneration(out, "TEST", pos, Some(24.1), 47.0, 8.0, Some(42.1)));
+        // Stable beacon: no churn
+        assert!(!needs_regeneration(out, "TEST", pos, Some(42.1), 47.0, 8.0, Some(42.1)));
+    }
+
+    #[test]
+    fn beacon_change_window() {
+        // Stable states
+        assert!(!beacon_changed(None, None));
+        assert!(!beacon_changed(Some(42.06), Some(42.06)));
+        // Sub-threshold drift (feet rounding) doesn't churn
+        assert!(!beacon_changed(Some(42.06), Some(41.0)));
+        // Material change, appearance and disappearance all rebuild
+        assert!(beacon_changed(Some(42.06), Some(24.08)));
+        assert!(beacon_changed(Some(42.06), None));
+        assert!(beacon_changed(None, Some(42.06)));
     }
 
     #[test]

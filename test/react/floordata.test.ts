@@ -239,10 +239,15 @@ describe('computeFloorDisc: ridge ring at 20km', () => {
     });
 
     it('clips against the display ceiling far out', () => {
-        // The 0.792 degree ridge ray reaches ~2400m MSL around 100km out - the
-        // far field of this disc is exactly what FLOOR_DISPLAY_MAX_M clips
+        // The 0.792 degree ridge ray reaches ~2400m above the station ground
+        // around 110km out - the far field of this disc is exactly what the
+        // (station-relative) FLOOR_DISPLAY_MAX_M ceiling clips
         const far = cellAt(located, 180, 119);
-        expect(disc.terrainFloor[far.i]).toBeGreaterThan(FLOOR_DISPLAY_MAX_M);
+        expect(disc.terrainFloor[far.i]).toBeGreaterThan(GROUND + FLOOR_DISPLAY_MAX_M);
+    });
+
+    it('carries the station ground the display ceiling is measured from', () => {
+        expect(disc.stationGround).toBe(GROUND);
     });
 });
 
@@ -291,7 +296,7 @@ describe('computeFloorDisc: receive horizon', () => {
         // and specifically: past the 30km band edge it stays receive-governed
         const past = cellAt(located, 0, 45);
         expect(disc.receiveAngle[past.i]).toBeCloseTo(4.2, 5);
-        expect(disc.coverageFloor[past.i]).toBeGreaterThan(FLOOR_DISPLAY_MAX_M);
+        expect(disc.coverageFloor[past.i]).toBeGreaterThan(GROUND + FLOOR_DISPLAY_MAX_M);
     });
 
     it('extends a steep near-field-only bin outward as clipped, never coloured', () => {
@@ -307,7 +312,7 @@ describe('computeFloorDisc: receive horizon', () => {
         expect(disc.coverageFloor[near.i]).toBeGreaterThan(disc.terrainFloor[near.i]);
         const far = cellAt(located, 0, 60);
         expect(disc.receiveAngle[far.i]).toBeCloseTo(15.9, 5);
-        expect(disc.coverageFloor[far.i]).toBeGreaterThan(FLOOR_DISPLAY_MAX_M);
+        expect(disc.coverageFloor[far.i]).toBeGreaterThan(GROUND + FLOOR_DISPLAY_MAX_M);
         expect(disc.coverageFloor[far.i]).toBeGreaterThanOrEqual(disc.coverageFloor[near.i]);
         expect(disc.coverageFloor[far.i]).toBeLessThan(FLOOR_UNKNOWN);
     });
