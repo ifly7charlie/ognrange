@@ -125,11 +125,14 @@ impl PeriodAccumulator {
         }
     }
 
-    /// Record a raw packet with pre-computed region code
-    fn record_raw(&mut self, tocall: &str, flarm_num: u32, region: &'static str) {
+    /// Record a raw packet with pre-computed region code.
+    /// Random-ID devices are counted as packets but not as unique devices.
+    fn record_raw(&mut self, tocall: &str, flarm_num: u32, random_id: bool, region: &'static str) {
         let entry = self.tocalls.entry(tocall.to_string()).or_insert_with(TocallStats::new);
         entry.raw_count += 1;
-        entry.devices.insert(flarm_num);
+        if !random_id {
+            entry.devices.insert(flarm_num);
+        }
         *entry.regions.entry(region).or_insert(0) += 1;
     }
 
@@ -260,15 +263,17 @@ impl ProtocolStats {
         }
     }
 
-    /// Record a raw packet (before filtering) - region computed once, applied to all periods
-    pub fn record_raw(&self, tocall: &str, flarm_num: u32, lat: f64, lon: f64) {
+    /// Record a raw packet (before filtering) - region computed once, applied to all periods.
+    /// `random_id` marks devices broadcasting a randomised address; their packets are
+    /// counted but they are excluded from the unique-device sets.
+    pub fn record_raw(&self, tocall: &str, flarm_num: u32, random_id: bool, lat: f64, lon: f64) {
         if is_infrastructure(tocall) {
             return;
         }
         let region = region_code(lat, lon);
         let mut inner = self.inner.lock().unwrap();
         for acc in inner.periods.values_mut() {
-            acc.record_raw(tocall, flarm_num, region);
+            acc.record_raw(tocall, flarm_num, random_id, region);
         }
     }
 
@@ -692,17 +697,17 @@ mod tests {
         let stats = ProtocolStats::new();
 
         // Record some raw packets (flarm_num is the parsed 24-bit hex ID)
-        stats.record_raw("OGFLR", 0x123456, 48.0, 11.0);
-        stats.record_raw("OGFLR", 0x123456, 48.0, 11.0);
-        stats.record_raw("OGFLR", 0xABCDEF, 40.7, -74.0);
-        stats.record_raw("OGADSB", 0x3E1234, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0x123456, false, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0x123456, false, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0xABCDEF, false, 40.7, -74.0);
+        stats.record_raw("OGADSB", 0x3E1234, false, 48.0, 11.0);
 
         // Record accepted with altitude bands
         stats.record_accepted("OGFLR", 1500); // low
         stats.record_accepted("OGFLR", 3500); // mid
 
         // Infrastructure should be ignored
-        stats.record_raw("OGNSDR", 0x123456, 48.0, 11.0);
+        stats.record_raw("OGNSDR", 0x123456, false, 48.0, 11.0);
         stats.record_accepted("OGNSDR", 1000);
 
         let inner = stats.inner.lock().unwrap();
@@ -733,9 +738,25 @@ mod tests {
     }
 
     #[test]
+    fn test_random_id_excluded_from_devices() {
+        let stats = ProtocolStats::new();
+
+        stats.record_raw("OGFLR", 0x123456, false, 48.0, 11.0);
+        // Random-ID packets: counted as packets/regions, not as devices
+        stats.record_raw("OGFLR", 0xDD0001, true, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0xDD0002, true, 48.0, 11.0);
+
+        let inner = stats.inner.lock().unwrap();
+        let day = &inner.periods[&AccumulatorType::Day];
+        assert_eq!(day.tocalls["OGFLR"].raw_count, 3);
+        assert_eq!(day.tocalls["OGFLR"].devices.len(), 1);
+        assert_eq!(day.tocalls["OGFLR"].regions["eu"], 3);
+    }
+
+    #[test]
     fn test_output_json_format() {
         let stats = ProtocolStats::new();
-        stats.record_raw("OGFLR", 0x123456, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0x123456, false, 48.0, 11.0);
         stats.record_accepted("OGFLR", 2000);
         stats.record_hourly("flarm", 14);
         stats.record_hourly("flarm", 14);
@@ -765,8 +786,8 @@ mod tests {
     #[test]
     fn test_state_json_roundtrip() {
         let stats = ProtocolStats::new();
-        stats.record_raw("OGFLR", 0x123456, 48.0, 11.0);
-        stats.record_raw("OGFLR", 0xABCDEF, 40.7, -74.0);
+        stats.record_raw("OGFLR", 0x123456, false, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0xABCDEF, false, 40.7, -74.0);
         stats.record_accepted("OGFLR", 5000);
         stats.record_hourly("flarm", 10);
         stats.record_hourly("flarm", 10);
@@ -807,7 +828,7 @@ mod tests {
     fn test_period_accumulators_independent() {
         // Verify that resetting day does not affect month, year, or yearnz
         let stats = ProtocolStats::new();
-        stats.record_raw("OGFLR", 0x111111, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0x111111, false, 48.0, 11.0);
         stats.record_accepted("OGFLR", 1000);
         stats.record_hourly("flarm", 8);
 
@@ -839,7 +860,7 @@ mod tests {
     fn test_period_accumulator_independence() {
         // After a simulated day reset, the month still retains previously recorded data
         let stats = ProtocolStats::new();
-        stats.record_raw("OGFLR", 0x222222, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0x222222, false, 48.0, 11.0);
         stats.record_hourly("combined", 6);
 
         // Simulate day rotation (month/year/yearnz keep their data)
@@ -849,7 +870,7 @@ mod tests {
         }
 
         // Record more data - goes to all periods including the fresh day
-        stats.record_raw("OGFLR", 0x333333, 48.0, 11.0);
+        stats.record_raw("OGFLR", 0x333333, false, 48.0, 11.0);
 
         let inner = stats.inner.lock().unwrap();
         let day = &inner.periods[&AccumulatorType::Day];

@@ -15,6 +15,8 @@ static RE_EXTRACT_ROT: Lazy<Regex> = Lazy::new(|| Regex::new(r" [+-]([0-9.]+)rot
 static RE_EXTRACT_VC: Lazy<Regex> = Lazy::new(|| Regex::new(r" [+-]([0-9]+)fpm ").unwrap());
 /// DAO extension for position precision: !Wab! where a,b are base-91 digits
 static RE_DAO: Lazy<Regex> = Lazy::new(|| Regex::new(r"!W([0-9])([0-9])!").unwrap());
+static RE_EXTRACT_ID: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?:^| )id([0-9A-Fa-f]{2})[0-9A-Fa-f]{6}(?: |$)").unwrap());
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PacketType {
@@ -74,6 +76,18 @@ pub fn extract_signal_db(comment: &str) -> Option<f32> {
 /// so any present report floors to 1 even if it parsed as zero or negative.
 pub fn quantise_signal_db(raw_db: f32) -> u8 {
     ((raw_db.max(0.0) * 4.0).round() as u16).min(255).max(1) as u8
+}
+
+/// Extract the address type from the OGN `id` field's flags byte (bits 0-1):
+/// 0 = random/unknown, 1 = ICAO, 2 = FLARM, 3 = OGN tracker.
+/// Only matches the 32-bit id form (`idXXYYYYYY`); Naviter's 40-bit ids
+/// return None, as does a comment with no id field.
+pub fn extract_address_type(comment: &str) -> Option<u8> {
+    RE_EXTRACT_ID
+        .captures(comment)
+        .and_then(|c| c.get(1))
+        .and_then(|m| u8::from_str_radix(m.as_str(), 16).ok())
+        .map(|flags| flags & 0x03)
 }
 
 /// Extract CRC error count from comment
@@ -445,6 +459,23 @@ mod tests {
         assert!((extract_signal_db(comment).unwrap() - 7.0).abs() < 0.01);
         assert_eq!(extract_crc(comment), 0);
         assert!((extract_rotation(comment) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_extract_address_type() {
+        // 0x06 = FLARM address (type 2)
+        let flarm = "!W97! id06DDA5BA -019fpm +0.0rot 7.0dB 0e +51.2kHz gps4x6";
+        assert_eq!(extract_address_type(flarm), Some(2));
+        // 0x25 = ICAO address (type 1)
+        assert_eq!(extract_address_type("!W25! id254CAE1D -320fpm FL038.24"), Some(1));
+        // 0x07 = OGN tracker address (type 3)
+        assert_eq!(extract_address_type("id07DF0A52 +020fpm"), Some(3));
+        // 0x20 = random/unknown address (type 0)
+        assert_eq!(extract_address_type("!W28! id20DD1234 +000fpm +0.0rot"), Some(0));
+        // Naviter 40-bit id doesn't match the 32-bit form
+        assert_eq!(extract_address_type("!W76! id1C4007220E +180fpm +0.0rot"), None);
+        // No id field at all
+        assert_eq!(extract_address_type("v0.2.8 CPU:0.9"), None);
     }
 
     #[test]

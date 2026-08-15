@@ -394,10 +394,26 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                                 }
                             };
 
+                            // FLARM and OGN trackers can be set to broadcast a random
+                            // address that changes over time (privacy mode), flagged as
+                            // address type 0 in the id field. Excluded from unique-device
+                            // stats so the churn doesn't inflate aircraft counts. Scoped
+                            // to these tocalls because other networks (SafeSky, WeGlide,
+                            // FlyingNeurons...) use address type 0 with stable IDs.
+                            let random_id = matches!(
+                                packet.dest_callsign.as_str(),
+                                "OGFLR" | "OGFLR6" | "OGFLR7" | "APRS" | "OGNTRK"
+                            ) && packet
+                                .comment
+                                .as_deref()
+                                .and_then(parser::extract_address_type)
+                                == Some(0);
+
                             // Record protocol stats before filtering
                             state.protocol_stats.record_raw(
                                 &packet.dest_callsign,
                                 flarm_num,
+                                random_id,
                                 packet.latitude.unwrap(),
                                 packet.longitude.unwrap(),
                             );
