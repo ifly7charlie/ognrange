@@ -78,6 +78,16 @@ fn random_suffix() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
 }
 
+/// A detected outage: why, and when the threshold was crossed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outage {
+    pub reason: OutageReason,
+    /// Epoch at which the station tipped into outage (last activity plus
+    /// the threshold) - lets the caller tell a live transition from one
+    /// that predates the current process
+    pub started: u32,
+}
+
 /// Decide whether a station is currently in outage.
 /// Thresholds are passed in (from config) so tests don't depend on env.
 /// Stations that have never beaconed are judged on traffic alone; a station
@@ -88,15 +98,15 @@ pub fn evaluate_outage(
     now: u32,
     beacon_secs: u32,
     traffic_secs: u32,
-) -> Option<OutageReason> {
+) -> Option<Outage> {
     if let Some(last_beacon) = details.last_beacon {
         if now.saturating_sub(last_beacon.0) > beacon_secs {
-            return Some(OutageReason::Beacons);
+            return Some(Outage { reason: OutageReason::Beacons, started: last_beacon.0 + beacon_secs });
         }
     }
     if let Some(last_packet) = details.last_packet {
         if now.saturating_sub(last_packet.0) > traffic_secs {
-            return Some(OutageReason::Traffic);
+            return Some(Outage { reason: OutageReason::Traffic, started: last_packet.0 + traffic_secs });
         }
     }
     None
@@ -200,26 +210,27 @@ mod tests {
 
         // Healthy: both fresh
         assert_eq!(evaluate_outage(&details(Some(now - 600), Some(now - 600)), now, DAY, WEEK), None);
-        // Beacons stale, traffic fresh (traffic without beacons - feed relaying but process odd)
+        // Beacons stale, traffic fresh (traffic without beacons - feed relaying but process odd).
+        // The outage started when the beacon gap crossed the threshold.
         assert_eq!(
             evaluate_outage(&details(Some(now - 2 * DAY), Some(now - 600)), now, DAY, WEEK),
-            Some(OutageReason::Beacons)
+            Some(Outage { reason: OutageReason::Beacons, started: now - DAY })
         );
         // Beaconing but silent for over a week
         assert_eq!(
             evaluate_outage(&details(Some(now - 600), Some(now - WEEK - 1)), now, DAY, WEEK),
-            Some(OutageReason::Traffic)
+            Some(Outage { reason: OutageReason::Traffic, started: now - 1 })
         );
         // Fully dead: beacons reason wins
         assert_eq!(
             evaluate_outage(&details(Some(now - 2 * WEEK), Some(now - 2 * WEEK)), now, DAY, WEEK),
-            Some(OutageReason::Beacons)
+            Some(Outage { reason: OutageReason::Beacons, started: now - 2 * WEEK + DAY })
         );
         // Never beaconed: judged on traffic only
         assert_eq!(evaluate_outage(&details(None, Some(now - 2 * DAY)), now, DAY, WEEK), None);
         assert_eq!(
             evaluate_outage(&details(None, Some(now - WEEK - 1)), now, DAY, WEEK),
-            Some(OutageReason::Traffic)
+            Some(Outage { reason: OutageReason::Traffic, started: now - 1 })
         );
         // Exactly at the threshold is not yet an outage (spec says "> 1 day")
         assert_eq!(evaluate_outage(&details(Some(now - DAY), Some(now - 600)), now, DAY, WEEK), None);
