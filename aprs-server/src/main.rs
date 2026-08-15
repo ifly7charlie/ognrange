@@ -1067,10 +1067,15 @@ async fn status_writer(state: Arc<AppState>) {
 /// ntfy topic (see ntfy.rs for the outage definition and local-time window).
 ///
 /// Topic URLs are minted (and persisted immediately - regenerating one would
-/// strand subscribers) the first time a station is seen. A station already
-/// in outage at minting time is marked notified without sending: nobody can
-/// have subscribed to a topic that never existed, and this stops the first
-/// run after deploy from announcing every long-dead station.
+/// strand subscribers) the first time a station is seen, and re-minted when
+/// NTFY_BASE_URL / NTFY_TOPIC_PREFIX no longer match the stored URL (the old
+/// server's subscribers are stranded by the config change regardless).
+/// Minting is purely local; the network publishes are what's throttled - at
+/// most NTFY_SENDS_PER_CYCLE per cycle, 5s apart, staying inside ntfy.sh's
+/// rate budget. A station already in outage at minting time is marked
+/// notified without sending: nobody can have subscribed to a topic that never
+/// existed, and this stops the first run after deploy from announcing every
+/// long-dead station.
 ///
 /// Transitions outside the station's 10:00-17:00 approximate local time are
 /// simply held - the pending state is re-evaluated each tick and announced
@@ -1102,10 +1107,17 @@ async fn outage_monitor(state: Arc<AppState>) {
         let utc_hour = now.hour();
         let beacon_secs = *OUTAGE_BEACON_SECS;
         let traffic_secs = *OUTAGE_TRAFFIC_SECS;
+        let expected_prefix = format!("{}/{}-", &*NTFY_BASE_URL, &*NTFY_TOPIC_PREFIX);
 
         let mut generated = 0usize;
+        let mut deferred = 0usize;
         let mut offline_sent = 0usize;
         let mut online_sent = 0usize;
+        let mut online = 0usize;
+        let mut outage_beacons = 0usize;
+        let mut outage_traffic = 0usize;
+        let mut notified_count = 0usize;
+        let mut send_budget = *NTFY_SENDS_PER_CYCLE;
 
         for details in state.station_manager.all_stations() {
             if details.station.as_str() == "global" || details.last_packet.is_none() {
@@ -1113,16 +1125,28 @@ async fn outage_monitor(state: Arc<AppState>) {
             }
 
             let outage = ntfy::evaluate_outage(&details, now_epoch, beacon_secs, traffic_secs);
+            match outage {
+                None => online += 1,
+                Some(ntfy::OutageReason::Beacons) => outage_beacons += 1,
+                Some(ntfy::OutageReason::Traffic) => outage_traffic += 1,
+            }
+            if details.outage_notified_at.is_some() {
+                notified_count += 1;
+            }
 
-            if details.ntfy_url.is_none() {
+            let needs_mint = match &details.ntfy_url {
+                None => true,
+                // Base URL / prefix config changed: the stored topic lives on
+                // the old server, so a new one has to be minted
+                Some(url) => !url.starts_with(&expected_prefix),
+            };
+            if needs_mint {
                 // Re-get so the packet processor's concurrent updates to this
                 // station aren't clobbered by our stale clone
                 if let Some(mut fresh) = state.station_manager.get(&details.station) {
                     fresh.ntfy_url = Some(ntfy::generate_url(fresh.station.as_str()));
-                    if let Some(reason) = outage {
-                        fresh.outage_notified_at = Some(Epoch(now_epoch));
-                        fresh.outage_reason = Some(reason.as_str().to_string());
-                    }
+                    fresh.outage_notified_at = outage.map(|_| Epoch(now_epoch));
+                    fresh.outage_reason = outage.map(|r| r.as_str().to_string());
                     state.station_manager.update_and_persist(&fresh);
                     generated += 1;
                 }
@@ -1136,6 +1160,15 @@ async fn outage_monitor(state: Arc<AppState>) {
             {
                 continue;
             }
+
+            // Cap publishes per cycle so a mass transition (e.g. an APRS-IS
+            // or server outage on our side) doesn't blow ntfy.sh's rate
+            // budget; the rest go out on later cycles
+            if send_budget == 0 {
+                deferred += 1;
+                continue;
+            }
+            send_budget -= 1;
 
             let url = details.ntfy_url.clone().unwrap();
             let name = details.station.as_str();
@@ -1207,16 +1240,25 @@ async fn outage_monitor(state: Arc<AppState>) {
                     }
                     state.station_manager.update_and_persist(&fresh);
                 }
-                // Pace bursts (many stations can cross a threshold together,
-                // e.g. after an APRS-IS or server outage on our side)
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
+            // Pace sends at ntfy.sh's replenish rate. Applies to failed
+            // sends too: a failure usually means the server is
+            // rate-limiting, the worst time to keep hammering
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
 
-        if generated > 0 || offline_sent > 0 || online_sent > 0 {
+        info!(
+            "outage monitor: {} online, {} offline ({} no beacons, {} no traffic), {} notified",
+            online,
+            outage_beacons + outage_traffic,
+            outage_beacons,
+            outage_traffic,
+            notified_count
+        );
+        if generated > 0 || deferred > 0 || offline_sent > 0 || online_sent > 0 {
             info!(
-                "outage monitor: {} topic URLs generated, {} offline, {} back-online notifications",
-                generated, offline_sent, online_sent
+                "outage monitor: {} topic URLs generated, {} offline, {} back-online notifications, {} sends deferred to later cycles",
+                generated, offline_sent, online_sent, deferred
             );
         }
     }

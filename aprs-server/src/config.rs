@@ -131,6 +131,13 @@ pub static NTFY_TOPIC_PREFIX: Lazy<String> =
 /// How often the outage monitor evaluates stations
 pub static OUTAGE_CHECK_PERIOD_MINUTES: Lazy<f64> =
     Lazy::new(|| env_parse::<f64>("OUTAGE_CHECK_PERIOD_MINUTES", 30.0));
+
+/// Max notification publishes per monitor cycle - stays inside ntfy.sh's
+/// rate budget (~60 request burst, one replenished per 5s). Transitions
+/// beyond the cap are picked up on a later cycle: station state only
+/// advances on a successful send
+pub static NTFY_SENDS_PER_CYCLE: Lazy<usize> =
+    Lazy::new(|| env_parse::<usize>("NTFY_SENDS_PER_CYCLE", 50));
 /// No station beacons for longer than this is an outage (receiver down)
 pub static OUTAGE_BEACON_SECS: Lazy<u32> =
     Lazy::new(|| env_parse::<u32>("OUTAGE_BEACON_DAYS", 1) * 86400);

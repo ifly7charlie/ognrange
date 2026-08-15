@@ -90,3 +90,47 @@ pub fn to_base36(n: u32) -> String {
     }
     result.chars().rev().collect()
 }
+
+/// Join an error with its source chain for logging. reqwest's Display alone
+/// is just "error sending request for url (...)" - the actual cause (DNS
+/// failure, connection refused, timeout, TLS) is hidden in the sources.
+pub fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut s = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        s.push_str(": ");
+        s.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_chain() {
+        #[derive(Debug)]
+        struct E(&'static str, Option<Box<E>>);
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+        impl std::error::Error for E {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|e| e as &(dyn std::error::Error + 'static))
+            }
+        }
+
+        let leaf = E("connection refused", None);
+        assert_eq!(error_chain(&leaf), "connection refused");
+
+        let chain = E(
+            "error sending request",
+            Some(Box::new(E("client error (Connect)", Some(Box::new(E("connection refused", None)))))),
+        );
+        assert_eq!(error_chain(&chain), "error sending request: client error (Connect): connection refused");
+    }
+}

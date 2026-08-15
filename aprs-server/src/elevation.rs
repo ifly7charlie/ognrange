@@ -357,9 +357,7 @@ impl ElevationService {
             Ok(b) => b,
             Err(e) => {
                 self.net_failures.fetch_add(1, Ordering::Relaxed);
-                // {:?} keeps the source chain - reqwest's Display alone is
-                // just "error sending request for url (...)"
-                debug!("failed to fetch DEM tile {}: {:?}", url, e);
+                debug!("failed to fetch DEM tile {}: {}", url, crate::types::error_chain(e.as_ref()));
                 return None;
             }
         };

@@ -5,7 +5,7 @@
 //! is 16 random bytes base64url-encoded, generated once per station and kept
 //! in the station DB. The URL is exported in stations.json and the
 //! per-station JSON so the frontend can render a subscribe QR code
-//! (ntfy://... scheme).
+//! (encoding the https:// URL as-is - camera apps don't scan ntfy://).
 //!
 //! An outage is: no status beacons for more than OUTAGE_BEACON_SECS
 //! (receiver/feed down), or no aircraft traffic for more than
@@ -18,6 +18,7 @@ use tracing::warn;
 
 use crate::config::{NTFY_BASE_URL, NTFY_TOPIC_PREFIX};
 use crate::station::StationDetails;
+use crate::types::error_chain;
 
 /// Local-time window (hours) outside which no notifications are sent
 pub const NOTIFY_WINDOW_START_HOUR: u32 = 10;
@@ -143,11 +144,16 @@ pub async fn send(
     {
         Ok(resp) if resp.status().is_success() => true,
         Ok(resp) => {
-            warn!("ntfy publish to {} failed: HTTP {}", url, resp.status());
+            let status = resp.status();
+            // ntfy explains rejections in a JSON body (rate limit hit,
+            // topic blocked, message too large) - the status alone doesn't
+            let body = resp.text().await.unwrap_or_default();
+            let body: String = body.trim().chars().take(300).collect();
+            warn!("ntfy publish to {} failed: HTTP {} {}", url, status, body);
             false
         }
         Err(e) => {
-            warn!("ntfy publish to {} failed: {}", url, e);
+            warn!("ntfy publish to {} failed: {}", url, error_chain(&e));
             false
         }
     }
