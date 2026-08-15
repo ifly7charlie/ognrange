@@ -16,7 +16,7 @@ import {debounce as _debounce} from 'lodash';
 
 import {useStationListMeta} from '../lib/react/stationmeta';
 import {useDisplayedH3s, DisplayedH3s} from '../lib/react/displayedh3s';
-import {COMBINED_LAYERS} from '../lib/common/layers';
+import {COMBINED_LAYERS, DEFAULT_LAYERS_PARAM} from '../lib/common/layers';
 import type {PickableDetails} from '../lib/react/pickabledetails';
 import {getObjectFromH3s} from '../lib/react/pickabledetails';
 import type {HorizonHover} from '../lib/react/coveragedetails/horizondata';
@@ -69,7 +69,7 @@ export default function CombinePage(props) {
     const file = params.get('file')?.toString();
     const dateStart = params.get('dateStart') || file || 'year';
     const dateEnd = params.get('dateEnd') || file || 'year';
-    const layersParam = params.get('layers') || 'combined';
+    const layersParam = params.get('layers') || DEFAULT_LAYERS_PARAM;
     // Memoize to avoid invalidating FileSelector's expensive useMemo on every pan/zoom re-render
     const dateRange = useMemo(() => ({start: dateStart, end: dateEnd}), [dateStart, dateEnd]);
     const layers = useMemo(() => layersParam.split(',').map((s) => s.trim()).filter(Boolean), [layersParam]);

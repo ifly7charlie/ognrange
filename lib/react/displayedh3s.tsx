@@ -1,5 +1,5 @@
 import {NEXT_PUBLIC_DATA_URL} from '../common/config';
-import {PRESENCE_ONLY, Layer} from '../common/layers';
+import {PRESENCE_ONLY, Layer, DEFAULT_LAYERS_PARAM} from '../common/layers';
 
 import {createContext, useCallback, useContext, useEffect, useState, useRef, useMemo} from 'react';
 import {useSearchParams} from 'next/navigation';
@@ -56,7 +56,7 @@ export function DisplayedH3s(props: React.PropsWithChildren<{env?: {NEXT_PUBLIC_
     const params = useSearchParams();
     const station = params.get('station');
     const file = params.get('file')?.toString();
-    const layersParam = params.get('layers') || 'combined';
+    const layersParam = params.get('layers') || DEFAULT_LAYERS_PARAM;
     const dateStart = params.get('dateStart') || file || 'year';
     const dateEnd = params.get('dateEnd') || file || 'year';
 

@@ -58,6 +58,11 @@ export const ALL_LAYERS: readonly Layer[] = [Layer.ADSB, Layer.COMBINED, Layer.A
 // Set of valid layer name strings for input validation
 export const ALL_LAYER_NAMES: ReadonlySet<string> = new Set(Object.values(Layer));
 
+// Default UI selection when no ?layers= param is present: everything except ADSB.
+// COMBINED stands in for FLARM+OGNTRK (it aggregates both and holds the legacy data).
+export const DEFAULT_LAYERS: readonly Layer[] = [Layer.COMBINED, Layer.ADSL, Layer.FANET, Layer.PAW, Layer.SAFESKY];
+export const DEFAULT_LAYERS_PARAM = DEFAULT_LAYERS.join(',');
+
 export function layerFromDestCallsign(destCallsign: string): Layer | null {
     return TOCALL_TO_LAYER[destCallsign] ?? null;
 }
