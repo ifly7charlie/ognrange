@@ -5,7 +5,7 @@ import {useTranslation} from 'next-i18next';
 import graphcolours from '../graphcolours';
 import {formatEpoch, formatEpochDateOnly} from '../formatdate';
 
-import type {RollupActivity} from '../../worker/rollupactivity';
+import type {RollupActivity} from '../../common/rollupactivity';
 
 function formatDuration(startEpoch: number, endEpoch: number): string {
     const hours = Math.round((endEpoch - startEpoch) / 3600);

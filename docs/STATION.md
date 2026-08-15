@@ -41,6 +41,7 @@ The file contains all `StationDetails` fields (see [STATIONS.md](./STATIONS.md#s
   "status": "v0.2.8.RPI-GPU CPU:0.7 ...",
   "rfCapabilityDb": 10.7,
   "rfCapabilityN": 23481,
+  "ntfyUrl": "https://ntfy.sh/onglide-status-LFLE-3q2-8sJx0kQzYt5vB1nGpw",
   "moved": false,
   "bouncing": false,
   "mobile": false,

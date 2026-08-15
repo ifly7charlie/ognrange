@@ -95,6 +95,19 @@ pub struct StationDetails {
     /// Sample count n behind rf_capability_db, to judge the value's maturity
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rf_capability_n: Option<u32>,
+    /// Persistent ntfy.sh topic URL for outage notifications - random suffix
+    /// generated once by the outage monitor, exported so the frontend can
+    /// render a subscribe QR code (see ntfy.rs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ntfy_url: Option<String>,
+    /// When the current outage was notified (or suppressed, for stations
+    /// already down when their topic URL was first generated). None = healthy
+    /// or recovery already announced
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outage_notified_at: Option<Epoch>,
+    /// Why: "beacons" (no status beacons) or "traffic" (no aircraft heard)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outage_reason: Option<String>,
     #[serde(default)]
     pub moved: bool,
     #[serde(default)]
@@ -353,6 +366,9 @@ impl StationManager {
             notice: None,
             rf_capability_db: None,
             rf_capability_n: None,
+            ntfy_url: None,
+            outage_notified_at: None,
+            outage_reason: None,
             moved: false,
             bouncing: false,
             mobile: false,
@@ -402,6 +418,14 @@ impl StationManager {
             .write()
             .unwrap()
             .insert(details.station.clone(), details.clone());
+    }
+
+    /// Update station details in memory and write them to the DB immediately.
+    /// Use for state that must survive an unclean shutdown (e.g. a station's
+    /// generated ntfy URL - regenerating it would strand existing subscribers).
+    pub fn update_and_persist(&self, details: &StationDetails) {
+        self.update(details);
+        self.persist(details);
     }
 
     /// Remove all stations except those matching a predicate.
@@ -760,6 +784,9 @@ impl StationManager {
             notice: None,
             rf_capability_db: None,
             rf_capability_n: None,
+            ntfy_url: None,
+            outage_notified_at: None,
+            outage_reason: None,
             moved: false,
             bouncing: false,
             mobile: false,
@@ -849,6 +876,9 @@ mod tests {
             notice: None,
             rf_capability_db: None,
             rf_capability_n: None,
+            ntfy_url: None,
+            outage_notified_at: None,
+            outage_reason: None,
             moved: false,
             bouncing: false,
             mobile: false,

@@ -51,9 +51,11 @@ name = "aprs-server"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "base64",
  "chrono",
  "dotenvy",
  "flate2",
+ "getrandom 0.3.4",
  "h3o",
  "libc",
  "lru",

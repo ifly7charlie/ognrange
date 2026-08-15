@@ -118,6 +118,26 @@ pub static MAX_SIMULTANEOUS_ROLLUPS: Lazy<usize> = Lazy::new(|| {
 pub static STATUS_WRITE_PERIOD_MINUTES: Lazy<f64> =
     Lazy::new(|| env_parse::<f64>("STATUS_WRITE_PERIOD_MINUTES", 60.0));
 
+// Outage notifications (ntfy.sh)
+/// Master switch for publishing outage notifications. Topic URLs are still
+/// generated when off (so the frontend QR renders), only sending is skipped.
+pub static NTFY_ENABLED: Lazy<bool> = Lazy::new(|| env_parse("NTFY_ENABLED", 1) != 0);
+/// ntfy server the per-station topics live on
+pub static NTFY_BASE_URL: Lazy<String> =
+    Lazy::new(|| env_or("NTFY_BASE_URL", "https://ntfy.sh").trim_end_matches('/').to_string());
+/// Topic prefix: topics are {prefix}-{station}-{random suffix}
+pub static NTFY_TOPIC_PREFIX: Lazy<String> =
+    Lazy::new(|| env_or("NTFY_TOPIC_PREFIX", "onglide-status"));
+/// How often the outage monitor evaluates stations
+pub static OUTAGE_CHECK_PERIOD_MINUTES: Lazy<f64> =
+    Lazy::new(|| env_parse::<f64>("OUTAGE_CHECK_PERIOD_MINUTES", 30.0));
+/// No station beacons for longer than this is an outage (receiver down)
+pub static OUTAGE_BEACON_SECS: Lazy<u32> =
+    Lazy::new(|| env_parse::<u32>("OUTAGE_BEACON_DAYS", 1) * 86400);
+/// No aircraft traffic for longer than this is an outage (hearing nothing)
+pub static OUTAGE_TRAFFIC_SECS: Lazy<u32> =
+    Lazy::new(|| env_parse::<u32>("OUTAGE_TRAFFIC_DAYS", 7) * 86400);
+
 // H3 cell levels - DO NOT CHANGE without resetting all data
 pub static H3_STATION_CELL_LEVEL: Lazy<u8> = Lazy::new(|| env_parse("H3_STATION_CELL_LEVEL", 8));
 pub static H3_GLOBAL_CELL_LEVEL: Lazy<u8> = Lazy::new(|| env_parse("H3_GLOBAL_CELL_LEVEL", 7));

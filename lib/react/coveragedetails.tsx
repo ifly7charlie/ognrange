@@ -31,6 +31,7 @@ import {ActivityDetails} from './coveragedetails/activitydetails';
 import {UptimeBar} from './coveragedetails/uptimebar';
 import {BeaconActivity} from './coveragedetails/beaconactivity';
 import {StationPosition} from './coveragedetails/stationposition';
+import {StationNotify} from './coveragedetails/stationnotify';
 import {HorizonDetails} from './coveragedetails/horizondetails';
 import {GroundDetails, FloorProfileChart} from './coveragedetails/grounddetails';
 import type {HorizonHover} from './coveragedetails/horizondata';
@@ -574,6 +575,7 @@ export function CoverageDetails({
                         </table>
                     </>
                 ) : null}
+                <StationNotify ntfyUrl={stationData?.ntfyUrl} />
 
                 <p style={{height: '5rem'}} />
             </>

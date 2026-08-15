@@ -25,9 +25,7 @@ Copy the .env.local file from ./conf/.env.local to the current directory and upd
 
 For development you need to install the packages `yarn install`
 
-Then in different windows you'll want: `yarn next dev` and `yarn aprs:dev` or `yarn aprs:devbrk`
-
-If yarn aprs `SIGSEGVs` as soon as it starts try using `npm_config_build_from_source=true yarn install`.
+Then in different windows you'll want: `yarn next dev` and the collector, `cargo run` in `./aprs-server`
 
 There are some complexities - in particular the .arrow files need to be served to the browser
 somehow. Easiest for development is to use `yarn next dev` and output the arrow files into `./public/data`
@@ -62,9 +60,9 @@ To build & run - note that this is a summary not a set of command lines ;)
 ```
 yarn install
 yarn next build
-yarn aprs:build
 yarn next start
-yarn aprs
+cd aprs-server && cargo build --release
+./aprs-server/target/release/aprs-server
 ```
 
 ## Learn More
@@ -185,7 +183,7 @@ APRS packets are NOT recorded in the following situations:
 7. Have no signal strength
 8. Have invalid coordinates
 
-If you wish to update the list of stations that are excluded please raise a pull request to change the file `ignorestation.ts`. For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in `bin/aprs.ts`
+If you wish to update the list of stations that are excluded please raise a pull request to change the file `aprs-server/src/ignore_station.rs` (and its frontend copy `lib/common/ignorestation.ts`). For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in the `aprs-server`
 
 In the user interface the stats are:
 

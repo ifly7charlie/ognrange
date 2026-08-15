@@ -35,6 +35,7 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
     "lastLocation": 1741968000,
     "lastBeacon": 1741967400,
     "status": "v0.2.8.RPI-GPU CPU:0.7 RAM:292.2/970.5MB NTP:0.5ms/-4.3ppm +44.8C 2/2Acfts[1h] RF:+38+2.5ppm/-0.3dB/+10.7dB@10km[23481]/+12.3dB@10km[7/13]",
+    "ntfyUrl": "https://ntfy.sh/onglide-status-LFLE-3q2-8sJx0kQzYt5vB1nGpw",
     "moved": false,
     "bouncing": false,
     "valid": true,
@@ -79,6 +80,9 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `notice` | `string?` | Human-readable move/bounce notice (empty string if no significant movement) |
 | `rfCapabilityDb` | `f32?` | Receiver RF capability: the cumulative `+X.XdB@10km[n]` figure from Status beacons. Only updated when the beacon parses, `n >= 5000` and `\|dB\| <= 45`, so alternating weather-status lines and post-restart beacons never clobber a mature value |
 | `rfCapabilityN` | `u32?` | Sample count `n` behind `rfCapabilityDb`, to judge the value's maturity |
+| `ntfyUrl` | `string?` | Persistent ntfy.sh topic URL for outage notifications (`{NTFY_BASE_URL}/{NTFY_TOPIC_PREFIX}-{station}-{random base64url suffix}`). Minted once per station by the outage monitor and never regenerated (that would strand subscribers). The frontend renders it as a subscribe QR code using the `ntfy://` scheme |
+| `outageNotifiedAt` | `u32?` | Unix timestamp when the current outage was notified (or suppressed, for stations already in outage when their topic URL was first minted). Cleared when the back-online notification is sent |
+| `outageReason` | `string?` | Why the station is in outage: `"beacons"` (no Status beacons for `OUTAGE_BEACON_DAYS`, default 1) or `"traffic"` (no aircraft traffic for `OUTAGE_TRAFFIC_DAYS`, default 7) |
 | `moved` | `bool` | Station move confirmed after `STATION_MOVE_CONFIRM_DAYS` at new location (triggers data purge) |
 | `bouncing` | `bool` | Station is oscillating between two locations, or a move is pending confirmation |
 | `mobile` | `bool` | Station appears to be on a moving vehicle (3+ consecutive new locations) |

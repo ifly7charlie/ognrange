@@ -247,6 +247,10 @@
         "status": {
             "title": "Last status message"
         },
+        "notify": {
+            "title": "Outage notifications",
+            "scan": "Scan with the ntfy app to be notified when this station goes offline (no beacons for a day, or no traffic for a week) or comes back online."
+        },
         "no_layer_data": "No data for {{layer}} in the selected date range",
         "help": "Hover over somewhere on the map to see details.<br/>Click to lock the sidebar display to that location.<br/>Click on a station marker to show coverage records only for that station.<br/>You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information"
     },

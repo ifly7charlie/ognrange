@@ -10,6 +10,7 @@ mod h3cache;
 mod horizon;
 mod json_io;
 mod ignore_station;
+mod ntfy;
 mod layers;
 mod protocol_stats;
 mod reject_log;
@@ -201,6 +202,10 @@ async fn main() {
     let state_clone = state.clone();
     let mut ground_horizon_handle = tokio::spawn(ground_horizon_task(state_clone));
 
+    // Spawn outage monitor (per-station ntfy topics + outage notifications)
+    let state_clone = state.clone();
+    let mut outage_monitor_handle = tokio::spawn(outage_monitor(state_clone));
+
     // Wait for shutdown signal. The background tasks never return in normal
     // operation - one ending (a panic) would otherwise leave a half-dead daemon
     // that keeps the APRS connection alive but processes nothing, so treat it
@@ -233,6 +238,10 @@ async fn main() {
             error!("Ground horizon task exited unexpectedly: {:?}", res);
             fatal = Some("ground horizon task died");
         }
+        res = &mut outage_monitor_handle => {
+            error!("Outage monitor exited unexpectedly: {:?}", res);
+            fatal = Some("outage monitor died");
+        }
     }
 
     // Signal rollup iterations to stop, then abort background tasks
@@ -242,6 +251,7 @@ async fn main() {
     rollup_timer_handle.abort();
     status_writer_handle.abort();
     ground_horizon_handle.abort();
+    outage_monitor_handle.abort();
 
     // Wait for any in-flight spawn_blocking DB writes to complete
     let _flush_guard = state.flush_lock.lock().await;
@@ -1033,6 +1043,166 @@ async fn status_writer(state: Arc<AppState>) {
 
         // Write per-station status JSONs from live in-memory data
         state.station_manager.write_status_snapshots(&acc);
+    }
+}
+
+/// Outage monitor: evaluates every station's beacon/traffic freshness and
+/// publishes outage / back-online notifications to the station's persistent
+/// ntfy topic (see ntfy.rs for the outage definition and local-time window).
+///
+/// Topic URLs are minted (and persisted immediately - regenerating one would
+/// strand subscribers) the first time a station is seen. A station already
+/// in outage at minting time is marked notified without sending: nobody can
+/// have subscribed to a topic that never existed, and this stops the first
+/// run after deploy from announcing every long-dead station.
+///
+/// Transitions outside the station's 10:00-17:00 approximate local time are
+/// simply held - the pending state is re-evaluated each tick and announced
+/// when the window opens (an overnight outage is announced next morning).
+async fn outage_monitor(state: Arc<AppState>) {
+    use chrono::Timelike;
+
+    let period = Duration::from_secs((*OUTAGE_CHECK_PERIOD_MINUTES * 60.0) as u64)
+        .max(Duration::from_secs(60));
+    let mut interval = tokio::time::interval(period);
+    interval.tick().await; // skip the immediate tick - let startup settle
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("reqwest client build failed");
+
+    let epoch_str = |e: Option<Epoch>| {
+        e.and_then(|e| chrono::DateTime::from_timestamp(e.0 as i64, 0))
+            .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    };
+
+    loop {
+        interval.tick().await;
+
+        let now = chrono::Utc::now();
+        let now_epoch = now.timestamp() as u32;
+        let utc_hour = now.hour();
+        let beacon_secs = *OUTAGE_BEACON_SECS;
+        let traffic_secs = *OUTAGE_TRAFFIC_SECS;
+
+        let mut generated = 0usize;
+        let mut offline_sent = 0usize;
+        let mut online_sent = 0usize;
+
+        for details in state.station_manager.all_stations() {
+            if details.station.as_str() == "global" || details.last_packet.is_none() {
+                continue;
+            }
+
+            let outage = ntfy::evaluate_outage(&details, now_epoch, beacon_secs, traffic_secs);
+
+            if details.ntfy_url.is_none() {
+                // Re-get so the packet processor's concurrent updates to this
+                // station aren't clobbered by our stale clone
+                if let Some(mut fresh) = state.station_manager.get(&details.station) {
+                    fresh.ntfy_url = Some(ntfy::generate_url(fresh.station.as_str()));
+                    if let Some(reason) = outage {
+                        fresh.outage_notified_at = Some(Epoch(now_epoch));
+                        fresh.outage_reason = Some(reason.as_str().to_string());
+                    }
+                    state.station_manager.update_and_persist(&fresh);
+                    generated += 1;
+                }
+                continue;
+            }
+
+            let notified = details.outage_notified_at.is_some();
+            if outage.is_some() == notified
+                || !*NTFY_ENABLED
+                || !ntfy::in_notify_window(utc_hour, details.lng)
+            {
+                continue;
+            }
+
+            let url = details.ntfy_url.clone().unwrap();
+            let name = details.station.as_str();
+
+            let ok = match outage {
+                Some(ntfy::OutageReason::Beacons) => {
+                    ntfy::send(
+                        &client,
+                        &url,
+                        &format!("{} offline", name),
+                        &format!(
+                            "No status beacons received from {} since {}. The receiver appears to be down.",
+                            name,
+                            epoch_str(details.last_beacon)
+                        ),
+                        ntfy::Priority::Default,
+                        "warning",
+                    )
+                    .await
+                }
+                Some(ntfy::OutageReason::Traffic) => {
+                    ntfy::send(
+                        &client,
+                        &url,
+                        &format!("{} not receiving", name),
+                        &format!(
+                            "{} is beaconing but has received no aircraft traffic since {}.",
+                            name,
+                            epoch_str(details.last_packet)
+                        ),
+                        ntfy::Priority::Default,
+                        "warning",
+                    )
+                    .await
+                }
+                None => {
+                    let was = match details.outage_reason.as_deref() {
+                        Some("beacons") => "no beacons",
+                        Some("traffic") => "no traffic",
+                        _ => "outage",
+                    };
+                    ntfy::send(
+                        &client,
+                        &url,
+                        &format!("{} back online", name),
+                        &format!(
+                            "{} restarted and is reporting again ({} since {}).",
+                            name,
+                            was,
+                            epoch_str(details.outage_notified_at)
+                        ),
+                        ntfy::Priority::Low,
+                        "white_check_mark",
+                    )
+                    .await
+                }
+            };
+
+            if ok {
+                if let Some(mut fresh) = state.station_manager.get(&details.station) {
+                    if let Some(reason) = outage {
+                        fresh.outage_notified_at = Some(Epoch(now_epoch));
+                        fresh.outage_reason = Some(reason.as_str().to_string());
+                        offline_sent += 1;
+                    } else {
+                        fresh.outage_notified_at = None;
+                        fresh.outage_reason = None;
+                        online_sent += 1;
+                    }
+                    state.station_manager.update_and_persist(&fresh);
+                }
+                // Pace bursts (many stations can cross a threshold together,
+                // e.g. after an APRS-IS or server outage on our side)
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+
+        if generated > 0 || offline_sent > 0 || online_sent > 0 {
+            info!(
+                "outage monitor: {} topic URLs generated, {} offline, {} back-online notifications",
+                generated, offline_sent, online_sent
+            );
+        }
     }
 }
 

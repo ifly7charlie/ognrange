@@ -6,7 +6,7 @@ export default defineConfig({
         include: ['test/**/*.test.ts'],
         coverage: {
             provider: 'v8',
-            include: ['lib/bin/**/*.ts', 'lib/worker/**/*.ts', 'lib/common/**/*.ts'],
+            include: ['lib/common/**/*.ts'],
             exclude: ['**/*.test.ts']
         }
     }
