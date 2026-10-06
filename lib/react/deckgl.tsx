@@ -12,7 +12,7 @@ import {useSearchParams} from 'next/navigation';
 import {getObjectFromIndex, PickableDetails} from './pickabledetails';
 
 import {useRouter} from 'next/router';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {I18nextProvider} from 'react-i18next';
 
 import {
@@ -40,11 +40,12 @@ const altitudeFunctions = {
 };
 
 import {useStationListMeta, useStationListMetaUnfiltered, useStationMeta, StationMeta} from './stationmeta';
-import {destinationPoint, BAND_KEYS, BAND_RANGES_KM, HorizonHover} from './coveragedetails/horizondata';
+import {destinationPoint, BP_KEYS, HorizonHover} from './coveragedetails/horizondata';
 import graphcolours from './graphcolours';
 
-// Band colours matching the horizon chart series (hex '#rrggbb' → deck.gl rgba)
-const horizonBandColours: [number, number, number, number][] = BAND_KEYS.map((_k, i) => {
+// Breakpoint-step colours matching the horizon chart series
+// (hex '#rrggbb' → deck.gl rgba)
+const horizonStepColours: [number, number, number, number][] = BP_KEYS.map((_k, i) => {
     const hex = graphcolours[i];
     return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 224];
 });
@@ -469,14 +470,14 @@ export function CoverageMap(props: {
     );
 
     // Bearing line from the station when hovering the horizon chart in the sidebar:
-    // one segment per distance band with data, coloured to match the chart series,
-    // with tick dots at the band boundaries. Kept out of makeLayers so per-hover
-    // updates don't recreate all the layers
+    // one segment per envelope breakpoint span, coloured to match the chart
+    // series, with tick dots at the breakpoint distances. Kept out of
+    // makeLayers so per-hover updates don't recreate all the layers
     const horizonHoverLayers = useMemo(() => {
         if (!props.horizonHover || !selectedStationMeta || isNaN(selectedStationMeta.lat)) {
             return [];
         }
-        const {source, bearing, distanceKm, bands} = props.horizonHover;
+        const {source, bearing, distanceKm, breakpoints} = props.horizonHover;
         const {lat, lng} = selectedStationMeta;
         const at = (d: number) => destinationPoint(lat, lng, bearing, d);
 
@@ -491,23 +492,16 @@ export function CoverageMap(props: {
                 boundaries.push(distanceKm);
             }
         } else {
-            BAND_KEYS.forEach((k, i) => {
-                if (bands?.[i] == null) {
-                    return;
-                }
-                // The outermost band is clipped to the furthest received cell
-                const [bandStart, bandEnd] = BAND_RANGES_KM[k];
-                const end = distanceKm != null ? Math.min(bandEnd, distanceKm) : bandEnd;
-                if (end > bandStart) {
-                    segments.push({from: at(bandStart), to: at(end), color: horizonBandColours[i]});
-                    boundaries.push(bandStart, end);
+            // Each breakpoint governs from the previous one out to its own
+            // distance; the first span starts at the writer's 5km minimum
+            let from = 5;
+            breakpoints?.forEach((b, i) => {
+                if (b.km > from) {
+                    segments.push({from: at(from), to: at(b.km), color: horizonStepColours[i % horizonStepColours.length]});
+                    boundaries.push(from, b.km);
+                    from = b.km;
                 }
             });
-            // Cells beyond the last band (>90 km) have no band series - grey tail
-            if (distanceKm != null && distanceKm > 90) {
-                segments.push({from: at(90), to: at(distanceKm), color: [51, 51, 51, 224]});
-                boundaries.push(90, distanceKm);
-            }
             if (!segments.length) {
                 // Nothing received at this bearing - just show the direction
                 segments.push({from: [lng, lat], to: at(distanceKm ?? 30), color: [255, 16, 240, 192]});

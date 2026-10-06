@@ -40,9 +40,38 @@ pub fn ignore_station(name: &str) -> bool {
     false
 }
 
+// "test" as its own word: delimited by -, _ or digits in any case, or a
+// camelCase "Test". Embedded runs (Contest, Testwood, LFLETEST) don't match
+static RE_TEST_DELIMITED: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)(^|[-_0-9])test($|[-_0-9])").unwrap());
+static RE_TEST_CAMEL: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(^|[-_0-9a-z])Test($|[-_0-9A-Z])").unwrap());
+
+/// Callsign looks like a test receiver. Not ignored - just expired quickly
+/// once silent (TEST_STATION_EXPIRY_TIME_DAYS)
+pub fn is_test_station(name: &str) -> bool {
+    RE_TEST_DELIMITED.is_match(name) || RE_TEST_CAMEL.is_match(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_test_station() {
+        assert!(is_test_station("TEST1"));
+        assert!(is_test_station("LFLE-test"));
+        assert!(is_test_station("MyTestRx"));
+        assert!(is_test_station("MyTest"));
+        assert!(is_test_station("TestRx"));
+        assert!(is_test_station("Test_2"));
+        assert!(is_test_station("test"));
+        assert!(!is_test_station("LFLE"));
+        assert!(!is_test_station("Testwood"));
+        assert!(!is_test_station("Contest"));
+        assert!(!is_test_station("Celestest"));
+        assert!(!is_test_station("LFLETEST"));
+    }
 
     #[test]
     fn test_ignored_explicit() {

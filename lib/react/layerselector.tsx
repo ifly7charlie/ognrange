@@ -1,7 +1,7 @@
 'use client';
 
 import {useCallback, useEffect, useMemo} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import Select, {type StylesConfig} from 'react-select';
 

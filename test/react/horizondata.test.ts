@@ -56,9 +56,9 @@ describe('horizonFileFor', () => {
 
 describe('chartsFromTable', () => {
     const rows = [
-        {frequency: 868, bearing: 0, lowestAngle: 1.5, lowestAgl: 200, lowestDistance: 10, maxDistance: 55, angle10km: 2.5, angle20km: null, angle30km: null, angle50km: 1.5, angle90km: null, count: 12},
-        {frequency: 868, bearing: 240.5, lowestAngle: -0.5, lowestAgl: 150, lowestDistance: 30, maxDistance: 80, angle10km: 4, angle20km: null, angle30km: -0.5, angle50km: null, angle90km: null, count: 4},
-        {frequency: 1090, bearing: 180, lowestAngle: 0.25, lowestAgl: 500, lowestDistance: 20, maxDistance: 90, angle10km: null, angle20km: 0.25, angle30km: null, angle50km: null, angle90km: 3.25, count: 7}
+        {frequency: 868, bearing: 0, count: 12, bp0Km: 10, bp0Angle: 1.5, bp1Km: 55, bp1Angle: 2.5, bp2Km: null, bp2Angle: null, bp3Km: null, bp3Angle: null, bp4Km: null, bp4Angle: null},
+        {frequency: 868, bearing: 240.5, count: 4, bp0Km: 30, bp0Angle: -0.5, bp1Km: null, bp1Angle: null, bp2Km: null, bp2Angle: null, bp3Km: null, bp3Angle: null, bp4Km: null, bp4Angle: null},
+        {frequency: 1090, bearing: 180, count: 7, bp0Km: 20, bp0Angle: 0.25, bp1Km: 90, bp1Angle: 3.25, bp2Km: null, bp2Angle: null, bp3Km: null, bp3Angle: null, bp4Km: null, bp4Angle: null}
     ];
 
     // Round-trip through IPC stream format - the same wire format the Rust rollup writes
@@ -83,39 +83,45 @@ describe('chartsFromTable', () => {
         }
     });
 
-    it('places rows in the correct bin and keeps values and nulls', () => {
+    it('places rows in the correct bin with their breakpoints and chart keys', () => {
         const [c868, c1090] = chartsFromTable(table);
 
         const north = c868.data[BIN_COUNT / 2];
-        expect(north.lowestAngle).toBeCloseTo(1.5);
-        expect(north.lowestAgl).toBe(200);
-        expect(north.lowestDistance).toBe(10);
-        expect(north.maxDistance).toBe(55);
         expect(north.count).toBe(12);
-        expect(north.angle10km).toBeCloseTo(2.5);
-        expect(north.angle20km).toBeNull();
-        expect(north.angle50km).toBeCloseTo(1.5);
+        expect(north.breakpoints).toHaveLength(2);
+        expect(north.breakpoints[0].km).toBeCloseTo(10);
+        expect(north.breakpoints[0].angle).toBeCloseTo(1.5);
+        expect(north.breakpoints[1].km).toBeCloseTo(55);
+        expect(north.breakpoints[1].angle).toBeCloseTo(2.5);
+        expect(north.bp0).toBeCloseTo(1.5);
+        expect(north.bp1).toBeCloseTo(2.5);
+        expect(north.bp2).toBeNull();
 
         // bearing 240.5 -> x = -119.5 -> index (x + 180) / 0.5 = 121
         const wsw = c868.data[121];
         expect(wsw.bearing).toBeCloseTo(240.5);
-        expect(wsw.lowestAngle).toBeCloseTo(-0.5);
-        expect(wsw.angle10km).toBeCloseTo(4);
-        expect(wsw.angle20km).toBeNull();
+        expect(wsw.breakpoints).toHaveLength(1);
+        expect(wsw.bp0).toBeCloseTo(-0.5);
+        expect(wsw.bp1).toBeNull();
 
         // the 1090 chart only has its own row, at due south (start of the axis)
         const south = c1090.data[0];
         expect(south.bearing).toBe(180);
-        expect(south.lowestAngle).toBeCloseTo(0.25);
-        expect(south.angle90km).toBeCloseTo(3.25);
-        expect(c1090.data[BIN_COUNT / 2].lowestAngle).toBeNull();
+        expect(south.bp0).toBeCloseTo(0.25);
+        expect(south.bp1).toBeCloseTo(3.25);
+        expect(c1090.data[BIN_COUNT / 2].bp0).toBeNull();
     });
 
-    it('leaves unpopulated bins as all-null gap points', () => {
+    it('leaves unpopulated bins as empty gap points', () => {
         const [c868] = chartsFromTable(table);
         const gap = c868.data[1];
-        expect(gap.lowestAngle).toBeNull();
+        expect(gap.breakpoints).toHaveLength(0);
         expect(gap.count).toBeNull();
-        expect(gap.angle10km).toBeNull();
+        expect(gap.bp0).toBeNull();
+    });
+
+    it('renders nothing for pre-envelope band-format files', () => {
+        const legacy = tableFromIPC(tableToIPC(tableFromJSON([{frequency: 868, bearing: 0, lowestAngle: 1.5, angle10km: 2.5, count: 3}])));
+        expect(chartsFromTable(legacy)).toHaveLength(0);
     });
 });

@@ -1,7 +1,7 @@
 import {useMemo, useCallback, useState} from 'react';
 
 import useSWR from 'swr';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import Select, {SingleValue} from 'react-select';
 import {DayPicker, MonthPicker} from './datepicker';
 import {shouldProduceOutput, Layer} from '../common/layers';

@@ -1,30 +1,29 @@
 import {memo, useMemo, useState, useCallback, useEffect, useRef} from 'react';
 import useSWR from 'swr';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer} from 'recharts';
 
 import {NEXT_PUBLIC_DATA_URL} from '../../common/config';
 import graphcolours from '../graphcolours';
 
 import {arrowFetcher} from './arrowfetcher';
-import {chartsFromTable, horizonFileFor, heightAtDistance, BAND_RANGES_KM, BAND_KEYS, BIN_DEG, COMPASS, X_TICKS, X_TICK_LABELS, HorizonPoint, HorizonHover} from './horizondata';
+import {chartsFromTable, horizonFileFor, heightAtDistance, BP_KEYS, BIN_DEG, COMPASS, X_TICKS, X_TICK_LABELS, HorizonPoint, HorizonHover} from './horizondata';
 
-const SERIES: {key: string; label: string; colour: string; width: number}[] = [
-    {key: 'lowestAngle', label: 'any_distance', colour: '#333333', width: 2},
-    {key: 'angle10km', label: 'band_10', colour: graphcolours[0], width: 1},
-    {key: 'angle20km', label: 'band_20', colour: graphcolours[1], width: 1},
-    {key: 'angle30km', label: 'band_30', colour: graphcolours[2], width: 1},
-    {key: 'angle50km', label: 'band_50', colour: graphcolours[3], width: 1},
-    {key: 'angle90km', label: 'band_90', colour: graphcolours[4], width: 1}
-];
+// One line per envelope-breakpoint index: bp0 is the bin's lowest proven
+// angle (bold), later indices are the rising outer steps. The envelope is
+// monotone, so higher indices always plot at or above lower ones - lines can
+// occlude but never cross. Colours are shared with the map bearing segments
+// and the profile staircase
+const SERIES = BP_KEYS.map((key, j) => ({key, index: j, colour: graphcolours[j], width: j === 0 ? 2 : 1}));
 
 // Stable no-op tooltip content - keeps the recharts hover cursor and active
 // dots without drawing a box over the plot; the data goes to HorizonReadout
 const noTooltipContent = () => null;
 
-// Combined legend and hover readout below the chart - clicking a series name
-// toggles it, values fill in for the hovered bearing bin. All rows are always
-// rendered so hovering doesn't reflow the panel
+// Combined legend and hover readout below the chart - clicking a series row
+// toggles it. Unlike the old fixed distance bands, the rows describe the
+// hovered bearing's ACTUAL envelope steps: "angle out to distance". All rows
+// are always rendered so hovering doesn't reflow the panel
 const HorizonReadout = ({point, hidden, toggleSeries, t}: {point: HorizonPoint | null; hidden: Record<string, boolean>; toggleSeries: (key: string) => void; t: (key: string, opts?: any) => string}) => {
     const compass = point ? COMPASS[Math.round(point.bearing / 22.5) % 16] : null;
     return (
@@ -39,26 +38,24 @@ const HorizonReadout = ({point, hidden, toggleSeries, t}: {point: HorizonPoint |
                 )}
             </div>
             {SERIES.map((s) => {
-                const value = point?.[s.key as keyof HorizonPoint] as number | null | undefined;
-                // For band series, show the height window the angle sweeps
-                // across the band's distance range (relative to station ground)
-                const range = BAND_RANGES_KM[s.key as keyof typeof BAND_RANGES_KM];
-                const heights = value != null && range ? ([heightAtDistance(value, range[0]), heightAtDistance(value, range[1])] as const) : null;
+                const bp = point?.breakpoints[s.index];
                 return (
                     <div key={s.key} style={{color: s.colour}}>
                         <span onClick={() => toggleSeries(s.key)} style={{cursor: 'pointer', ...(hidden[s.key] ? {color: '#bbbbbb', textDecoration: 'line-through'} : {})}}>
-                            {t(s.label)}
+                            {t('step', {n: s.index + 1})}
                         </span>
-                        : {value != null ? <>{value.toFixed(2)}&deg;</> : '—'}
-                        {heights ? <> {t('tooltip_heights', {low: Math.round(heights[0] / 10) * 10, high: Math.round(heights[1] / 10) * 10})}</> : null}
+                        :{' '}
+                        {bp ? (
+                            <>
+                                {bp.angle.toFixed(2)}&deg; {t('step_reach', {distance: Math.round(bp.km), height: Math.round(heightAtDistance(bp.angle, bp.km) / 10) * 10})}
+                            </>
+                        ) : (
+                            '—'
+                        )}
                     </div>
                 );
             })}
-            <div style={{minHeight: '4.2em'}}>
-                {point?.lowestAgl != null && point.lowestDistance != null ? <div>{t('tooltip_lowest', {agl: point.lowestAgl, distance: point.lowestDistance})}</div> : null}
-                {point?.maxDistance != null ? <div>{t('tooltip_max', {distance: point.maxDistance})}</div> : null}
-                {point?.count != null ? <div>{t('tooltip_count', {count: point.count})}</div> : null}
-            </div>
+            <div style={{minHeight: '1.4em'}}>{point?.count != null ? <div>{t('tooltip_count', {count: point.count})}</div> : null}</div>
         </div>
     );
 };
@@ -91,7 +88,17 @@ function HorizonChart({
             const x = Number(state?.activeLabel);
             const point = (state?.isTooltipActive && Number.isFinite(x) ? data[Math.round((x + 180) / BIN_DEG)] : null) ?? null;
             setHoverPoint(point);
-            onHover(point ? {source: 'receive', bearing: point.bearing, distanceKm: point.maxDistance ?? null, bands: BAND_KEYS.map((k) => point[k]), frequency} : null);
+            onHover(
+                point
+                    ? {
+                          source: 'receive',
+                          bearing: point.bearing,
+                          distanceKm: point.breakpoints.length ? point.breakpoints[point.breakpoints.length - 1].km : null,
+                          breakpoints: point.breakpoints,
+                          frequency
+                      }
+                    : null
+            );
         },
         [data, onHover, frequency]
     );
@@ -128,7 +135,6 @@ function HorizonChart({
                     {SERIES.map((s) => (
                         <Line
                             key={s.key}
-                            name={t(s.label)}
                             dataKey={s.key}
                             stroke={s.colour}
                             strokeWidth={s.width}
@@ -172,7 +178,7 @@ export const HorizonDetails = memo(function HorizonDetails({
     const lastHover = useRef<string>('');
     const onHover = useCallback(
         (h: HorizonHover) => {
-            const key = h ? `${h.bearing}|${h.distanceKm}|${h.bands}|${h.frequency}` : '';
+            const key = h ? `${h.bearing}|${h.frequency}|${h.breakpoints?.map((b) => `${b.km}:${b.angle}`).join(',')}` : '';
             if (key === lastHover.current) {
                 return;
             }

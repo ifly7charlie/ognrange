@@ -1,8 +1,6 @@
 /// <reference lib="webworker" />
 
-import {ArrowLoader} from '@loaders.gl/arrow';
-import {load} from '@loaders.gl/core';
-import type {LoaderOptions} from '@loaders.gl/core';
+import {columnsFromArrow} from './arrowtable';
 import {progressFetch, cancelCurrent} from './progressFetch';
 import {PRESENCE_SIGNAL, layerBitFromUrl} from '../common/layers';
 
@@ -75,14 +73,12 @@ async function loadFile(url: string, fileIndex: number, totalFiles: number, requ
                 self.postMessage({type: 'progress', requestId, fileIndex, progress: p ?? 1, url, totalFiles});
             }
         };
-        const result = await load(url, ArrowLoader, {
-            fetch: async (input: any, init?: any) => {
-                const response = await fetch(input, init);
-                if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-                return progressFetch(setProgress)(response);
-            }
-        } as LoaderOptions);
-        return (result as any).data;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        // progressFetch re-wraps the body so setProgress fires as bytes arrive;
+        // cancelCurrent() on abort kills the reader and rejects this await
+        const buffer = await progressFetch(setProgress)(response).arrayBuffer();
+        return columnsFromArrow(buffer);
     } catch (e) {
         console.log(`arrowworker: skipping ${url}: ${e}`);
         return null;

@@ -2,11 +2,10 @@ import {describe, it, expect} from 'vitest';
 import {tableFromIPC, tableToIPC, vectorFromArray, Table, Schema, Field, Float32, Int16, Uint16, FixedSizeList} from 'apache-arrow';
 import {splitLongToH3Index, cellToLatLng, greatCircleDistance} from 'h3-js';
 
-import {initialBearingDeg, binSpan, receiveAngleAt, terrainGridFromTable, receiveAnglesFromTable, computeFloorDisc, FloorDisc} from '../../lib/react/floordata';
+import {initialBearingDeg, binSpan, binSpansOverlap, envelopeAngleAt, envelopeMargins, terrainGridFromTable, receiveEnvelopeFromTable, computeFloorDisc, FloorDisc} from '../../lib/react/floordata';
 import {elevationAngleDeg, heightAtDistance, BIN_COUNT} from '../../lib/react/coveragedetails/horizondata';
 import {GROUND_SAMPLES, GROUND_STEP_KM, GROUND_MAX_KM} from '../../lib/react/coveragedetails/grounddata';
-import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M} from '../../lib/common/floor';
-import {floorHorizonFileFor} from '../../lib/react/usefloordata';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, RECEIVE_PROVEN, RECEIVE_SKYLINE_EXTENDED, RECEIVE_BEYOND_PROVEN, floorHorizonFileFor} from '../../lib/common/floor';
 
 // Same conventions as the Rust tests and grounddata.test.ts: station ground
 // 500m, ridge reference 300m above ground at 20km -> 0.792 degrees. The disc
@@ -43,24 +42,40 @@ const ridgeRay = () => {
     return r;
 };
 
-// A receive-horizon table with rows only for the northern bins (0-20 and
-// 700-719): lowestAngle everywhere, angle30km (and optionally angle10km) as
-// the only bands with data
-function horizonTable(frequency: number, lowestAngle: number, angle30km: number | null, angle10km: number | null = null): Table {
-    const bins = [...Array.from({length: 21}, (_, i) => i), ...Array.from({length: 20}, (_, i) => 700 + i)];
-    const n = bins.length;
-    const nulls = () => vectorFromArray(new Array(n).fill(null), new Float32());
-    const table = new Table({
+// A receive-horizon table in the envelope format: per row, up to 5
+// (bp{j}Km, bp{j}Angle) breakpoint pairs, null-padded - ascending in both
+// distance and angle like the writer's Pareto frontier
+type Bp = {km: number; angle: number};
+function envelopeRows(frequency: number, rows: {bin: number; bps: Bp[]}[]): Table {
+    const n = rows.length;
+    const cols: Record<string, ReturnType<typeof vectorFromArray>> = {
         frequency: vectorFromArray(new Array(n).fill(frequency), new Uint16()),
-        bearing: vectorFromArray(bins.map((b) => b * 0.5), new Float32()),
-        lowestAngle: vectorFromArray(new Array(n).fill(lowestAngle), new Float32()),
-        angle10km: vectorFromArray(new Array(n).fill(angle10km), new Float32()),
-        angle20km: nulls(),
-        angle30km: vectorFromArray(new Array(n).fill(angle30km), new Float32()),
-        angle50km: nulls(),
-        angle90km: nulls()
-    });
-    return tableFromIPC(tableToIPC(table));
+        bearing: vectorFromArray(
+            rows.map((r) => r.bin * 0.5),
+            new Float32()
+        )
+    };
+    for (let j = 0; j < 5; j++) {
+        cols[`bp${j}Km`] = vectorFromArray(
+            rows.map((r) => r.bps[j]?.km ?? null),
+            new Float32()
+        );
+        cols[`bp${j}Angle`] = vectorFromArray(
+            rows.map((r) => r.bps[j]?.angle ?? null),
+            new Float32()
+        );
+    }
+    return tableFromIPC(tableToIPC(new Table(cols)));
+}
+
+// Rows only for the northern bins (0-20 and 700-719), all with the same
+// breakpoints - the shape most tests want
+function horizonTable(frequency: number, bps: Bp[]): Table {
+    const bins = [...Array.from({length: 21}, (_, i) => i), ...Array.from({length: 20}, (_, i) => 700 + i)];
+    return envelopeRows(
+        frequency,
+        bins.map((bin) => ({bin, bps}))
+    );
 }
 
 // Distance/bearing of every disc cell from the station, computed back from the
@@ -81,7 +96,7 @@ function locate(disc: FloorDisc) {
 function cellAt(located: ReturnType<typeof locate>, bearingDeg: number, dKm: number) {
     let best: (typeof located)[number] | null = null;
     for (const c of located) {
-        const db = Math.abs((((c.bearing - bearingDeg) % 360) + 540) % 360 - 180);
+        const db = Math.abs(((((c.bearing - bearingDeg) % 360) + 540) % 360) - 180);
         if (db > 3 && c.d > 1) {
             continue;
         }
@@ -118,6 +133,28 @@ describe('binSpan', () => {
     });
 });
 
+describe('binSpansOverlap', () => {
+    it('is true for a bearing whose own arc reaches the same bins', () => {
+        // 0.4km half-width subtends 0.92 deg at 25km, so 47.0 spans bins
+        // 92..95 (46.0-48.0 deg): a cell at 47.9 is 0.9 deg away - further
+        // than the plain bearing tolerance allows in either direction - yet
+        // its own arc lands in bin 95 and it can set the floor there
+        expect(binSpansOverlap(47, 47.9, 25)).toBe(true);
+        expect(binSpansOverlap(47, 46.1, 25)).toBe(true);
+        // Two bins clear of the window, at a distance where the arc is narrow
+        expect(binSpansOverlap(47, 49.5, 25)).toBe(false);
+    });
+
+    it('widens with proximity and is symmetric and wrap-safe', () => {
+        // Same pair of bearings: touching close in, separate far out
+        expect(binSpansOverlap(47, 50, 5)).toBe(true);
+        expect(binSpansOverlap(47, 50, 100)).toBe(false);
+        expect(binSpansOverlap(50, 47, 5)).toBe(true);
+        // Across north, where the bin indexes run 719 -> 0
+        expect(binSpansOverlap(0.1, 359.7, 20)).toBe(true);
+        expect(binSpansOverlap(359.7, 0.1, 20)).toBe(true);
+    });
+});
 
 describe('terrainGridFromTable', () => {
     it('builds running-max angles from the antenna viewpoint', () => {
@@ -254,22 +291,31 @@ describe('computeFloorDisc: ridge ring at 20km', () => {
 describe('computeFloorDisc: receive horizon', () => {
     const ground = groundTable(ridgeRay);
 
-    it('uses bands that reach the distance', () => {
-        // Band angle above the ridge angle: the receive horizon tightens the floor at 25km
-        const disc = computeFloorDisc(ground, horizonTable(868, 0.1, 2.0), 868)!;
+    it('applies the envelope, extends outward, and leaves silent arcs unknown', () => {
+        // A single breakpoint proven at the ridge angle + 1.2 degrees
+        const disc = computeFloorDisc(ground, horizonTable(868, [{km: 30, angle: 2.0}]), 868)!;
         const located = locate(disc);
         const north = cellAt(located, 0, 25);
         expect(disc.terrainFloor[north.i]).toBeCloseTo(GROUND + heightAtDistance(RIDGE_ANGLE, north.d), 0);
         expect(disc.coverageFloor[north.i]).toBeCloseTo(GROUND + heightAtDistance(2.0, north.d), 0);
         expect(disc.terrainAngle[north.i]).toBeCloseTo(RIDGE_ANGLE, 5);
         expect(disc.receiveAngle[north.i]).toBeCloseTo(2.0, 5);
+        expect(disc.receiveExtended[north.i]).toBe(0);
 
-        // Beyond every band with data the outermost observation keeps
-        // governing - the constraint must not vanish at the band edge, or the
-        // floor would collapse back to terrain mid-ray
+        // Beyond the last breakpoint its observation keeps governing - the
+        // constraint must not vanish, or the floor would collapse back to
+        // terrain mid-ray
         const far = cellAt(located, 0, 100);
-        expect(disc.receiveAngle[far.i]).toBeCloseTo(2.0, 5);
+        expect(disc.receiveAngle[far.i]).toBeCloseTo(2.0, 4);
         expect(disc.coverageFloor[far.i]).toBeCloseTo(GROUND + heightAtDistance(2.0, far.d), 0);
+
+        // BEFORE the ridge the skyline is lower, and the measured margin
+        // (breakpoint angle minus the skyline at its distance) extends the
+        // likely floor down with it: skyline + 1.2 instead of the full 2.0
+        const near = cellAt(located, 0, 10);
+        expect(disc.receiveAngle[near.i]).toBeGreaterThan(1.0);
+        expect(disc.receiveAngle[near.i]).toBeLessThan(1.3);
+        expect(disc.receiveExtended[near.i]).toBe(1);
 
         // No horizon rows to the south at all: the station demonstrably
         // receives (northern rows exist), so silence over this arc is
@@ -281,11 +327,10 @@ describe('computeFloorDisc: receive horizon', () => {
     });
 
     it('keeps the floor monotone along a ray - no clipped gap then recovery', () => {
-        // The PWNOWZMA1 regression: bins with only inner-band data used to
-        // lose the receive constraint past the band edge, so the map showed
-        // receive-floored cells, a clipped gap, then LOWER terrain floors
-        // further out on the same bearing
-        const disc = computeFloorDisc(ground, horizonTable(868, 0.1, 4.2), 868)!;
+        // The PWNOWZMA1 regression class: the receive constraint must never
+        // relax with distance, so the map cannot show receive-floored cells,
+        // a clipped gap, then LOWER terrain floors further out
+        const disc = computeFloorDisc(ground, horizonTable(868, [{km: 30, angle: 4.2}]), 868)!;
         const located = locate(disc);
         let prev = -Infinity;
         for (const d of [5, 15, 25, 35, 60, 100, 119]) {
@@ -293,7 +338,7 @@ describe('computeFloorDisc: receive horizon', () => {
             expect(disc.coverageFloor[c.i]).toBeGreaterThanOrEqual(prev);
             prev = disc.coverageFloor[c.i];
         }
-        // and specifically: past the 30km band edge it stays receive-governed
+        // and specifically: past the breakpoint it stays receive-governed
         const past = cellAt(located, 0, 45);
         expect(disc.receiveAngle[past.i]).toBeCloseTo(4.2, 5);
         expect(disc.coverageFloor[past.i]).toBeGreaterThan(GROUND + FLOOR_DISPLAY_MAX_M);
@@ -305,7 +350,7 @@ describe('computeFloorDisc: receive horizon', () => {
         // constraint holds outward too - those cells clip out of the display
         // (consistently with their details) instead of extrapolating to an
         // absurd coloured value or dropping back to the terrain floor
-        const disc = computeFloorDisc(ground, horizonTable(868, 15.9, null, 15.9), 868)!;
+        const disc = computeFloorDisc(ground, horizonTable(868, [{km: 8, angle: 15.9}]), 868)!;
         const located = locate(disc);
         const near = cellAt(located, 0, 8);
         expect(disc.receiveAngle[near.i]).toBeCloseTo(15.9, 5);
@@ -318,18 +363,58 @@ describe('computeFloorDisc: receive horizon', () => {
     });
 
     it('ignores rows for the other frequency', () => {
-        const disc = computeFloorDisc(ground, horizonTable(868, 0.1, 2.0), 1090)!;
+        const disc = computeFloorDisc(ground, horizonTable(868, [{km: 30, angle: 2.0}]), 1090)!;
         const located = locate(disc);
         const north = cellAt(located, 0, 25);
         expect(disc.coverageFloor[north.i]).toBe(disc.terrainFloor[north.i]);
     });
 
     it('never lowers the floor below the terrain', () => {
-        // Receive angle below the ridge angle: max() keeps the terrain floor
-        const disc = computeFloorDisc(ground, horizonTable(868, 0.1, 0.2), 868)!;
+        // Receive angle marginally below the ridge angle (within the skyline
+        // tolerance, so the breakpoint survives): max() keeps the terrain floor
+        const disc = computeFloorDisc(ground, horizonTable(868, [{km: 30, angle: 0.7}]), 868)!;
         const located = locate(disc);
         const north = cellAt(located, 0, 25);
         expect(disc.coverageFloor[north.i]).toBe(disc.terrainFloor[north.i]);
+    });
+
+    it('rejects breakpoints claiming reception well below the skyline', () => {
+        // 0.2 degrees at 30km is more than the tolerance below the 0.79
+        // degree ridge skyline - a corrupt cell. With every breakpoint
+        // filtered the table carries no envelope at all, and the coverage
+        // floor falls back to terrain-only (whole-table-absent behaviour)
+        const disc = computeFloorDisc(ground, horizonTable(868, [{km: 30, angle: 0.2}]), 868)!;
+        const located = locate(disc);
+        const north = cellAt(located, 0, 25);
+        expect(disc.coverageFloor[north.i]).toBe(disc.terrainFloor[north.i]);
+        expect(disc.receiveAngle[north.i]).toBeNaN();
+    });
+
+    it('removes the Lennrtsns band-edge ring: no step where the evidence is skyline-limited', () => {
+        // The motivating case: over flat terrain the envelope hugs the
+        // skyline out to 40km (0.12/0.33 degrees), and the only thing heard
+        // beyond was an airliner at 82km/1.64. The old fixed bands stepped
+        // the floor from ~435m to ~1646m at exactly 50km on every such
+        // bearing - a circle on the map. The measured margin (~0.12 degrees)
+        // now carries the proven floor smoothly across, and the airliner
+        // breakpoint no longer sets the floor anywhere
+        const flat = groundTable(flatRay);
+        const bps = [
+            {km: 15, angle: 0.12},
+            {km: 40, angle: 0.33},
+            {km: 82, angle: 1.64}
+        ];
+        const disc = computeFloorDisc(flat, horizonTable(868, bps), 868)!;
+        const located = locate(disc);
+        const before = cellAt(located, 0, 49);
+        const after = cellAt(located, 0, 51);
+        // Smooth across the old 50km band edge, roughly skyline + margin
+        expect(Math.abs(disc.coverageFloor[after.i] - disc.coverageFloor[before.i])).toBeLessThan(50);
+        expect(disc.coverageFloor[before.i]).toBeGreaterThan(GROUND + 150);
+        expect(disc.coverageFloor[before.i]).toBeLessThan(GROUND + 400);
+        expect(disc.receiveExtended[after.i]).toBe(1);
+        // The airliner's 1.64 degrees never reaches the floor
+        expect(disc.receiveAngle[after.i]).toBeLessThan(0.2);
     });
 });
 
@@ -376,92 +461,108 @@ describe('computeFloorDisc: degenerate inputs', () => {
     });
 });
 
-describe('receiveAnglesFromTable / receiveAngleAt', () => {
-    it('applies band constraints inward and extends the outermost outward', () => {
-        const receive = receiveAnglesFromTable(horizonTable(868, 0.5, 2.0), 868)!;
-        // Within the band, and anywhere nearer (same angle, stronger signal)
-        expect(receiveAngleAt(receive, 0, 1, 25)).toBeCloseTo(2.0, 5);
-        expect(receiveAngleAt(receive, 0, 1, 15)).toBeCloseTo(2.0, 5);
-        expect(receiveAngleAt(receive, 0, 1, 4)).toBeCloseTo(2.0, 5);
-        // Beyond the last band with data its angle keeps governing
-        // (lowestAngle is deliberately unused - it mixes near-field steepness
-        // into every distance)
-        expect(receiveAngleAt(receive, 0, 1, 100)).toBeCloseTo(2.0, 5);
+describe('receiveEnvelopeFromTable / envelopeMargins / envelopeAngleAt', () => {
+    const flatGrid = terrainGridFromTable(groundTable(flatRay))!;
+
+    it('applies the staircase inward and extends the last breakpoint outward', () => {
+        const receive = receiveEnvelopeFromTable(horizonTable(868, [{km: 30, angle: 2.0}]), 868, flatGrid)!;
+        const margins = envelopeMargins(receive, flatGrid);
+        // At and anywhere nearer than the breakpoint (same angle, stronger signal)
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 25).angle).toBeCloseTo(2.0, 5);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 15).angle).toBeCloseTo(2.0, 5);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 4).angle).toBeCloseTo(2.0, 5);
+        // Beyond the last breakpoint its angle keeps governing
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 100).angle).toBeCloseTo(2.0, 4);
+        // Over flat terrain the margin extension equals the staircase - the
+        // whole ray is at skyline + margin, but nothing is lowered, so it must
+        // not read as an extension however the float32 sum happens to round
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 25).extended).toBe(false);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 100).extended).toBe(false);
+        // The winning bin's furthest breakpoint, so a caller can tell the
+        // measured range from the continuation beyond it
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 25).provenKm).toBeCloseTo(30, 5);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 100).provenKm).toBeCloseTo(30, 5);
         // Bins with no rows at all
-        expect(receiveAngleAt(receive, 360, 1, 25)).toBe(-Infinity);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 360, 1, 25).angle).toBe(-Infinity);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 360, 1, 25).provenKm).toBe(0);
+    });
+
+    it('reports provenKm from the bin that won, not the widest one', () => {
+        // Bin 0 proven far and shallow, bin 1 only near and steep: the shallow
+        // bin sets the floor, so its 40km is the range that has been proven
+        const receive = receiveEnvelopeFromTable(
+            envelopeRows(868, [
+                {bin: 0, bps: [{km: 40, angle: 1.4}]},
+                {bin: 1, bps: [{km: 8, angle: 10.9}]}
+            ]),
+            868,
+            flatGrid
+        )!;
+        const margins = envelopeMargins(receive, flatGrid);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 2, 60).provenKm).toBeCloseTo(40, 5);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 1, 1, 60).provenKm).toBeCloseTo(8, 5);
     });
 
     it('takes the best-proven bin across the arc, not the worst', () => {
-        // The PWNOWZMA1 bearing-193 case: one bin proven shallow out to 50km
-        // next to a bin that only ever heard steep near-field traffic. A cell
-        // straddling both must use the shallow proof (coverage anywhere in
-        // the cell counts) - max across the arc let the junk bin poison it,
-        // and relaxed with distance once the narrowing arc dropped that bin
-        const nulls = (n: number) => vectorFromArray(new Array(n).fill(null), new Float32());
-        const table = tableFromIPC(
-            tableToIPC(
-                new Table({
-                    frequency: vectorFromArray([868, 868], new Uint16()),
-                    bearing: vectorFromArray([0, 0.5], new Float32()),
-                    lowestAngle: vectorFromArray([1.4, 10.9], new Float32()),
-                    angle10km: vectorFromArray([null, 10.9], new Float32()),
-                    angle20km: nulls(2),
-                    angle30km: nulls(2),
-                    angle50km: vectorFromArray([1.4, null], new Float32()),
-                    angle90km: nulls(2)
-                })
-            )
-        );
-        const receive = receiveAnglesFromTable(table, 868)!;
-        expect(receiveAngleAt(receive, 0, 2, 40)).toBeCloseTo(1.4, 5);
-        expect(receiveAngleAt(receive, 0, 2, 100)).toBeCloseTo(1.4, 5);
+        // One bin proven shallow out to 40km next to a bin that only ever
+        // heard steep near-field traffic. A cell straddling both must use the
+        // shallow proof (coverage anywhere in the cell counts)
+        const table = envelopeRows(868, [
+            {bin: 0, bps: [{km: 40, angle: 1.4}]},
+            {bin: 1, bps: [{km: 8, angle: 10.9}]}
+        ]);
+        const receive = receiveEnvelopeFromTable(table, 868, flatGrid)!;
+        const margins = envelopeMargins(receive, flatGrid);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 2, 40).angle).toBeCloseTo(1.4, 4);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 2, 100).angle).toBeCloseTo(1.4, 4);
         // The junk bin alone still gives its own (clipped-at-display) answer
-        expect(receiveAngleAt(receive, 1, 1, 40)).toBeCloseTo(10.9, 5);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 1, 1, 40).angle).toBeCloseTo(10.9, 4);
     });
 
-    it('is monotone in distance when inner and outer bands disagree', () => {
-        // angle10km shallower than angle30km: nearby the shallow proof wins,
-        // in and beyond the 30km band its (steeper) angle governs - the
-        // constraint never relaxes with distance
-        const receive = receiveAnglesFromTable(horizonTable(868, 0.5, 4.0, 2.0), 868)!;
-        expect(receiveAngleAt(receive, 0, 1, 8)).toBeCloseTo(2.0, 5);
-        expect(receiveAngleAt(receive, 0, 1, 25)).toBeCloseTo(4.0, 5);
-        expect(receiveAngleAt(receive, 0, 1, 100)).toBeCloseTo(4.0, 5);
+    it('carries a low proven margin across higher outer breakpoints', () => {
+        // Proven 2.0 degrees at 8km over flat terrain: the margin says the
+        // receiver hears down to skyline+2, so the steeper 4.0 breakpoint at
+        // 30km never sets the floor - the staircase alone would (and without
+        // margins does) step up to 4.0
+        const receive = receiveEnvelopeFromTable(
+            horizonTable(868, [
+                {km: 8, angle: 2.0},
+                {km: 30, angle: 4.0}
+            ]),
+            868,
+            flatGrid
+        )!;
+        const margins = envelopeMargins(receive, flatGrid);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 8).angle).toBeCloseTo(2.0, 5);
+        const at25 = envelopeAngleAt(receive, margins, flatGrid, 0, 1, 25);
+        expect(at25.angle).toBeCloseTo(2.0, 4);
+        expect(at25.extended).toBe(true);
+        expect(envelopeAngleAt(receive, margins, flatGrid, 0, 1, 100).angle).toBeCloseTo(2.0, 4);
+        // Staircase-only (no margins): the outer breakpoint governs its span
+        expect(envelopeAngleAt(receive, null, flatGrid, 0, 1, 25).angle).toBeCloseTo(4.0, 5);
     });
 
-    it('lets the outermost 90km band extend beyond its edge', () => {
-        // A horizon angle doesn't drop with distance, so angle90km constrains
-        // everything further out too
-        const bins = [0];
-        const nulls = () => vectorFromArray([null], new Float32());
-        const table = tableFromIPC(
-            tableToIPC(
-                new Table({
-                    frequency: vectorFromArray([868], new Uint16()),
-                    bearing: vectorFromArray([0], new Float32()),
-                    lowestAngle: vectorFromArray([0.5], new Float32()),
-                    angle10km: nulls(),
-                    angle20km: nulls(),
-                    angle30km: nulls(),
-                    angle50km: nulls(),
-                    angle90km: vectorFromArray([1.5], new Float32())
-                })
-            )
-        );
-        const receive = receiveAnglesFromTable(table, 868)!;
-        expect(receiveAngleAt(receive, bins[0], 1, 110)).toBeCloseTo(1.5, 5);
-        expect(receiveAngleAt(receive, bins[0], 1, 25)).toBeCloseTo(1.5, 5);
+    it('clamps margins at zero and mirrors the writer skyline filter', () => {
+        const ridgeGrid = terrainGridFromTable(groundTable(ridgeRay))!;
+        // Within tolerance below the 0.79 ridge skyline: kept, margin clamps to 0
+        const receive = receiveEnvelopeFromTable(horizonTable(868, [{km: 30, angle: 0.7}]), 868, ridgeGrid)!;
+        const margins = envelopeMargins(receive, ridgeGrid);
+        expect(margins[0]).toBe(0);
+        // Well below the skyline: every breakpoint rejected, no envelope at all
+        expect(receiveEnvelopeFromTable(horizonTable(868, [{km: 30, angle: 0.2}]), 868, ridgeGrid)).toBeNull();
+        // Without a terrain grid there is no mirror filter
+        expect(receiveEnvelopeFromTable(horizonTable(868, [{km: 30, angle: 0.2}]), 868, null)).not.toBeNull();
     });
 
     it('returns null when the frequency has no rows', () => {
-        expect(receiveAnglesFromTable(horizonTable(868, 0.5, 2.0), 1090)).toBeNull();
+        expect(receiveEnvelopeFromTable(horizonTable(868, [{km: 30, angle: 2.0}]), 1090, flatGrid)).toBeNull();
     });
 });
 
 describe('getObjectFromIndex: floor layer', () => {
     it('extracts floor details from a picked disc cell', async () => {
         const {getObjectFromIndex} = await import('../../lib/react/pickabledetails');
-        const disc = computeFloorDisc(groundTable(ridgeRay), horizonTable(868, 0.1, 2.0), 868)!;
+        const disc = computeFloorDisc(groundTable(ridgeRay), horizonTable(868, [{km: 30, angle: 2.0}]), 868)!;
         const located = locate(disc);
         const north = cellAt(located, 0, 25);
         const details = getObjectFromIndex(north.i, {props: {data: disc}} as any);
@@ -472,7 +573,15 @@ describe('getObjectFromIndex: floor layer', () => {
             expect(details.coverageFloor).toBe(disc.coverageFloor[north.i]);
             expect(details.terrainAngle).toBeCloseTo(RIDGE_ANGLE, 5);
             expect(details.receiveAngle).toBeCloseTo(2.0, 5);
+            expect(details.receiveExtended).toBe(RECEIVE_PROVEN);
             expect(details.h3).toMatch(/^[0-9a-f]{16}$/);
+            // Before the ridge the margin extension governs - flagged for the readout
+            const near = getObjectFromIndex(cellAt(located, 0, 10).i, {props: {data: disc}} as any);
+            expect(near.type === 'floor' && near.receiveExtended).toBe(RECEIVE_SKYLINE_EXTENDED);
+            // Past the only breakpoint nothing was ever heard: the floor is
+            // that breakpoint's angle carried outward, flagged separately
+            const far = getObjectFromIndex(cellAt(located, 0, 50).i, {props: {data: disc}} as any);
+            expect(far.type === 'floor' && far.receiveExtended).toBe(RECEIVE_BEYOND_PROVEN);
             // NaN receive angle surfaces as null for the readout
             const noRx = getObjectFromIndex(cellAt(located, 180, 25).i, {props: {data: disc}} as any);
             expect(noRx.type === 'floor' && noRx.receiveAngle).toBeNull();

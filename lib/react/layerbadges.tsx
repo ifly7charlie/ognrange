@@ -1,5 +1,5 @@
 import {useCallback} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {LAYER_COLOR, LAYER_BIT, Layer, layersFromBitfield} from '../common/layers';
 
 /** Colored square badges for each layer in a bitmask. Used in station details and visualisation legend.

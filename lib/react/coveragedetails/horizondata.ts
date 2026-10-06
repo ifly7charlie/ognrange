@@ -1,21 +1,22 @@
 import type {Table} from 'apache-arrow';
 
-// Matches the writer in aprs-server/src/horizon.rs: 720 half-degree bearing bins,
-// band columns are the minimum elevation angle within each distance band (nullable)
+// Matches the writer in aprs-server/src/horizon.rs: 720 half-degree bearing
+// bins, each carrying a monotone envelope of up to MAX_BREAKPOINTS
+// (distance, angle) breakpoints - the Pareto frontier of everything received
+// on that bearing. bp{j}Km/bp{j}Angle column pairs, null = no breakpoint j;
+// ascending in both distance and angle across j
 export const BIN_COUNT = 720;
 export const BIN_DEG = 360 / BIN_COUNT;
-export const BAND_KEYS = ['angle10km', 'angle20km', 'angle30km', 'angle50km', 'angle90km'] as const;
+export const MAX_BREAKPOINTS = 5;
 
-// Distance range (km) each band column covers; the first band starts at the
-// writer's 5 km minimum-distance window (closer in, the signal is strong
-// enough to be received below the true skyline, so those cells are excluded)
-export const BAND_RANGES_KM: Record<(typeof BAND_KEYS)[number], [number, number]> = {
-    angle10km: [5, 10],
-    angle20km: [10, 20],
-    angle30km: [20, 30],
-    angle50km: [30, 50],
-    angle90km: [50, 90]
-};
+// How far below the terrain skyline a breakpoint may sit before the floor
+// computation ignores it as physically implausible - mirror of the writer's
+// filter (aprs-server/src/horizon.rs SKYLINE_TOLERANCE_DEG, keep in sync) for
+// files written before the station had a ground-horizon file
+export const SKYLINE_TOLERANCE_DEG = 0.25;
+
+// One envelope step: the lowest angle proven at or beyond km is angle
+export type Breakpoint = {km: number; angle: number};
 
 const EFFECTIVE_EARTH_RADIUS_M = (4 / 3) * 6_371_000;
 const EARTH_RADIUS_KM = 6371;
@@ -29,12 +30,11 @@ export const X_TICK_LABELS: Record<number, string> = {[-180]: 'S', [-90]: 'W', 0
 // Hovered bearing bin, shared between the receive-horizon charts, the ground
 // chart and the map so they all track the same bearing. source says which
 // chart the mouse is over: 'receive' flips the ground chart into profile mode
-// and draws the banded bearing line on the map; 'ground' fills the receive
+// and draws the breakpoint staircase on the map; 'ground' fills the receive
 // charts' readouts and draws a plain terrain-coloured line. distanceKm is the
-// bin's furthest received cell ('receive') or the terrain ridge distance
-// ('ground'), null when the bin is empty; bands holds the bin's per-band
-// angles in BAND_KEYS order (receive hovers only)
-export type HorizonHover = {source: 'receive' | 'ground'; bearing: number; distanceKm: number | null; bands?: (number | null)[]; frequency?: number} | null;
+// bin's furthest proven distance ('receive', the last breakpoint) or the
+// terrain ridge distance ('ground'), null when the bin is empty
+export type HorizonHover = {source: 'receive' | 'ground'; bearing: number; distanceKm: number | null; breakpoints?: Breakpoint[]; frequency?: number} | null;
 
 // Great-circle destination from (lat, lng) along a bearing.
 // Returns [lng, lat] to match deck.gl position order
@@ -68,33 +68,21 @@ export function elevationAngleDeg(deltaHM: number, distanceKm: number): number {
 export interface HorizonPoint {
     x: number; // signed offset from north, S(-180) W(-90) N(0) E(90) - north in the middle
     bearing: number;
-    lowestAngle: number | null;
-    lowestAgl: number | null;
-    lowestDistance: number | null;
-    maxDistance: number | null;
     count: number | null;
-    angle10km: number | null;
-    angle20km: number | null;
-    angle30km: number | null;
-    angle50km: number | null;
-    angle90km: number | null;
+    // The bin's envelope, ascending in both km and angle; [] = empty bin
+    breakpoints: Breakpoint[];
+    // Chart series: bp{j} is breakpoints[j]?.angle - recharts needs flat keys
+    bp0: number | null;
+    bp1: number | null;
+    bp2: number | null;
+    bp3: number | null;
+    bp4: number | null;
 }
 
+export const BP_KEYS = ['bp0', 'bp1', 'bp2', 'bp3', 'bp4'] as const;
+
 export function emptyPoint(x: number, bearing: number): HorizonPoint {
-    return {
-        x,
-        bearing,
-        lowestAngle: null,
-        lowestAgl: null,
-        lowestDistance: null,
-        maxDistance: null,
-        count: null,
-        angle10km: null,
-        angle20km: null,
-        angle30km: null,
-        angle50km: null,
-        angle90km: null
-    };
+    return {x, bearing, count: null, breakpoints: [], bp0: null, bp1: null, bp2: null, bp3: null, bp4: null};
 }
 
 // Which horizon file covers the requested period - horizon files exist only for
@@ -109,17 +97,42 @@ export function horizonFileFor(period: string | undefined): string {
     return date ? `${type}.${date}` : type;
 }
 
+// The bp{j}Km/bp{j}Angle column pairs actually present, probed until missing
+// so a future breakpoint-cap bump degrades gracefully
+export function breakpointColumns(table: Table) {
+    const cols: {km: NonNullable<ReturnType<Table['getChild']>>; angle: NonNullable<ReturnType<Table['getChild']>>}[] = [];
+    for (let j = 0; ; j++) {
+        const km = table.getChild(`bp${j}Km`);
+        const angle = table.getChild(`bp${j}Angle`);
+        if (!km || !angle) {
+            break;
+        }
+        cols.push({km, angle});
+    }
+    return cols;
+}
+
+export function breakpointsForRow(cols: ReturnType<typeof breakpointColumns>, row: number): Breakpoint[] {
+    const out: Breakpoint[] = [];
+    for (const c of cols) {
+        const km = c.km.get(row);
+        const angle = c.angle.get(row);
+        if (km == null || angle == null) {
+            break;
+        }
+        out.push({km, angle});
+    }
+    return out;
+}
+
 export function chartsFromTable(table: Table): {frequency: number; data: HorizonPoint[]}[] {
     const frequency = table.getChild('frequency');
     const bearing = table.getChild('bearing');
-    const lowestAngle = table.getChild('lowestAngle');
-    const lowestAgl = table.getChild('lowestAgl');
-    const lowestDistance = table.getChild('lowestDistance');
-    const maxDistance = table.getChild('maxDistance');
     const count = table.getChild('count');
-    const bands = BAND_KEYS.map((k) => table.getChild(k));
+    const cols = breakpointColumns(table);
 
-    if (!frequency || !bearing || !lowestAngle) {
+    // Pre-envelope files (no bp columns) render nothing - greenfield format
+    if (!frequency || !bearing || !cols.length) {
         return [];
     }
 
@@ -132,13 +145,10 @@ export function chartsFromTable(table: Table): {frequency: number; data: Horizon
             byFreq.set(f, (freqBins = new Map()));
         }
         const point = emptyPoint(b >= 180 ? b - 360 : b, b);
-        point.lowestAngle = lowestAngle.get(i);
-        point.lowestAgl = lowestAgl?.get(i) ?? null;
-        point.lowestDistance = lowestDistance?.get(i) ?? null;
-        point.maxDistance = maxDistance?.get(i) ?? null;
         point.count = count?.get(i) ?? null;
-        for (let bi = 0; bi < BAND_KEYS.length; bi++) {
-            point[BAND_KEYS[bi]] = bands[bi]?.get(i) ?? null;
+        point.breakpoints = breakpointsForRow(cols, i);
+        for (let j = 0; j < BP_KEYS.length; j++) {
+            point[BP_KEYS[j]] = point.breakpoints[j]?.angle ?? null;
         }
         freqBins.set(b, point);
     }

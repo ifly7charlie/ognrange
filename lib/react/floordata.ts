@@ -1,9 +1,9 @@
 import type {Table} from 'apache-arrow';
 import {gridDisk, latLngToCell, cellToLatLng, h3IndexToSplitLong, greatCircleDistance} from 'h3-js';
 
-import {elevationAngleDeg, heightAtDistance, BAND_KEYS, BAND_RANGES_KM, BIN_COUNT, BIN_DEG} from './coveragedetails/horizondata';
+import {elevationAngleDeg, heightAtDistance, breakpointColumns, BIN_COUNT, BIN_DEG, SKYLINE_TOLERANCE_DEG} from './coveragedetails/horizondata';
 import {GROUND_SAMPLES, GROUND_STEP_KM, GROUND_MAX_KM, DEFAULT_STATION_AGL_M, groundMeta} from './coveragedetails/grounddata';
-import {FLOOR_UNKNOWN} from '../common/floor';
+import {FLOOR_UNKNOWN, RECEIVE_PROVEN, RECEIVE_SKYLINE_EXTENDED, RECEIVE_BEYOND_PROVEN} from '../common/floor';
 import {H3_STATION_CELL_LEVEL} from '../common/config';
 
 // The "coverage floor" map layer: for every res-8 cell in the station's 120km
@@ -41,6 +41,19 @@ export function binSpan(bearingDeg: number, distanceKm: number): [number, number
     return [((first % BIN_COUNT) + BIN_COUNT) % BIN_COUNT, count];
 }
 
+// Do the bin windows two bearings subtend at the same distance overlap? A
+// floor curve drawn along one bearing reads binSpan(bearing, km), so a cell
+// only feeds that curve where its own recorded span touches the same bins.
+// Deliberately wider than comparing the bearings directly: binSpan floors to
+// bin edges, so it reaches up to a further bin either side, and a cell just
+// outside the bearing tolerance can still be the one setting the floor
+export function binSpansOverlap(bearingA: number, bearingB: number, distanceKm: number): boolean {
+    const [a, an] = binSpan(bearingA, distanceKm);
+    const [b, bn] = binSpan(bearingB, distanceKm);
+    // Two arcs on a circle overlap when either one's first bin lies in the other
+    return (b - a + BIN_COUNT) % BIN_COUNT < an || (a - b + BIN_COUNT) % BIN_COUNT < bn;
+}
+
 // Terrain rays reshaped for whole-disc lookups: elevations flattened to one
 // row-major array plus, per (bin, sample), the running-max elevation angle
 // from the antenna over all samples up to that distance - the angle an
@@ -76,7 +89,7 @@ export function terrainGridFromTable(table: Table): TerrainGrid | null {
         if (!cell) {
             continue;
         }
-        const bin = (Math.round((bearing.get(i) as number) / BIN_DEG) % BIN_COUNT + BIN_COUNT) % BIN_COUNT;
+        const bin = ((Math.round((bearing.get(i) as number) / BIN_DEG) % BIN_COUNT) + BIN_COUNT) % BIN_COUNT;
         const values = cell.toArray() as ArrayLike<number>;
         stationGround = stationGround ?? values[0] ?? 0;
         viewpoint = viewpoint ?? stationGround + (meta.stationAgl ?? DEFAULT_STATION_AGL_M);
@@ -98,81 +111,155 @@ export function terrainGridFromTable(table: Table): TerrainGrid | null {
     return {stationLat: meta.stationLat, stationLng: meta.stationLng, stationGround, viewpoint, elev, prefixMax};
 }
 
-// Receive-horizon band angles for one frequency reshaped to per-bin arrays;
-// NaN = nothing received (no data, not "bad reception" - absence leaves the
-// coverage floor terrain-only)
-export interface ReceiveAngles {
-    bands: Float32Array[]; // BAND_KEYS order
+// Nearest terrain-ray sample governing a distance, clamped into the sampled
+// range - shared by every prefixMax lookup so all consumers agree
+export function sampleIndex(distanceKm: number): number {
+    return Math.min(Math.max(Math.round(distanceKm / GROUND_STEP_KM), 1), GROUND_SAMPLES - 1);
 }
 
-export function receiveAnglesFromTable(table: Table, frequency: number): ReceiveAngles | null {
+// Receive-horizon envelopes for one frequency reshaped to flat per-bin
+// arrays: up to k breakpoints per bin, ascending in both distance and angle,
+// NaN-padded. len = 0 means nothing received on that bearing (no data, not
+// "bad reception" - absence leaves the coverage floor terrain-only)
+export interface ReceiveEnvelope {
+    km: Float32Array; // BIN_COUNT x k row-major
+    angle: Float32Array;
+    len: Uint8Array;
+    k: number;
+}
+
+// Reshape one frequency's rows, mirroring the writer's below-skyline filter
+// against the terrain grid: a breakpoint claiming reception more than
+// SKYLINE_TOLERANCE_DEG below the skyline at its distance is a corrupt
+// position/altitude, and under min-semantics one such point poisons the whole
+// ray. The writer already filters when the station has a ground-horizon file;
+// this mirror covers files written before it existed (first rollup of a new
+// station, mobile stations)
+export function receiveEnvelopeFromTable(table: Table, frequency: number, grid: TerrainGrid | null): ReceiveEnvelope | null {
     const freqCol = table.getChild('frequency');
     const bearingCol = table.getChild('bearing');
-    if (!freqCol || !bearingCol) {
+    const cols = breakpointColumns(table);
+    if (!freqCol || !bearingCol || !cols.length) {
         return null;
     }
-    const bandCols = BAND_KEYS.map((k) => table.getChild(k));
-    const bands = BAND_KEYS.map(() => new Float32Array(BIN_COUNT).fill(NaN));
+    const k = cols.length;
+    const km = new Float32Array(BIN_COUNT * k).fill(NaN);
+    const angle = new Float32Array(BIN_COUNT * k).fill(NaN);
+    const len = new Uint8Array(BIN_COUNT);
     let any = false;
     for (let i = 0; i < table.numRows; i++) {
         if (freqCol.get(i) !== frequency) {
             continue;
         }
-        const bin = (Math.round((bearingCol.get(i) as number) / BIN_DEG) % BIN_COUNT + BIN_COUNT) % BIN_COUNT;
-        for (let bi = 0; bi < bands.length; bi++) {
-            const v = bandCols[bi]?.get(i);
-            bands[bi][bin] = v == null ? NaN : v;
+        const bin = ((Math.round((bearingCol.get(i) as number) / BIN_DEG) % BIN_COUNT) + BIN_COUNT) % BIN_COUNT;
+        let n = 0;
+        for (const c of cols) {
+            const d = c.km.get(i);
+            const a = c.angle.get(i);
+            if (d == null || a == null) {
+                break;
+            }
+            if (grid) {
+                const limit = grid.prefixMax[bin * GROUND_SAMPLES + sampleIndex(d)];
+                if (!Number.isNaN(limit) && a < limit - SKYLINE_TOLERANCE_DEG) {
+                    continue;
+                }
+            }
+            km[bin * k + n] = d;
+            angle[bin * k + n] = a;
+            n++;
         }
-        any = true;
+        len[bin] = n;
+        if (n) {
+            any = true;
+        }
     }
-    return any ? {bands} : null;
+    return any ? {km, angle, len, k} : null;
 }
 
-// A band's constraint reaches inward: reception proven at its angle within
-// [start, end] holds for every closer distance too (same angle, stronger
-// signal). Beyond the outermost band with data the constraint continues at
-// that band's angle - a horizon angle doesn't drop with distance, and letting
-// the constraint vanish at the band edge made the floor collapse back to
-// terrain mid-ray (receive-coloured, then a clipped gap, then lower floors
-// further out). This keeps the floor monotone with distance along every
-// bearing. lowestAngle stays deliberately unused: it mixes <5km near-field
-// steepness into every distance
-const BAND_REACH_KM = BAND_KEYS.map((k) => BAND_RANGES_KM[k][1]);
-
-// Minimum angle anything was received at that constrains distanceKm: min
-// across applicable bands within a bin, then min across the cell's bins with
-// data - coverage anywhere in the cell counts, and one bin that only ever
-// heard steep near-field traffic must not poison a cell that also straddles a
-// well-proven bin. Min across the arc is also what keeps the floor monotone
-// with distance: the arc narrows as cells get further out, and a min can only
-// rise as bins drop out where a max could fall (constraint relaxing with
-// distance = the clipped-gap-then-recovery artifact). -Infinity only when no
-// subtended bin has any band data
-export function receiveAngleAt(receive: ReceiveAngles, firstBin: number, binCount: number, distanceKm: number): number {
-    let best = Infinity;
-    for (let i = 0; i < binCount; i++) {
-        const b = (firstBin + i) % BIN_COUNT;
-        let binAngle = Infinity;
-        let outermost = Infinity;
-        for (let k = 0; k < BAND_REACH_KM.length; k++) {
-            const v = receive.bands[k][b];
-            if (Number.isNaN(v)) {
+// Per-bin measured skyline margin: how far above its own terrain horizon the
+// station's proven receptions sit, at best. A bin whose envelope hugs the
+// skyline (margin ~0) is terrain-limited - the receiver demonstrably hears
+// down to its physical horizon, so absence of low far receptions is traffic
+// distribution, not radio - while a bin that only ever heard high traffic
+// keeps a large margin and stays evidence-bound. NaN = no usable breakpoints
+// or no terrain along the bin
+export function envelopeMargins(receive: ReceiveEnvelope, grid: TerrainGrid): Float32Array {
+    const margins = new Float32Array(BIN_COUNT).fill(NaN);
+    for (let b = 0; b < BIN_COUNT; b++) {
+        let m = NaN;
+        for (let j = 0; j < receive.len[b]; j++) {
+            const prefix = grid.prefixMax[b * GROUND_SAMPLES + sampleIndex(receive.km[b * receive.k + j])];
+            if (Number.isNaN(prefix)) {
                 continue;
             }
-            outermost = v;
-            if (distanceKm <= BAND_REACH_KM[k] && v < binAngle) {
-                binAngle = v;
+            const v = Math.max(receive.angle[b * receive.k + j] - prefix, 0);
+            if (Number.isNaN(m) || v < m) {
+                m = v;
             }
         }
-        // Past the outermost populated band's edge its observation governs
-        if (binAngle === Infinity) {
-            binAngle = outermost;
+        margins[b] = m;
+    }
+    return margins;
+}
+
+// How much lower the margin extension must sit before it counts as having
+// replaced the staircase rather than tied with it. For a bin with a single
+// breakpoint over terrain whose skyline has already plateaued by that
+// breakpoint's distance, skyline + margin IS the breakpoint's own angle by
+// construction, so the comparison lands on float32 rounding (~1e-8 deg) and
+// the `extended` flag flips between neighbouring bins carrying identical
+// evidence. A tenth of a milli-degree is under a metre of floor at 120km
+const EXTENSION_TIE_DEG = 1e-4;
+
+// Minimum angle likely receivable at distanceKm: per bin the envelope
+// staircase f(d) - the first breakpoint at or beyond the distance, its angle
+// continuing outward past the last one - capped by the skyline-plus-margin
+// extension min(f(d), prefixMax + margin), then min across the cell's
+// subtended bins (coverage anywhere in the cell counts, and the narrowing
+// arc means a min can only rise with distance - floors stay monotone along
+// every ray). Reception proven at an angle holds for every closer distance
+// too (same angle, stronger signal), which is what the staircase encodes.
+// extended = the winning bin's constraint came from the margin extension,
+// not the staircase itself; provenKm = that bin's furthest breakpoint, so a
+// caller can tell whether the distance is inside the measured range or on the
+// outward continuation (both surfaced in the hover details). angle -Infinity
+// only when no subtended bin has any breakpoints
+export function envelopeAngleAt(receive: ReceiveEnvelope, margins: Float32Array | null, grid: TerrainGrid, firstBin: number, binCount: number, distanceKm: number): {angle: number; extended: boolean; provenKm: number} {
+    let best = Infinity;
+    let extended = false;
+    let provenKm = 0;
+    const s = sampleIndex(distanceKm);
+    for (let i = 0; i < binCount; i++) {
+        const b = (firstBin + i) % BIN_COUNT;
+        const n = receive.len[b];
+        if (!n) {
+            continue;
         }
-        if (binAngle < best) {
-            best = binAngle;
+        let f = receive.angle[b * receive.k + n - 1];
+        for (let j = 0; j < n; j++) {
+            if (receive.km[b * receive.k + j] >= distanceKm) {
+                f = receive.angle[b * receive.k + j];
+                break;
+            }
+        }
+        let binExtended = false;
+        const margin = margins ? margins[b] : NaN;
+        if (!Number.isNaN(margin)) {
+            const capped = grid.prefixMax[b * GROUND_SAMPLES + s] + margin;
+            if (capped < f - EXTENSION_TIE_DEG) {
+                // NaN prefix fails the comparison, leaving the staircase
+                f = capped;
+                binExtended = true;
+            }
+        }
+        if (f < best) {
+            best = f;
+            extended = binExtended;
+            provenKm = receive.km[b * receive.k + n - 1];
         }
     }
-    return best === Infinity ? -Infinity : best;
+    return best === Infinity ? {angle: -Infinity, extended: false, provenKm: 0} : {angle: best, extended, provenKm};
 }
 
 export interface FloorDisc {
@@ -192,6 +279,11 @@ export interface FloorDisc {
     // always matches the floor exactly rather than re-deriving it
     terrainAngle: Float32Array;
     receiveAngle: Float32Array;
+    // Why the receive constraint isn't proof at this distance, one of the
+    // RECEIVE_* codes: a proven breakpoint governs, the skyline+margin
+    // extension does, or the last breakpoint's angle is being carried outward
+    // past anything ever heard on the arc (the details explain which)
+    receiveExtended: Uint8Array;
     length: number;
 }
 
@@ -214,7 +306,8 @@ export function computeFloorDisc(groundTable: Table, horizonTable: Table | null,
     // The terrain rays end at GROUND_MAX_KM, so a capability-derived range can
     // only shrink the disc, never extend it
     const rangeKm = maxKm > 0 ? Math.min(maxKm, GROUND_MAX_KM) : GROUND_MAX_KM;
-    const receive = horizonTable ? receiveAnglesFromTable(horizonTable, frequency) : null;
+    const receive = horizonTable ? receiveEnvelopeFromTable(horizonTable, frequency, grid) : null;
+    const margins = receive ? envelopeMargins(receive, grid) : null;
 
     const cells = gridDisk(latLngToCell(grid.stationLat, grid.stationLng, H3_STATION_CELL_LEVEL), discRings(rangeKm));
     const h3lo = new Uint32Array(cells.length);
@@ -224,6 +317,7 @@ export function computeFloorDisc(groundTable: Table, horizonTable: Table | null,
     const coverageFloor = new Int16Array(cells.length);
     const terrainAngleOut = new Float32Array(cells.length);
     const receiveAngleOut = new Float32Array(cells.length);
+    const receiveExtendedOut = new Uint8Array(cells.length);
 
     let n = 0;
     for (let ci = 0; ci < cells.length; ci++) {
@@ -240,7 +334,7 @@ export function computeFloorDisc(groundTable: Table, horizonTable: Table | null,
         const bearing = d > 1e-6 ? initialBearingDeg(grid.stationLat, grid.stationLng, clat, clng) : 0;
         const nearestBin = Math.round(bearing / BIN_DEG) % BIN_COUNT;
         const [firstBin, binCount] = binSpan(bearing, d);
-        const s = Math.min(Math.max(Math.round(d / GROUND_STEP_KM), 1), GROUND_SAMPLES - 1);
+        const s = sampleIndex(d);
 
         // Terrain is cautious where receive is optimistic: max across the
         // subtended bins ("the whole cell clears the skyline") - terrain rays
@@ -260,8 +354,8 @@ export function computeFloorDisc(groundTable: Table, horizonTable: Table | null,
         if (terrainAngle > -Infinity) {
             terrainFloor[n] = clampFloor(grid.viewpoint + heightAtDistance(terrainAngle, d));
             terrainAngleOut[n] = terrainAngle;
-            const rxAngle = receive ? receiveAngleAt(receive, firstBin, binCount, d) : -Infinity;
-            if (receive && rxAngle === -Infinity) {
+            const rx = receive ? envelopeAngleAt(receive, margins, grid, firstBin, binCount, d) : null;
+            if (receive && rx && rx.angle === -Infinity) {
                 // The station has receive data, but not one packet was ever
                 // heard over this cell's arc: that is evidence of NO likely
                 // coverage, not licence to fall back to the terrain floor -
@@ -270,8 +364,10 @@ export function computeFloorDisc(groundTable: Table, horizonTable: Table | null,
                 coverageFloor[n] = FLOOR_UNKNOWN;
                 receiveAngleOut[n] = NaN;
             } else {
+                const rxAngle = rx ? rx.angle : -Infinity;
                 coverageFloor[n] = clampFloor(grid.viewpoint + heightAtDistance(Math.max(terrainAngle, rxAngle), d));
                 receiveAngleOut[n] = rxAngle > -Infinity ? rxAngle : NaN;
+                receiveExtendedOut[n] = rx?.extended ? RECEIVE_SKYLINE_EXTENDED : rx && d > rx.provenKm ? RECEIVE_BEYOND_PROVEN : RECEIVE_PROVEN;
             }
         } else {
             // Every subtended bin missing from the file - unknown, not zero
@@ -292,6 +388,7 @@ export function computeFloorDisc(groundTable: Table, horizonTable: Table | null,
         coverageFloor: coverageFloor.slice(0, n),
         terrainAngle: terrainAngleOut.slice(0, n),
         receiveAngle: receiveAngleOut.slice(0, n),
+        receiveExtended: receiveExtendedOut.slice(0, n),
         length: n
     };
 }

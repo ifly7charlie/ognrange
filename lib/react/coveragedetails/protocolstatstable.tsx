@@ -42,7 +42,7 @@ function ProtocolRow({row, maxAccepted, setLayers}: {row: ProtocolRowEntry; maxA
         </tr>
     );
 }
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {PieChart, Pie, Legend, Tooltip, ResponsiveContainer} from 'recharts';
 import {layerFromDestCallsign} from '../../common/layers';
 import graphcolours from '../graphcolours';

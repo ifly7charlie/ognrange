@@ -3,7 +3,7 @@ import {IoSettingsOutline} from 'react-icons/io5';
 import {useState} from 'react';
 import {useCallback} from 'react';
 import {useRouter} from 'next/router';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import Select from 'react-select';
 

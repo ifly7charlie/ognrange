@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import {useMemo, useCallback} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {useSearchParams} from 'next/navigation';
 
 import {reduce as _reduce, sortedIndexOf as _sortedIndexOf} from 'lodash';

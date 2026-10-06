@@ -1,6 +1,6 @@
 import {QRCodeSVG} from 'qrcode.react';
 
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 // Subscribe QR code for the station's outage-notification topic. The QR
 // encodes the https:// topic URL as-is - camera apps don't recognise the

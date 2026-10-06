@@ -117,7 +117,11 @@ Alongside the coverage arrow files, the rollup writes a per-station receive-hori
 
 Requires the station to have a position and a resolved `elevation` (unresolved elevation → no horizon files). Cells from all protocol layers are merged into two RF frequency groups, since the horizon is an antenna/frequency property: **868 MHz** (combined + fanet + adsl + paw; flarm/ogntrk are already inside combined) and **1090 MHz** (adsb). Safesky is excluded (network-sourced, not RF). The mapping lives in `Layer::frequency_group()` (`aprs-server/src/layers.rs`).
 
-The circle is divided into 720 half-degree bearing bins. Each H3 cell contributes to every bin its ~0.8 km width subtends (arc spreading), using the elevation angle from the station to the cell's lowest received point: the point's minimum MSL altitude vs the station's **antenna viewpoint** (ground `elevation` plus the antenna height derived from `beaconAltitude`, see [STATIONS.md](./STATIONS.md#station-fields)) over the great-circle distance, with a k=4/3 effective-earth curvature/refraction correction. The ground horizon uses the same viewpoint, so the two charts are directly comparable. Selection is by **minimum angle** — nothing is received below the skyline, so the lowest observed angle is the tightest bound on the horizon occlusion in that direction. Cells closer than 5 km are excluded: near the station the signal is strong enough to be received well below the true skyline, so close-in minimum angles do not reflect the horizon. Cells further than 120 km are excluded too, as are cells whose angle falls outside −3°…+50° (below the floor the altitude is corrupt; above the ceiling the cell is nearly overhead and says nothing about the horizon). Min-angle selection is very sensitive to corrupted data, hence all three windows.
+The circle is divided into 720 half-degree bearing bins. Each H3 cell contributes to every bin its ~0.8 km width subtends (arc spreading), using the elevation angle from the station to the cell's lowest received point: the point's minimum MSL altitude vs the station's **antenna viewpoint** (ground `elevation` plus the antenna height derived from `beaconAltitude`, see [STATIONS.md](./STATIONS.md#station-fields)) over the great-circle distance, with a k=4/3 effective-earth curvature/refraction correction. The ground horizon uses the same viewpoint, so the two charts are directly comparable.
+
+Per bin the file stores a **monotone envelope** of up to 5 (distance, angle) **breakpoints** — the Pareto frontier of everything received: a cell survives iff no other cell is both farther and lower-angle. Reception proven at an angle holds for every closer distance too (same angle, stronger signal), so the envelope reads as a staircase "proven down to angle *a* out to distance *d*" that only rises with distance. Breakpoint 0 is the bin's overall lowest proven angle; the last breakpoint's distance is the furthest accepted cell. Before writing, the frontier is thinned: steps smaller than 0.05° are dropped, and if more than 5 breakpoints remain the interior points whose removal raises the envelope least go first — the first and last always survive, and thinning only ever raises the stored envelope (conservative).
+
+Cell filters (min-angle selection is very sensitive to corrupted data): cells closer than 5 km are excluded — near the station the signal is strong enough to be received well below the true skyline; cells further than 120 km, cells whose angle falls outside −3°…+50°, and **single-packet cells** (one corrupt packet must not set a breakpoint) are excluded too. When the station's ground-horizon file exists for its current position, cells claiming reception more than 0.25° **below the terrain skyline** at their distance are rejected per subtended bin (a physically impossible reception is a corrupt position or altitude); `skylineFilter` in the metadata records whether this ran. The frontend mirrors the skyline filter when reading, covering files written before the ground horizon existed.
 
 ### Schema
 
@@ -127,12 +131,11 @@ One row per non-empty (frequency, bearing) bin:
 |--------|------|-------------|
 | `frequency` | `u16` | Frequency group: `868` or `1090` |
 | `bearing` | `f32` | Bin start in degrees: 0.0, 0.5, ... 359.5 |
-| `lowestAngle` | `f32` | Minimum elevation angle (degrees) at any distance within the 5–120 km window |
-| `lowestAgl` | `u16` | AGL metres of the lowest-angle cell's lowest point |
-| `lowestDistance` | `u16` | Distance (km) to the lowest-angle cell |
-| `maxDistance` | `u16` | Distance (km) to the furthest contributing cell |
-| `angle10km` … `angle90km` | `f32?` | Minimum angle within each distance band (upper edges 10/20/30/50/90 km; the first band starts at the 5 km minimum); null when the band has no cells. The 90 km top edge is where a 0.5° bin arc matches the cell width. A lowest-angle cell beyond 90 km appears in `lowestAngle` but in no band |
-| `count` | `u32` | Cell-arc contributions to the bin |
+| `count` | `u32` | Accepted cell-arc contributions to the bin (post-filter) |
+| `bp0Km` … `bp4Km` | `f32?` | Breakpoint distances (km), ascending; null = no breakpoint j. The last non-null is the furthest accepted cell |
+| `bp0Angle` … `bp4Angle` | `f32?` | Breakpoint angles (degrees), ascending; `bp0Angle` is the lowest proven angle |
+
+Schema metadata (string values): `stationLat`/`stationLng` (%.6f), `stationElevation` (ground m MSL, %.1f), `stationAgl` (%.1f, or `NaN` when the default height was assumed — same convention as the ground-horizon file), `binDeg` (0.5), `minKm`/`maxKm` (5/120), `maxBreakpoints` (5), `epsilonDeg` (0.05), `skylineFilter` (1/0), `skylineToleranceDeg` (0.25), `generatedAt` (epoch seconds).
 
 Horizon files have no shrink guard (bin counts can legitimately shrink) and no metadata JSON sidecar. They are regenerated whenever the station's coverage rolls up; the startup mop-up does not produce them. The `.horizon` suffix cannot collide with layer suffixes, so the coverage file-listing API ignores these files.
 

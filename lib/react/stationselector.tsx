@@ -2,7 +2,7 @@ import {useCallback} from 'react';
 import {useSearchParams} from 'next/navigation';
 import AsyncSelect from 'react-select/async';
 
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import {Checkbox} from './checkbox';
 

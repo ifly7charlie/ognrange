@@ -38,12 +38,16 @@ export interface PickableFloorDetails {
     coverageFloor: number;
     terrainAngle: number | null;
     receiveAngle: number | null;
+    // Why the receive constraint isn't proof at this distance (a RECEIVE_*
+    // code) - the readout explains whichever extension applies
+    receiveExtended: number;
     length: number;
 }
 
 export type PickableDetails = PickableStationDetails | PickableH3Details | PickableFloorDetails | {type: 'none'};
 
 import {prefixWithZeros} from '../common/prefixwithzeros';
+import {RECEIVE_PROVEN} from '../common/floor';
 
 import type {DisplayedH3sType} from './displayedh3s';
 import {h3IndexToSplitLong} from 'h3-js';
@@ -129,6 +133,7 @@ export function getObjectFromIndex(i: number, layer: {props: {data: {d: any} | a
             coverageFloor: dF.coverageFloor[i],
             terrainAngle: Number.isNaN(dF.terrainAngle[i]) ? null : dF.terrainAngle[i],
             receiveAngle: Number.isNaN(dF.receiveAngle[i]) ? null : dF.receiveAngle[i],
+            receiveExtended: dF.receiveExtended?.[i] ?? RECEIVE_PROVEN,
             length: dF.length
         };
     } else if (layer?.props?.data && i < layer.props.data.length) {

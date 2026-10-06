@@ -1,5 +1,5 @@
 import {useMemo} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell} from 'recharts';
 import {layerFromDestCallsign} from '../../common/layers';
 import type {DailyDevicesEntry} from '../../common/protocolstats';

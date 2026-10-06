@@ -165,6 +165,10 @@ pub static STATION_MOVE_CONFIRM_SECS: Lazy<u64> =
     Lazy::new(|| env_parse::<u64>("STATION_MOVE_CONFIRM_DAYS", 7) * 3600 * 24);
 pub static STATION_EXPIRY_TIME_SECS: Lazy<u64> =
     Lazy::new(|| env_parse::<u64>("STATION_EXPIRY_TIME_DAYS", 31) * 3600 * 24);
+/// Expiry for stations with "test" in their callsign - short-lived bench
+/// setups that would otherwise clutter the station list for a month
+pub static TEST_STATION_EXPIRY_TIME_SECS: Lazy<u64> =
+    Lazy::new(|| env_parse::<u64>("TEST_STATION_EXPIRY_TIME_DAYS", 2) * 3600 * 24);
 
 // H3 cache timing
 pub static H3_CACHE_FLUSH_PERIOD_MS: Lazy<u64> =

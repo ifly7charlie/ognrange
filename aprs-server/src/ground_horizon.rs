@@ -33,7 +33,9 @@ use std::sync::Arc;
 
 use arrow::array::{ArrayRef, FixedSizeListArray, Float32Array, Int16Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
+use arrow::ipc::reader::StreamReader;
 use arrow::ipc::writer::StreamWriter;
+use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
@@ -419,6 +421,93 @@ pub fn remove_files(output_dir: &str, station_name: &str) -> usize {
         .count()
 }
 
+/// Terrain skyline reshaped for occlusion checks: per (bin, sample), the
+/// running-max elevation angle from the antenna over all samples up to that
+/// distance - the angle an aircraft must clear to be line-of-sight there.
+/// Same shape and math as the frontend's terrainGridFromTable (floordata.ts)
+pub struct TerrainSkyline {
+    /// GROUND_BINS x GROUND_SAMPLES row-major; NaN where a bin is missing
+    prefix_max: Box<[f32]>,
+}
+
+impl TerrainSkyline {
+    /// Running-max skyline from a full elevations grid (the GroundHorizon
+    /// layout), viewed from `viewpoint_m` MSL
+    pub fn from_elevations(elevations: &[i16], viewpoint_m: f64) -> TerrainSkyline {
+        assert_eq!(elevations.len(), GROUND_BINS * GROUND_SAMPLES);
+        let mut prefix_max = vec![f32::NAN; GROUND_BINS * GROUND_SAMPLES].into_boxed_slice();
+        for bin in 0..GROUND_BINS {
+            let ray = &elevations[bin * GROUND_SAMPLES..(bin + 1) * GROUND_SAMPLES];
+            fill_prefix_ray(&mut prefix_max[bin * GROUND_SAMPLES..(bin + 1) * GROUND_SAMPLES], viewpoint_m, ray);
+        }
+        TerrainSkyline { prefix_max }
+    }
+
+    /// Skyline angle governing (bin, distance): nearest ray sample, clamped
+    /// into 1..=GROUND_SAMPLES-1 exactly like the frontend. NaN when the bin
+    /// was missing from the file
+    pub fn angle_at(&self, bin: usize, distance_km: f64) -> f32 {
+        let s = ((distance_km / GROUND_STEP_KM).round() as i64).clamp(1, GROUND_SAMPLES as i64 - 1) as usize;
+        self.prefix_max[(bin % GROUND_BINS) * GROUND_SAMPLES + s]
+    }
+}
+
+/// Running-max elevation angle along one ray (sample 0 = station, excluded)
+fn fill_prefix_ray(dst: &mut [f32], viewpoint_m: f64, ray: &[i16]) {
+    let mut max_angle = f64::NEG_INFINITY;
+    for s in 1..ray.len() {
+        let angle = elevation_angle_deg(ray[s] as f64 - viewpoint_m, s as f64 * GROUND_STEP_KM * 1000.0);
+        if angle > max_angle {
+            max_angle = angle;
+        }
+        dst[s] = max_angle as f32;
+    }
+}
+
+/// Read the station's terrain file back as a skyline grid for the receive
+/// horizon's below-skyline cell filter. The angles are computed from the
+/// CALLER's viewpoint, not the file's stationAgl - the beacon may have
+/// changed since the file was generated and the filter must share one
+/// reference with the receive angles it gates. None (no filtering) when the
+/// file is missing/unreadable or was generated for a materially different
+/// position (> STATION_MOVE_THRESHOLD_KM - a stale pre-move file must not
+/// veto post-move receptions)
+pub fn read_skyline(
+    output_dir: &str,
+    station_name: &str,
+    expected_lat: f64,
+    expected_lng: f64,
+    viewpoint_m: f64,
+) -> Option<TerrainSkyline> {
+    let file = std::fs::File::open(gz_path(output_dir, station_name)).ok()?;
+    let reader = StreamReader::try_new(GzDecoder::new(std::io::BufReader::new(file)), None).ok()?;
+
+    let meta = reader.schema();
+    let meta = meta.metadata();
+    let flat: f64 = meta.get("stationLat")?.parse().ok()?;
+    let flng: f64 = meta.get("stationLng")?.parse().ok()?;
+    if great_circle_distance_km(flat, flng, expected_lat, expected_lng) > *config::STATION_MOVE_THRESHOLD_KM {
+        return None;
+    }
+
+    let mut prefix_max = vec![f32::NAN; GROUND_BINS * GROUND_SAMPLES].into_boxed_slice();
+    for batch in reader {
+        let batch = batch.ok()?;
+        let bearing = batch.column(0).as_any().downcast_ref::<Float32Array>()?;
+        let lists = batch.column(1).as_any().downcast_ref::<FixedSizeListArray>()?;
+        if lists.value_length() != GROUND_SAMPLES as i32 {
+            return None;
+        }
+        for i in 0..batch.num_rows() {
+            let bin = ((bearing.value(i) as f64 / BIN_DEG).round() as i64).rem_euclid(GROUND_BINS as i64) as usize;
+            let ray = lists.value(i);
+            let ray = ray.as_any().downcast_ref::<Int16Array>()?;
+            fill_prefix_ray(&mut prefix_max[bin * GROUND_SAMPLES..(bin + 1) * GROUND_SAMPLES], viewpoint_m, ray.values());
+        }
+    }
+    Some(TerrainSkyline { prefix_max })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,6 +738,54 @@ mod tests {
         let reader =
             StreamReader::try_new(GzDecoder::new(std::io::BufReader::new(file)), None).unwrap();
         assert_eq!(reader.schema().metadata().get("stationAgl").unwrap(), "NaN");
+    }
+
+    #[test]
+    fn read_skyline_roundtrip_and_viewpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("TEST");
+        let out = out.to_str().unwrap();
+
+        // Flat 500m terrain with a 300m ridge at 20km on every bearing
+        let mut samples = flat_samples(500);
+        for bin in 0..GROUND_BINS {
+            samples[bin * GROUND_SAMPLES + 40] = 800;
+        }
+        let gh = GroundHorizon::from_samples(47.0, 8.0, Some(0.0), samples);
+        write_arrow(out, "TEST", &gh).unwrap();
+
+        let sky = read_skyline(out, "TEST", 47.0, 8.0, 500.0).unwrap();
+        // Before the ridge: flat terrain, so the running max is set by the
+        // nearest sample (the curvature dip only grows with distance):
+        // ~-0.0017 at the 0.5km sample
+        assert!((sky.angle_at(0, 10.0) as f64 + 0.0017).abs() < 0.001, "at 10km {}", sky.angle_at(0, 10.0));
+        // At and beyond the ridge the running max holds its ~0.792 deg
+        assert!((sky.angle_at(0, 20.0) as f64 - 0.792).abs() < 0.01);
+        assert!((sky.angle_at(0, 100.0) as f64 - 0.792).abs() < 0.01);
+        // Distances clamp into the sampled range
+        assert!(sky.angle_at(0, 0.0).is_finite());
+        assert!(sky.angle_at(0, 500.0).is_finite());
+
+        // A raised viewpoint lowers the ridge angle (atan(300/20km)-atan(290/20km))
+        let mast = read_skyline(out, "TEST", 47.0, 8.0, 510.0).unwrap();
+        let drop = (sky.angle_at(0, 20.0) - mast.angle_at(0, 20.0)) as f64;
+        assert!((drop - 0.0287).abs() < 0.002, "drop {}", drop);
+    }
+
+    #[test]
+    fn read_skyline_rejects_stale_position_and_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("TEST");
+        let out = out.to_str().unwrap();
+
+        assert!(read_skyline(out, "TEST", 47.0, 8.0, 500.0).is_none());
+
+        let gh = GroundHorizon::from_samples(47.0, 8.0, Some(0.0), flat_samples(500));
+        write_arrow(out, "TEST", &gh).unwrap();
+        // Generated-for position within the move threshold: accepted
+        assert!(read_skyline(out, "TEST", 47.0009, 8.0, 500.0).is_some());
+        // Station has since moved ~1km: the stale file must not filter
+        assert!(read_skyline(out, "TEST", 47.009, 8.0, 500.0).is_none());
     }
 
     #[test]

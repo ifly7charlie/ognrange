@@ -2,7 +2,7 @@ import {useState, useCallback, useMemo} from 'react';
 import useSWR from 'swr';
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import {
     LineChart, //

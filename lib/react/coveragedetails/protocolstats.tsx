@@ -1,6 +1,6 @@
 import {useState, useMemo} from 'react';
 import useSWR from 'swr';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import {WaitForGraph} from './waitforgraph';
 import {colorForTab} from './protocolstatsutil';

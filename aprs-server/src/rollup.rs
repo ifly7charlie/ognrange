@@ -105,7 +105,10 @@ use crate::coverage::header::{
     AccumulatorBucket, AccumulatorType, CoverageHeader,
 };
 use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
-use crate::horizon::{HorizonCollector, HorizonRow, HORIZON_DISTANCE_BANDS_KM};
+use crate::horizon::{
+    HorizonCollector, HorizonMeta, HorizonRow, HORIZON_EPSILON_DEG, HORIZON_MAX_BREAKPOINTS,
+    HORIZON_MAX_DISTANCE_KM, HORIZON_MIN_DISTANCE_KM, SKYLINE_TOLERANCE_DEG,
+};
 use crate::layers::{is_layer_prefixed, Layer};
 use crate::packet_stats::AprsPacketStats;
 use crate::station::{StationDetails, StationManager};
@@ -228,16 +231,21 @@ fn evaluate_station_validity(
     let mut newly_invalid: HashSet<StationId> = HashSet::new();
     let mut confirmed_moves: HashSet<StationId> = HashSet::new();
     let mut invalid_count = 0usize;
+    // Test-station expiries, kept out of the safety-valve ratio: the short
+    // expiry retires a whole backlog at once (e.g. on first deploy), which
+    // isn't the mass event the valve guards against
+    let mut test_invalid_count = 0usize;
     let mut moved_count = 0usize;
     let mut need_purge = false;
 
     for station in all_station_details {
         let was_valid = station.valid;
         let validity_ts = station
-            .last_packet
-            .or(station.last_beacon)
+            .last_activity()
             .map(|e| e.0)
             .unwrap_or(now_epoch); // no timestamp yet → assume valid
+        // Same rule the exported expiresAt shows the frontend
+        let expired = station.expires_at().is_some_and(|e| e.0 <= now_epoch);
 
         // Confirm moves: station is bouncing and the previous (original) location
         // hasn't been seen for STATION_MOVE_CONFIRM_DAYS
@@ -254,6 +262,7 @@ fn evaluate_station_validity(
                 let mut updated = station.clone();
                 updated.moved = true;
                 updated.bouncing = false;
+                updated.move_confirmed = true;
                 station_manager.update(&updated);
                 confirmed_moves.insert(station.id);
                 true
@@ -273,10 +282,15 @@ fn evaluate_station_validity(
                 updated.moved = false;
                 station_manager.update(&updated);
             }
-        } else if validity_ts > expiry_epoch {
+        } else if !expired {
             valid.insert(station.id);
         } else if was_valid {
-            invalid_count += 1;
+            // Only expired by the shorter test-station period
+            if validity_ts > expiry_epoch {
+                test_invalid_count += 1;
+            } else {
+                invalid_count += 1;
+            }
             newly_invalid.insert(station.id);
             info!(
                 "station {} now invalid: expired, last activity {}",
@@ -308,8 +322,9 @@ fn evaluate_station_validity(
         }
         newly_invalid.clear();
     } else {
-        need_purge = invalid_count > 0 || moved_count > 0;
+        need_purge = invalid_count > 0 || test_invalid_count > 0 || moved_count > 0;
     }
+    let invalid_count = invalid_count + test_invalid_count;
 
     // Update station validity in the station manager. Purge provenance is only
     // stamped for stations whose database is actually purged this cycle
@@ -851,11 +866,24 @@ fn rollup_station_all_layers(
 
     // Horizon bins accumulate across all layers (merged by frequency group)
     // and are written once after the layer loop. None (no position / no
-    // resolved elevation / global) skips horizon output entirely.
+    // resolved elevation / global) skips horizon output entirely. The
+    // station's terrain file (when present and generated for this position)
+    // provides the below-skyline cell filter; reading it synchronously is
+    // fine - we are inside spawn_blocking
     let mut horizon = if is_global {
         None
     } else {
-        station_meta.and_then(HorizonCollector::from_station)
+        station_meta.and_then(HorizonCollector::from_station).map(|c| {
+            let m = c.meta();
+            let sky = crate::ground_horizon::read_skyline(
+                &crate::config::output_dir(station_name),
+                station_name,
+                m.lat,
+                m.lng,
+                c.viewpoint_m(),
+            );
+            c.with_skyline(sky)
+        })
     };
 
     // Self-healing: scan the DB's Current metas (cheap seek-only pass) so any
@@ -1001,9 +1029,10 @@ fn rollup_station_all_layers(
                 p.phase = "horizon".to_string();
             }
             let output_dir = crate::config::output_dir(station_name);
+            let meta = h.meta();
             for hf in h.build_files() {
                 match write_arrow_horizon(
-                    &output_dir, station_name, hf.acc_type.name(), &hf.file_id, &hf.rows,
+                    &output_dir, station_name, hf.acc_type.name(), &hf.file_id, &hf.rows, &meta,
                 ) {
                     Ok(n) => total_stats.horizon_records += n,
                     Err(e) => error!(
@@ -2016,20 +2045,45 @@ fn write_arrow_global(
     write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], true)
 }
 
-fn horizon_schema() -> Schema {
+/// Envelope-breakpoint schema: bp{j}Km/bp{j}Angle nullable pairs (null in
+/// both = no breakpoint j), plus self-describing metadata so the frontend
+/// can verify the viewpoint and windows without cross-referencing other files
+fn horizon_schema(meta: &HorizonMeta) -> Schema {
+    let generated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let metadata: std::collections::HashMap<String, String> = [
+        ("stationLat".to_string(), format!("{:.6}", meta.lat)),
+        ("stationLng".to_string(), format!("{:.6}", meta.lng)),
+        // Station ground m MSL; the angle viewpoint is ground + stationAgl
+        ("stationElevation".to_string(), format!("{:.1}", meta.ground_m)),
+        // NaN = the configured default height was assumed (beacon missing or
+        // implausible) - same convention as the ground-horizon file
+        ("stationAgl".to_string(), meta.beacon_agl.map_or("NaN".to_string(), |a| format!("{:.1}", a))),
+        ("binDeg".to_string(), "0.5".to_string()),
+        ("minKm".to_string(), (HORIZON_MIN_DISTANCE_KM as u32).to_string()),
+        ("maxKm".to_string(), (HORIZON_MAX_DISTANCE_KM as u32).to_string()),
+        ("maxBreakpoints".to_string(), HORIZON_MAX_BREAKPOINTS.to_string()),
+        ("epsilonDeg".to_string(), HORIZON_EPSILON_DEG.to_string()),
+        // Whether the below-skyline cell filter ran this cycle (0 until the
+        // station's ground-horizon file exists for the current position)
+        ("skylineFilter".to_string(), if meta.skyline_filtered { "1" } else { "0" }.to_string()),
+        ("skylineToleranceDeg".to_string(), SKYLINE_TOLERANCE_DEG.to_string()),
+        ("generatedAt".to_string(), generated_at.to_string()),
+    ]
+    .into();
+
     let mut fields = vec![
         Field::new("frequency", DataType::UInt16, false),
         Field::new("bearing", DataType::Float32, false),
-        Field::new("lowestAngle", DataType::Float32, false),
-        Field::new("lowestAgl", DataType::UInt16, false),
-        Field::new("lowestDistance", DataType::UInt16, false),
-        Field::new("maxDistance", DataType::UInt16, false),
+        Field::new("count", DataType::UInt32, false),
     ];
-    for edge in HORIZON_DISTANCE_BANDS_KM {
-        fields.push(Field::new(format!("angle{}km", edge as u32), DataType::Float32, true));
+    for j in 0..HORIZON_MAX_BREAKPOINTS {
+        fields.push(Field::new(format!("bp{}Km", j), DataType::Float32, true));
+        fields.push(Field::new(format!("bp{}Angle", j), DataType::Float32, true));
     }
-    fields.push(Field::new("count", DataType::UInt32, false));
-    Schema::new(fields)
+    Schema::new_with_metadata(fields, metadata)
 }
 
 /// Write a station's horizon rows as {station}.{acc}.{file_id}.horizon.arrow.gz
@@ -2041,27 +2095,27 @@ fn write_arrow_horizon(
     acc_type: &str,
     file_id: &str,
     rows: &[HorizonRow],
+    meta: &HorizonMeta,
 ) -> Result<usize, String> {
     if rows.is_empty() {
         return Ok(0);
     }
 
-    let schema = std::sync::Arc::new(horizon_schema());
+    let schema = std::sync::Arc::new(horizon_schema(meta));
     let mut columns: Vec<ArrayRef> = vec![
         std::sync::Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.frequency))),
         std::sync::Arc::new(Float32Array::from_iter_values(rows.iter().map(|r| r.bearing))),
-        std::sync::Arc::new(Float32Array::from_iter_values(rows.iter().map(|r| r.lowest_angle))),
-        std::sync::Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.lowest_agl))),
-        std::sync::Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.lowest_distance))),
-        std::sync::Arc::new(UInt16Array::from_iter_values(rows.iter().map(|r| r.max_distance))),
+        std::sync::Arc::new(UInt32Array::from_iter_values(rows.iter().map(|r| r.count))),
     ];
-    for band in 0..HORIZON_DISTANCE_BANDS_KM.len() {
-        // from_iter over Options yields a nullable array: null = no cells in band
+    for j in 0..HORIZON_MAX_BREAKPOINTS {
+        // from_iter over Options yields nullable arrays: null = no breakpoint
         columns.push(std::sync::Arc::new(Float32Array::from_iter(
-            rows.iter().map(|r| r.band_angles[band]),
+            rows.iter().map(|r| r.breakpoints.get(j).map(|p| p.distance_km)),
+        )));
+        columns.push(std::sync::Arc::new(Float32Array::from_iter(
+            rows.iter().map(|r| r.breakpoints.get(j).map(|p| p.angle)),
         )));
     }
-    columns.push(std::sync::Arc::new(UInt32Array::from_iter_values(rows.iter().map(|r| r.count))));
 
     let batch = RecordBatch::try_new(schema.clone(), columns)
         .map_err(|e| format!("RecordBatch error: {}", e))?;
@@ -2260,6 +2314,7 @@ fn write_station_json(
         obj.insert("uptime".to_string(), serde_json::json!(uptime));
         obj.insert("arrowRecords".to_string(), serde_json::json!(arrow_records));
         obj.insert("exportedAt".to_string(), serde_json::json!(now_epoch));
+        obj.insert("expiresAt".to_string(), serde_json::json!(station_meta.expires_at().map(|e| e.0)));
         if let Some(act) = day_activity {
             obj.insert("activity".to_string(), serde_json::to_value(act).unwrap_or_default());
         }
@@ -2963,6 +3018,38 @@ mod tests {
     }
 
     #[test]
+    fn test_test_stations_expire_early_without_tripping_valve() {
+        let mgr = StationManager::new_for_test();
+        for i in 0..5 {
+            add_station(&mgr, &format!("FRESH{}", i), FRESH_PACKET, true);
+        }
+        // Silent 5 days: past the 2-day test expiry, well inside 31 days
+        let quiet = VALIDITY_NOW - 5 * 86400;
+        let backlog: Vec<StationId> = (0..5)
+            .map(|i| add_station(&mgr, &format!("LFLE-test{}", i), quiet, true))
+            .collect();
+        let active_test = add_station(&mgr, "TestRx", FRESH_PACKET, true);
+        let normal_quiet = add_station(&mgr, "QUIET", quiet, true);
+
+        let all = mgr.all_stations_with_global();
+        let v = evaluate_station_validity(&mgr, &all, VALIDITY_NOW);
+
+        // 5 test expiries vs 7 valid would fire the valve if counted
+        assert!(v.need_purge);
+        for id in &backlog {
+            assert!(v.newly_invalid.contains(id));
+            assert!(!v.rollup_valid.contains(id));
+        }
+        let s = get_station(&mgr, "LFLE-test0");
+        assert!(!s.valid);
+        assert_eq!(s.purge_reason.as_deref(), Some("expired"));
+
+        // Still-active test stations and quiet normal stations are untouched
+        assert!(v.valid.contains(&active_test));
+        assert!(v.valid.contains(&normal_quiet));
+    }
+
+    #[test]
     fn test_extract_h3_from_db_key() {
         assert_eq!(
             extract_h3_from_db_key("c/0042/8828308283fffff"),
@@ -3118,6 +3205,8 @@ mod tests {
             let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
             let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
             let mut rec = CoverageRecord::new(BufferType::Station);
+            // Two packets: single-packet cells are excluded from the envelope
+            rec.update(1000, 500, 2, 28, 5);
             rec.update(1000, 500, 2, 28, 5);
             db.put(key.as_bytes(), &rec.to_bytes()).unwrap();
             db.flush().unwrap();
@@ -3148,31 +3237,52 @@ mod tests {
         assert_eq!(files[1].acc_type, AccumulatorType::Year);
         assert_eq!(files[2].acc_type, AccumulatorType::YearNz);
 
-        // Combined feeds the 868 group; the cell is due north of the station
+        // Combined feeds the 868 group; the cell is due north of the station,
+        // ~500m above it at ~20km: a single ~1.4 deg breakpoint
         for file in &files {
             assert!(!file.rows.is_empty());
             for row in &file.rows {
                 assert_eq!(row.frequency, 868);
                 assert!(row.bearing < 2.0 || row.bearing > 358.0, "bearing {}", row.bearing);
-                assert_eq!(row.lowest_agl, 500);
+                assert_eq!(row.breakpoints.len(), 1);
+                assert!((row.breakpoints[0].distance_km - 20.0).abs() < 1.0);
+                assert!((1.0..2.0).contains(&row.breakpoints[0].angle), "angle {}", row.breakpoints[0].angle);
             }
         }
 
         // Write one out and read it back
         let out_dir = tmp.path().join("out").to_string_lossy().to_string();
         std::fs::create_dir_all(&out_dir).unwrap();
+        let hmeta = collector.meta();
+        assert!(!hmeta.skyline_filtered);
         let hf = &files[0];
         let written = write_arrow_horizon(
-            &out_dir, "TESTHZSTATION", hf.acc_type.name(), &hf.file_id, &hf.rows,
+            &out_dir, "TESTHZSTATION", hf.acc_type.name(), &hf.file_id, &hf.rows, &hmeta,
         ).unwrap();
         assert_eq!(written, hf.rows.len());
         let gz = format!("{}/TESTHZSTATION.month.2026-03.horizon.arrow.gz", out_dir);
         assert_eq!(count_arrow_rows(&gz), Some(hf.rows.len()));
 
+        // Schema: self-describing metadata + the bp column pairs
+        let file = std::fs::File::open(&gz).unwrap();
+        let reader = arrow::ipc::reader::StreamReader::try_new(
+            flate2::read::GzDecoder::new(std::io::BufReader::new(file)),
+            None,
+        )
+        .unwrap();
+        let schema = reader.schema();
+        assert_eq!(schema.metadata().get("stationLat").unwrap(), "47.000000");
+        assert_eq!(schema.metadata().get("stationElevation").unwrap(), "500.0");
+        assert_eq!(schema.metadata().get("stationAgl").unwrap(), "NaN");
+        assert_eq!(schema.metadata().get("maxBreakpoints").unwrap(), "5");
+        assert_eq!(schema.metadata().get("skylineFilter").unwrap(), "0");
+        assert!(schema.field_with_name("bp0Km").unwrap().is_nullable());
+        assert!(schema.field_with_name("bp4Angle").is_ok());
+
         // No shrink guard: a smaller replacement must overwrite
         let fewer = &hf.rows[..1];
         let rewritten = write_arrow_horizon(
-            &out_dir, "TESTHZSTATION", hf.acc_type.name(), &hf.file_id, fewer,
+            &out_dir, "TESTHZSTATION", hf.acc_type.name(), &hf.file_id, fewer, &hmeta,
         ).unwrap();
         assert_eq!(rewritten, 1);
         assert_eq!(count_arrow_rows(&gz), Some(1));

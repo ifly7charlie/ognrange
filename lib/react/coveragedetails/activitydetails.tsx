@@ -1,6 +1,6 @@
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer} from 'recharts';
 
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import graphcolours from '../graphcolours';
 import {formatEpoch, formatEpochDateOnly} from '../formatdate';

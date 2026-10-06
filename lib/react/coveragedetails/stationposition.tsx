@@ -1,4 +1,4 @@
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {formatEpoch} from '../formatdate';
 
 // Small static Mapbox map showing a pin at a location (~30km across at zoom 10)

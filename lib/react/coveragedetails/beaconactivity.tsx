@@ -1,5 +1,5 @@
 import {useMemo, useCallback} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import graphcolours from '../graphcolours';
 import {isSlotActive, SlotStrip, HourLabels} from './slotstrip';

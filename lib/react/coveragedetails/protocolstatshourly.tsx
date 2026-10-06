@@ -1,5 +1,5 @@
 import {useMemo} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer} from 'recharts';
 import type {ProtocolStatsApiResponse} from '../../common/protocolstats';
 import {INDIVIDUAL_LAYERS} from './protocolstatsutil';

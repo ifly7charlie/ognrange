@@ -46,6 +46,7 @@ interface StationJson {
     beaconActivity?: string;
     beaconActivityDate?: string;
     exportedAt?: number;
+    expiresAt?: number | null;
     uptime?: number | null;
     arrowRecords?: number;
 }
@@ -110,7 +111,8 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
         outputDate: latest.outputDate,
         lastOutputEpoch: latest.lastOutputEpoch,
         lastOutputFile: latest.lastOutputFile,
-        exportedAt: latest.exportedAt
+        exportedAt: latest.exportedAt,
+        expiresAt: latest.expiresAt
     };
 
     // Max fields
@@ -250,6 +252,8 @@ export default async function handler(req, res) {
         if (fileParam && !isLatestFile(stationDir, stationName, fileParam)) {
             // Historical period — return only the dated file data (no station metadata)
             const datedData = readStationFile(join(stationDir, `${stationName}.${fileParam}.json`));
+            // Expiry as of that period is meaningless now
+            if (datedData) delete datedData.expiresAt;
             res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
             res.status(200).json(datedData ?? {});
             return;

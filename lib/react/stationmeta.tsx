@@ -3,8 +3,7 @@ import {NEXT_PUBLIC_DATA_URL} from '../common/config';
 import {createContext, useContext, useEffect, useMemo, useCallback, useState, useRef} from 'react';
 import {useSearchParams} from 'next/navigation';
 
-import {ArrowLoader} from '@loaders.gl/arrow';
-import {load} from '@loaders.gl/core';
+import {columnsFromArrow} from './arrowtable';
 
 import {Layer, LAYER_BIT, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
 
@@ -141,30 +140,37 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
     }, [applyFilters]);
 
     useEffect(() => {
-        load(`${props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations/stations.${file}.arrow`, ArrowLoader)
-            .then((result) => {
-                const data = (result as any).data as StationMeta;
-                console.log('setting station meta for', file, 'with', data.id.length, 'stations');
+        const dataUrl = props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL;
+
+        // null means 'not there' so the caller can try the older layout
+        const loadStations = async (url: string): Promise<StationMeta | null> => {
+            const response = await fetch(url);
+            if (!response.ok) {
+                if (response.status === 404) return null;
+                throw new Error(`${url} (${response.status} ${response.statusText})`);
+            }
+            return columnsFromArrow(await response.arrayBuffer()) as StationMeta;
+        };
+
+        (async () => {
+            try {
+                let data = await loadStations(`${dataUrl}stations/stations.${file}.arrow`);
+                if (data) {
+                    console.log('setting station meta for', file, 'with', data.id.length, 'stations');
+                } else {
+                    // Fallback to the old style if it's not found
+                    data = await loadStations(`${dataUrl}stations.arrow`);
+                    if (!data) return;
+                    console.log('setting station meta', data.id.length, 'stations');
+                }
+                data.length = data.id.length;
                 unfilteredListRef.current = data;
                 setUnfilteredList(data);
                 applyFilters(data);
-            })
-            .catch((e) => {
-                if (e.message.match(/arrow \(404\)/)) {
-                    // Fallback to the old style if it's not found
-                    return load(`${props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}stations.arrow`, ArrowLoader)
-                        .then((result) => {
-                            const data = (result as any).data as StationMeta;
-                            console.log('setting station meta', data.id.length, 'stations');
-                            unfilteredListRef.current = data;
-                            setUnfilteredList(data);
-                            applyFilters(data);
-                        })
-                        .catch((e) => {
-                            console.log('Error loading stations.arrow (fallback)', e);
-                        });
-                }
-            });
+            } catch (e) {
+                console.log('Error loading station metadata', e);
+            }
+        })();
     }, [file]);
 
     const contextValue = useMemo(() => ({filteredList, unfilteredList}), [filteredList, unfilteredList]);

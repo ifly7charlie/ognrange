@@ -1,7 +1,8 @@
 import {useCallback, useEffect, useState} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import {groundUrl} from './coveragedetails/grounddata';
+import {floorHorizonFileFor} from '../common/floor';
 import type {FloorDisc} from './floordata';
 
 // Loads the coverage-floor disc for the selected station via floorworker.ts.
@@ -15,26 +16,6 @@ import type {FloorDisc} from './floordata';
 // request lifecycle is fully owned by one effect run, so StrictMode's dev
 // double-mount (or an HMR remount) mid-load just cancels and retries instead
 // of deadlocking on a ref that survived the remount
-
-// The receive-horizon file backing the floor for the viewed period. Horizon
-// files exist for month/year/yearnz, but the floor always uses a year-scale
-// horizon (the terrain doesn't change and the yearly minimum is the best
-// estimate): current periods use the year/yearnz symlink, a past year its
-// dated (frozen) file
-export function floorHorizonFileFor(dateStart: string | undefined): string {
-    if (dateStart === 'yearnz') {
-        return 'yearnz';
-    }
-    const nz = dateStart?.match(/^(\d{4})nz$/);
-    if (nz) {
-        return `yearnz.${nz[1]}nz`;
-    }
-    const dated = dateStart?.match(/^(\d{4})(-\d{2})?(-\d{2})?$/);
-    if (dated) {
-        return `year.${dated[1]}`;
-    }
-    return 'year';
-}
 
 interface FloorProgress {
     phase: 'fetch' | 'compute';

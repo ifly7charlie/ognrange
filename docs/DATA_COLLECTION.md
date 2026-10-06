@@ -71,15 +71,15 @@ The station details panel shows a *receive horizon* chart: for each compass dire
 
 ### How the angles are computed
 
-The circle around the station is divided into 720 half-degree bearing bins. Every coverage cell contributes its lowest received point: the elevation angle is calculated from that point's altitude relative to the station's own ground elevation, over the direct distance, with a standard-refraction (k=4/3) earth-curvature correction. Each bin then keeps the *minimum* angle seen — overall ("Any distance", the dark line) and separately within each distance band (≤5, 5–10, 10–20, 20–30, 30–50 and 50–90 km).
+The circle around the station is divided into 720 half-degree bearing bins. Every coverage cell contributes its lowest received point: the elevation angle is calculated from that point's altitude relative to the station's antenna viewpoint, over the direct distance, with a standard-refraction (k=4/3) earth-curvature correction.
 
-Because every band applies the same minimum-angle rule, the "Any distance" line is the lower envelope of the band lines. The one exception: cells between 90 and 120 km belong to no band, so a minimum found out there appears only in the "Any distance" line — the tooltip's "Lowest cell" entry shows its distance.
+Each bin keeps a monotone **envelope** of up to five (distance, angle) breakpoints — the surviving cells are the ones no other cell beats by being both farther away *and* lower-angle. Reception proven at an angle holds at every closer distance too (same angle, stronger signal), so the envelope reads as a staircase: "proven down to this angle out to this distance", rising step by step with distance. The chart draws one line per step; because the envelope only rises, outer steps always plot at or above inner ones, and hovering a bearing lists that bearing's actual steps ("0.33° out to 40 km") rather than a fixed set of distance bands.
 
-To keep one corrupted packet from wrecking the chart, cells are excluded when they are closer than 2 km or further than 120 km from the station, or when their angle falls outside −3° to +50° (below that floor the reported altitude is under any plausible terrain; above the ceiling the cell is nearly overhead and says nothing about the horizon).
+To keep corrupted packets from wrecking the chart, cells are excluded when they are closer than 5 km (received below the true skyline on near-field signal strength alone) or further than 120 km from the station, when their angle falls outside −3° to +50°, when the cell only ever heard a single packet, or — once the station's terrain horizon has been computed — when they claim reception more than 0.25° below the terrain skyline at their distance, which is physically implausible and marks a corrupt position or altitude.
 
-### Height ranges in the tooltip
+### Likely coverage extension
 
-Hovering a bearing shows, next to each band's angle, the height window that angle corresponds to across the band's distance range — for example `5–10 km: 2.21° (190–390 m above station)` means an aircraft at the band's near edge becomes visible about 190 m above the station's elevation, rising to about 390 m at the far edge. These are computed with the same curvature correction used for the angles, and are relative to the station's ground elevation, not sea level; negative values mean below station level, which is normal over falling terrain.
+The coverage-floor map compares the envelope against the terrain skyline on each bearing: the smallest gap between any proven breakpoint and the skyline at its distance is that bearing's *measured margin*. Where the margin is small the receiver demonstrably hears down to its physical horizon, so the absence of low receptions further out is traffic distribution, not radio — the likely floor follows the skyline plus that margin instead of jumping to the angle of whatever high-flying traffic happened to be heard far away. Bearings that only ever heard high traffic keep a large margin and stay evidence-bound. Floors set by this extension rather than by a proven breakpoint are flagged in the cell details.
 
 ### Frequencies and periods
 
@@ -97,9 +97,9 @@ A receiver that connects to the APRS-IS network and sends its own beacon announc
 
 During each rollup, ognrange checks every known station against two expiry conditions:
 
-- **Inactivity**: if a station's last packet or last beacon is older than `STATION_EXPIRY_TIME_DAYS` (default: 31 days), it is marked expired and its coverage database is deleted.
+- **Inactivity**: if a station's last packet or last beacon is older than `STATION_EXPIRY_TIME_DAYS` (default: 31 days), it is marked expired and its coverage database is deleted. Stations with "test" as a word in their callsign (`TEST1`, `LFLE-test`, `MyTestRx`, but not `Contest` or `Testwood`) use the shorter `TEST_STATION_EXPIRY_TIME_DAYS` (default: 2 days).
 - **Relocation**: if a station's position moves significantly, ognrange tracks both old and new locations. Once the old location has been silent for `STATION_MOVE_CONFIRM_DAYS` (default: 7 days), the old coverage data is purged.
 
-A safety valve prevents mass data loss: if more than 2% of active stations would expire in a single rollup — which can happen if the server loses connectivity for an extended period — the purge is deferred and re-evaluated at the next rollup.
+A safety valve prevents mass data loss: if more than 2% of active stations would expire in a single rollup — which can happen if the server loses connectivity for an extended period — the purge is deferred and re-evaluated at the next rollup. Test-station expiries don't count towards that 2%, so retiring a backlog of quiet test receivers can't trip it.
 
 After purge, the station's metadata record (name, last known location, purge reason, purge timestamp) is retained. Only the coverage data (H3 observation records) is deleted.

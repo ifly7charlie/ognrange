@@ -9,7 +9,7 @@ import {
     ResponsiveContainer
 } from 'recharts';
 
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import {findIndex as _findIndex, reduce as _reduce, debounce as _debounce, map as _map} from 'lodash';
 

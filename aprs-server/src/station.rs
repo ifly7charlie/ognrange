@@ -11,7 +11,10 @@ use std::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::bitvec::{bitvec_to_hex, hex_to_bitvec, slot_from_timestamp};
-use crate::config::{DB_PATH, OUTPUT_PATH, STATION_MOVE_THRESHOLD_KM};
+use crate::config::{
+    DB_PATH, OUTPUT_PATH, STATION_EXPIRY_TIME_SECS, STATION_MOVE_THRESHOLD_KM,
+    TEST_STATION_EXPIRY_TIME_SECS,
+};
 use crate::db::TrackedDb;
 use crate::types::{Epoch, StationId, StationName};
 
@@ -117,6 +120,16 @@ pub struct StationDetails {
     /// Consecutive packets at locations matching neither primary nor previous
     #[serde(default)]
     pub new_location_count: u16,
+    /// Consecutive packets at `previous_location` with no packet at the
+    /// primary in between - at 3 the station is treated as having returned
+    #[serde(default)]
+    pub previous_location_count: u16,
+    /// The current primary was established by a move that rollup confirmed
+    /// (and purged for). Decides what a return to the previous location
+    /// means: confirmed → a genuine move back (rotate, re-confirm, purge);
+    /// unconfirmed → an aborted excursion (settle back, no purge)
+    #[serde(default)]
+    pub move_confirmed: bool,
     /// Epoch when the station's coverage data was last purged
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purged_at: Option<Epoch>,
@@ -164,6 +177,27 @@ pub struct StationDetails {
     pub layers: Vec<String>,
 }
 
+impl StationDetails {
+    /// Last packet (or, failing that, beacon) - the activity that keeps a
+    /// station from expiring
+    pub fn last_activity(&self) -> Option<Epoch> {
+        self.last_packet.or(self.last_beacon)
+    }
+
+    /// When rollup will expire the station if nothing more is heard:
+    /// last activity plus STATION_EXPIRY_TIME_DAYS, or the shorter
+    /// TEST_STATION_EXPIRY_TIME_DAYS for test callsigns. None = no activity
+    /// yet, which never expires
+    pub fn expires_at(&self) -> Option<Epoch> {
+        let mut period = *STATION_EXPIRY_TIME_SECS;
+        if crate::ignore_station::is_test_station(self.station.as_str()) {
+            period = period.min(*TEST_STATION_EXPIRY_TIME_SECS);
+        }
+        self.last_activity()
+            .map(|e| Epoch(e.0.saturating_add(period.min(u32::MAX as u64) as u32)))
+    }
+}
+
 /// Station status manager with thread-safe access.
 /// DB writes are serialized through a channel to a dedicated writer thread.
 pub struct StationManager {
@@ -172,6 +206,8 @@ pub struct StationManager {
     next_id: AtomicU16,
     db_path: String,
     write_tx: std::sync::mpsc::Sender<DbWrite>,
+    /// Writer thread, joined by close() so queued writes land before exit
+    writer: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
     case_insensitive: bool,
 }
 
@@ -189,6 +225,7 @@ impl StationManager {
             next_id: AtomicU16::new(1),
             db_path: db_path.clone(),
             write_tx,
+            writer: std::sync::Mutex::new(None),
             case_insensitive,
         };
 
@@ -203,7 +240,7 @@ impl StationManager {
 
         // Spawn the writer thread which takes over the DB lock
         let writer_db_path = db_path;
-        std::thread::spawn(move || {
+        let writer = std::thread::spawn(move || {
             let mut db = match TrackedDb::open(&writer_db_path, true) {
                 Ok(db) => db,
                 Err(e) => {
@@ -228,6 +265,7 @@ impl StationManager {
                 }
             }
         });
+        *manager.writer.lock().unwrap() = Some(writer);
 
         manager
     }
@@ -373,6 +411,8 @@ impl StationManager {
             bouncing: false,
             mobile: false,
             new_location_count: 0,
+            previous_location_count: 0,
+            move_confirmed: false,
             purged_at: None,
             purge_reason: None,
             last_seen_at_primary: None,
@@ -476,6 +516,7 @@ impl StationManager {
             next_id: AtomicU16::new(1),
             db_path: String::new(),
             write_tx,
+            writer: std::sync::Mutex::new(None),
             case_insensitive: false,
         }
     }
@@ -527,6 +568,7 @@ impl StationManager {
             }
             details.last_seen_at_primary = Some(timestamp);
             details.new_location_count = 0;
+            details.previous_location_count = 0;
             if details.mobile {
                 info!("{} appears to have stopped moving", name);
                 details.mobile = false;
@@ -539,19 +581,52 @@ impl StationManager {
         // 2. At previous location - bouncing between two known locations.
         // This packet's altitude is deliberately ignored: a bouncing
         // partner's beacon must not clobber the primary site's
-        // beacon_altitude and churn the ground-horizon file
+        // beacon_altitude and churn the ground-horizon file.
+        // A sustained run at the previous location (no primary packets in
+        // between) means the station has gone back there, so it becomes the
+        // primary again - otherwise an A→B→A relocation leaves the abandoned
+        // B as primary forever, with A refreshed as "previous"
         else if dist_previous <= threshold {
             details.last_seen_at_previous = Some(timestamp);
             details.bouncing = true;
             details.new_location_count = 0;
+            details.previous_location_count += 1;
             if details.mobile {
                 info!("{} appears to have stopped moving", name);
                 details.mobile = false;
+            }
+
+            if details.previous_location_count >= 3 {
+                if details.move_confirmed {
+                    // The move to the current primary was confirmed and
+                    // purged, so this is a genuine move back: rotate, and
+                    // rollup confirms it once the abandoned site ages out
+                    info!("{} has moved back to its previous location", name);
+                    std::mem::swap(&mut details.primary_location, &mut details.previous_location);
+                    std::mem::swap(&mut details.last_seen_at_primary, &mut details.last_seen_at_previous);
+                } else {
+                    // Returned before the move was confirmed: an aborted
+                    // excursion, settle back with nothing to purge
+                    info!("{} has returned to its previous location, move abandoned", name);
+                    details.primary_location = details.previous_location;
+                    details.last_seen_at_primary = details.last_seen_at_previous;
+                    details.bouncing = false;
+                }
+                details.previous_location_count = 0;
+                details.move_confirmed = false;
+                // Same as a rotation: site-specific data belongs to the
+                // abandoned primary
+                details.elevation = None;
+                details.ground_horizon_pos = None;
+                details.ground_horizon_beacon = None;
+                details.beacon_altitude = altitude;
             }
         }
         // 3. Neither location - new location
         else {
             details.new_location_count += 1;
+            details.previous_location_count = 0;
+            details.move_confirmed = false;
 
             if details.new_location_count >= 3 {
                 if !details.mobile {
@@ -672,6 +747,9 @@ impl StationManager {
             self.persist(details);
         }
         let _ = self.write_tx.send(DbWrite::Shutdown);
+        if let Some(writer) = self.writer.lock().unwrap().take() {
+            let _ = writer.join();
+        }
     }
 
     /// Get all station details
@@ -723,6 +801,7 @@ impl StationManager {
             let obj = json.as_object_mut().unwrap();
             obj.insert("uptime".to_string(), serde_json::json!(uptime));
             obj.insert("exportedAt".to_string(), serde_json::json!(now_epoch));
+            obj.insert("expiresAt".to_string(), serde_json::json!(meta.expires_at().map(|e| e.0)));
             // Internal rollover stash, not part of the export format
             obj.remove("beaconActivityPrev");
             obj.remove("beaconActivityPrevDate");
@@ -791,6 +870,8 @@ impl StationManager {
             bouncing: false,
             mobile: false,
             new_location_count: 0,
+            previous_location_count: 0,
+            move_confirmed: false,
             purged_at: None,
             purge_reason: None,
             last_seen_at_primary: None,
@@ -883,6 +964,8 @@ mod tests {
             bouncing: false,
             mobile: false,
             new_location_count: 0,
+            previous_location_count: 0,
+            move_confirmed: false,
             purged_at: None,
             purge_reason: None,
             last_seen_at_primary: None,
@@ -1134,6 +1217,95 @@ mod tests {
         assert!(!s.mobile);
         assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
         assert_eq!(s.last_seen_at_primary, Some(Epoch(6000)));
+    }
+
+    #[test]
+    fn test_aborted_move_returns_to_previous() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Established at LOC_A, accidentally moved to LOC_B, then back
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(4000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(5000), "raw");
+        let s = get_station(&mgr, "TEST");
+        // Two packets back is not yet a return - still bouncing
+        assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.previous_location_count, 2);
+
+        // Third consecutive packet at LOC_A: settles back, LOC_B forgotten
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(6000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.previous_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(6000)));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(6000)));
+        assert!(!s.bouncing);
+        assert!(!s.move_confirmed);
+        assert_eq!(s.previous_location_count, 0);
+        assert_eq!(s.beacon_altitude, Some(240.0));
+        assert_eq!(s.elevation, None);
+
+        // And it's then just a stationary station at LOC_A
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(7000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert!(!s.bouncing);
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(7000)));
+    }
+
+    #[test]
+    fn test_confirmed_move_back_rotates() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+
+        // Rollup confirms the move to LOC_B (see evaluate_station_validity)
+        let mut s = get_station(&mgr, "TEST");
+        s.bouncing = false;
+        s.move_confirmed = true;
+        mgr.update(&s);
+
+        for ts in [3000, 4000, 5000] {
+            mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(ts), "raw");
+        }
+        let s = get_station(&mgr, "TEST");
+        // Rotated with timestamps: LOC_B now ages out as previous, so rollup
+        // confirms (and purges) the move back
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.previous_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(5000)));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(2000)));
+        assert!(s.bouncing);
+        assert!(!s.move_confirmed);
+    }
+
+    #[test]
+    fn test_bouncing_short_runs_keep_primary() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+
+        // Shared callsign with uneven interleave: runs of two at LOC_A
+        let mut ts = 3000;
+        for _ in 0..5 {
+            for loc in [LOC_A, LOC_A, LOC_B] {
+                mgr.check_station_moved(&name, loc.0, loc.1, None, Epoch(ts), "raw");
+                ts += 100;
+            }
+        }
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.previous_location, Some([LOC_A.0, LOC_A.1]));
+        assert!(s.bouncing);
     }
 
     #[test]

@@ -461,6 +461,10 @@ STATION_MOVE_CONFIRM_DAYS=7
 # delete all the history
 STATION_EXPIRY_TIME_DAYS=31
 
+# Stations with "test" as a word in their callsign (TEST1, LFLE-test, MyTestRx
+# - not Contest or Testwood) expire after this much silence instead
+TEST_STATION_EXPIRY_TIME_DAYS=2
+
 
 # ROLLUP is when the current accumulators are merged with the daily/monthly/annual
 # accumulators. All are done at the same time and the accumulators are 'rolled'

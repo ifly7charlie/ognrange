@@ -69,7 +69,7 @@ self.onmessage = async (e: MessageEvent<FloorWorkerRequest>) => {
         }
         self.postMessage(
             {type: 'result', requestId, ...disc}, //
-            [disc.h3lo.buffer, disc.h3hi.buffer, disc.ground.buffer, disc.terrainFloor.buffer, disc.coverageFloor.buffer, disc.terrainAngle.buffer, disc.receiveAngle.buffer] as unknown as Transferable[]
+            [disc.h3lo.buffer, disc.h3hi.buffer, disc.ground.buffer, disc.terrainFloor.buffer, disc.coverageFloor.buffer, disc.terrainAngle.buffer, disc.receiveAngle.buffer, disc.receiveExtended.buffer] as unknown as Transferable[]
         );
     } catch (err) {
         console.log(`floorworker: ${err}`);

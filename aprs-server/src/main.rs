@@ -138,6 +138,13 @@ async fn main() {
         warn!("*** Case insensitive file system - data may be merged unexpectedly");
     }
 
+    // One-shot maintenance commands - run instead of the server
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--list-expired" || a == "--purge-expired") {
+        expired_stations_command(case_insensitive, args.iter().any(|a| a == "--purge-expired"));
+        return;
+    }
+
     // Initialise core state
     let acc = accumulators::initialise_accumulators();
     info!(
@@ -274,6 +281,87 @@ async fn main() {
         std::process::exit(1);
     }
     info!("Shutdown complete");
+}
+
+/// `--list-expired` / `--purge-expired`: list every expired station (same
+/// expires_at rule as rollup) and whether its database is still on disk, and
+/// with --purge-expired delete those databases. Clears the backlog that
+/// rollup never purges: it only purges stations expiring THIS cycle, and the
+/// >2% safety valve skips a mass-expiry cycle entirely, so stations expired
+/// before (or during a valve cycle) keep their DBs forever. Output files are
+/// kept, as for a rollup expiry. The server must be stopped - the status DB
+/// lock makes StationManager::new exit if it is running.
+fn expired_stations_command(case_insensitive: bool, purge: bool) {
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as u32;
+    let fmt = |e: Option<Epoch>| {
+        e.and_then(|e| chrono::DateTime::from_timestamp(e.0 as i64, 0))
+            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "-".to_string())
+    };
+
+    let station_manager = StationManager::new(case_insensitive);
+    let storage = Storage::new();
+
+    let mut expired: Vec<StationDetails> = station_manager
+        .all_stations()
+        .into_iter()
+        .filter(|s| s.expires_at().is_some_and(|e| e.0 <= now_epoch))
+        .collect();
+    expired.sort_by_key(|s| s.last_activity().map(|e| e.0));
+
+    println!("{:<12} {:<16} {:<5} {:<3} {:<16} {}", "station", "last activity", "valid", "db", "purged at", "reason");
+    let mut with_db = 0usize;
+    let mut purged = 0usize;
+    for station in &expired {
+        let name = station.station.as_str();
+        let has_db = storage.station_path(name).exists();
+        println!(
+            "{:<12} {:<16} {:<5} {:<3} {:<16} {}",
+            name,
+            fmt(station.last_activity()),
+            station.valid,
+            if has_db { "yes" } else { "no" },
+            fmt(station.purged_at),
+            station.purge_reason.as_deref().unwrap_or("-"),
+        );
+        if has_db {
+            with_db += 1;
+        }
+        if !purge || (!has_db && !station.valid) {
+            continue;
+        }
+
+        let mut updated = station.clone();
+        updated.valid = false;
+        if has_db {
+            storage.purge_station(name); // error-logged on failure
+            if storage.station_path(name).exists() {
+                continue;
+            }
+            purged += 1;
+            updated.purged_at = Some(Epoch(now_epoch));
+            updated.purge_reason = Some("expired".into());
+        }
+        station_manager.update(&updated);
+    }
+
+    println!();
+    println!(
+        "{} expired stations of {}, {} with a database on disk",
+        expired.len(),
+        station_manager.all_stations().len(),
+        with_db
+    );
+    if purge {
+        println!("purged {} station databases", purged);
+    } else if with_db > 0 {
+        println!("run with --purge-expired to delete them");
+    }
+
+    station_manager.close();
 }
 
 /// Initialise the tracing subscriber with optional stdout and syslog layers.

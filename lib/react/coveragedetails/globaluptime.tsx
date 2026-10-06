@@ -1,6 +1,6 @@
 import {useMemo, useCallback} from 'react';
 import useSWR from 'swr';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import graphcolours from '../graphcolours';
 import {SlotStrip, HourLabels} from './slotstrip';

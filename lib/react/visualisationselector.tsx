@@ -1,5 +1,5 @@
 import {useMemo, useCallback, useEffect} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import Select from 'react-select';
 import {Layer, layerMaskFromSet, ALL_LAYER_NAMES, PRESENCE_ONLY} from '../common/layers';

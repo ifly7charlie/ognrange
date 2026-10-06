@@ -1,7 +1,7 @@
 import {useState, useCallback, useEffect, useMemo} from 'react';
 import useSWR from 'swr';
 
-import {useTranslation, Trans} from 'next-i18next';
+import {useTranslation, Trans} from 'next-i18next/pages';
 
 import type {ProtocolStatsApiResponse, GlobalUptimeHistoryEntry} from '../common/protocolstats';
 import {dateBounds} from '../common/datebounds';
@@ -37,7 +37,7 @@ import {GroundDetails, FloorProfileChart} from './coveragedetails/grounddetails'
 import type {HorizonHover} from './coveragedetails/horizondata';
 import {elevationAngleDeg} from './coveragedetails/horizondata';
 import {initialBearingDeg} from './floordata';
-import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, floorFrequencyFor} from '../common/floor';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, RECEIVE_PROVEN, RECEIVE_BEYOND_PROVEN, floorFrequencyFor} from '../common/floor';
 import {capabilityRange, CAPABILITY_MAX_RANGE_KM, CAPABILITY_MIN_RANGE_KM} from '../common/capability';
 import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
 import {GlobalUptimeCard} from './coveragedetails/globaluptime';
@@ -46,6 +46,10 @@ import {StationStatsDashboard, StationHourlyDetailChart} from './coveragedetails
 import {formatEpoch} from './formatdate';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
+
+// Flag a station's pending expiry once it's this close (test stations, with
+// their 2-day expiry, are always inside it)
+const EXPIRY_WARNING_SECS = 7 * 86400;
 
 // Readout for a hovered coverage-floor cell, shared between the tooltip and
 // the details panel. All values come straight off the computed disc
@@ -84,13 +88,16 @@ function FloorDetailsBody({details, station, visualisation}: {details: import('.
                     <br />
                     {emphasise(terrainActive, t('floor.terrain', {msl: details.terrainFloor, agl: agl(details.terrainFloor)}))}
                     <br />
-                    {details.receiveAngle != null
-                        ? t('floor.angles', {terrain: details.terrainAngle?.toFixed(2), receive: details.receiveAngle.toFixed(2)})
-                        : t('floor.anglesNoReceive', {terrain: details.terrainAngle?.toFixed(2)})}
+                    {details.receiveAngle != null ? t('floor.angles', {terrain: details.terrainAngle?.toFixed(2), receive: details.receiveAngle.toFixed(2)}) : t('floor.anglesNoReceive', {terrain: details.terrainAngle?.toFixed(2)})}
                     <br />
-                    {coverageKnown
-                        ? emphasise(!terrainActive, t('floor.coverage', {msl: details.coverageFloor, agl: agl(details.coverageFloor)}))
-                        : emphasise(!terrainActive, t('floor.coverageUnknown'))}
+                    {coverageKnown ? emphasise(!terrainActive, t('floor.coverage', {msl: details.coverageFloor, agl: agl(details.coverageFloor)})) : emphasise(!terrainActive, t('floor.coverageUnknown'))}
+                    {!terrainActive && coverageKnown && details.receiveExtended !== RECEIVE_PROVEN ? (
+                        <>
+                            <br />
+                            {/* Nothing was proven at this distance: either the skyline+margin extension set the floor, or the furthest breakpoint's angle is being carried outward past it */}
+                            <i>{t(details.receiveExtended === RECEIVE_BEYOND_PROVEN ? 'floor.beyondProven' : 'floor.extended')}</i>
+                        </>
+                    ) : null}
                     {displayedFloor !== FLOOR_UNKNOWN && displayedFloor > details.stationGround + FLOOR_DISPLAY_MAX_M ? (
                         <>
                             <br />
@@ -287,11 +294,7 @@ export function CoverageDetails({
     const isRange = dateRange && dateRange.start !== dateRange.end;
 
     // Always use the API for station details
-    const stationDetailsUrl = !h3 && station
-        ? isRange
-            ? `/api/station/${station}/details?dateStart=${dateRange.start}&dateEnd=${dateRange.end}`
-            : `/api/station/${station}/details?file=${file}`
-        : null;
+    const stationDetailsUrl = !h3 && station ? (isRange ? `/api/station/${station}/details?dateStart=${dateRange.start}&dateEnd=${dateRange.end}` : `/api/station/${station}/details?file=${file}`) : null;
 
     const {data: stationDataRaw} = useSWR(stationDetailsUrl, fetcher);
 
@@ -362,7 +365,7 @@ export function CoverageDetails({
                 <br style={{clear: 'both'}} />
                 <FloorDetailsBody details={details} station={station} visualisation={visualisation} />
                 <hr />
-                <FloorProfileChart details={details} station={station} visualisation={visualisation} maxRangeKm={maxRangeKm} env={env} />
+                <FloorProfileChart details={details} station={station} visualisation={visualisation} maxRangeKm={maxRangeKm} dateStart={dateRange?.start || file} layers={layers?.join(',')} env={env} />
             </div>
         );
     }
@@ -407,14 +410,7 @@ export function CoverageDetails({
                 ) : null}
                 <br style={{clear: 'both'}} />
                 <hr />
-                {showTabs ? (
-                    <LayerTabs
-                        tabs={tabKeys}
-                        selectedTab={selectedLayer}
-                        setSelectedTab={setSelectedLayer}
-                        hasData={(tab) => !!byDay?.layers?.[tab]}
-                    />
-                ) : null}
+                {showTabs ? <LayerTabs tabs={tabKeys} selectedTab={selectedLayer} setSelectedTab={setSelectedLayer} hasData={(tab) => !!byDay?.layers?.[tab]} /> : null}
                 <AvailableFiles station={station || 'global'} setFile={setFile} displayType={displayType} layer={selectedLayer} />
                 {showTabs && byDay && !activeByDay?.length ? (
                     <p style={{color: 'gray', fontStyle: 'italic'}}>{t('no_layer_data', {layer: tLayer(selectedLayer, selectedLayer)})}</p>
@@ -468,23 +464,22 @@ export function CoverageDetails({
                         <hr />
                     </>
                 ) : null}
+                {stationData?.expiresAt && stationData.expiresAt - Date.now() / 1000 < EXPIRY_WARNING_SECS ? (
+                    <>
+                        <hr />
+                        <b>{'⏳ '}{t('expiry.title')}</b>
+                        <br />
+                        {t(stationData.expiresAt * 1000 <= Date.now() ? 'expiry.expired' : 'expiry.pending', {when: formatEpoch(stationData.expiresAt)})}
+                        <hr />
+                    </>
+                ) : null}
                 <ActivityDetails activity={stationData?.activity} />
                 <UptimeBar uptime={stationData?.uptime} />
                 <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} exportedAt={stationData?.exportedAt} />
                 <HorizonDetails station={station} period={dateRange?.start || file} env={env} setHorizonHover={setHorizonHover} groundHoverBearing={horizonHover?.source === 'ground' ? horizonHover.bearing : null} />
                 <GroundDetails station={station} horizonHover={horizonHover} setHorizonHover={setHorizonHover} beaconAltitude={stationData?.beaconAltitude ?? null} maxRangeKm={maxRangeKm} env={env} />
-                <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>
-                    {capRange.modelKm == null
-                        ? t('ground.capability_none', {max: CAPABILITY_MAX_RANGE_KM})
-                        : capRange.clamped === 'max'
-                          ? t('ground.capability_max', {db: capabilityDb!.toFixed(1), model: Math.round(capRange.modelKm), max: CAPABILITY_MAX_RANGE_KM})
-                          : capRange.clamped === 'min'
-                            ? t('ground.capability_min', {db: capabilityDb!.toFixed(1), model: Math.max(1, Math.round(capRange.modelKm)), min: CAPABILITY_MIN_RANGE_KM})
-                            : t('ground.capability', {db: capabilityDb!.toFixed(1), km: Math.round(capRange.km)})}
-                </div>
-                {serverUptimePercent != null && serverUptimePercent < 100 && (
-                    <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />
-                )}
+                <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>{capRange.modelKm == null ? t('ground.capability_none', {max: CAPABILITY_MAX_RANGE_KM}) : capRange.clamped === 'max' ? t('ground.capability_max', {db: capabilityDb!.toFixed(1), model: Math.round(capRange.modelKm), max: CAPABILITY_MAX_RANGE_KM}) : capRange.clamped === 'min' ? t('ground.capability_min', {db: capabilityDb!.toFixed(1), model: Math.max(1, Math.round(capRange.modelKm)), min: CAPABILITY_MIN_RANGE_KM}) : t('ground.capability', {db: capabilityDb!.toFixed(1), km: Math.round(capRange.km)})}</div>
+                {serverUptimePercent != null && serverUptimePercent < 100 && <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />}
                 <br />
                 {displayStats ? (
                     <>
@@ -499,26 +494,10 @@ export function CoverageDetails({
                                 ))}
                             </tbody>
                         </table>
-                        {stationData?.stats?.hourly && Object.keys(stationData.stats.hourly).length > 0 && (
-                            <StationHourlyDetailChart
-                                hourly={stationData.stats.hourly as Record<string, number[]>}
-                                isToday={!isRange}
-                            />
-                        )}
+                        {stationData?.stats?.hourly && Object.keys(stationData.stats.hourly).length > 0 && <StationHourlyDetailChart hourly={stationData.stats.hourly as Record<string, number[]>} isToday={!isRange} />}
                     </>
                 ) : null}
-                {(stationData?.mobile || stationData?.moved || stationData?.bouncing) ? (
-                    <StationPosition
-                        mobile={stationData.mobile}
-                        moved={stationData.moved}
-                        bouncing={stationData.bouncing}
-                        primaryLocation={stationData.primary_location}
-                        previousLocation={stationData.previous_location}
-                        lastSeenAtPrimary={stationData.lastSeenAtPrimary}
-                        lastSeenAtPrevious={stationData.lastSeenAtPrevious}
-                        mapboxToken={env?.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || ''}
-                    />
-                ) : null}
+                {stationData?.mobile || stationData?.moved || stationData?.bouncing ? <StationPosition mobile={stationData.mobile} moved={stationData.moved} bouncing={stationData.bouncing} primaryLocation={stationData.primary_location} previousLocation={stationData.previous_location} lastSeenAtPrimary={stationData.lastSeenAtPrimary} lastSeenAtPrevious={stationData.lastSeenAtPrevious} mapboxToken={env?.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || ''} /> : null}
                 {stationData?.status ? (
                     <>
                         <br />
@@ -571,6 +550,12 @@ export function CoverageDetails({
                                         <td>{formatEpoch(stationData.exportedAt)}</td>
                                     </tr>
                                 ) : null}
+                                {stationData.expiresAt ? (
+                                    <tr key="expires">
+                                        <td>{t('times.expires')}</td>
+                                        <td>{formatEpoch(stationData.expiresAt)}</td>
+                                    </tr>
+                                ) : null}
                             </tbody>
                         </table>
                     </>
@@ -597,25 +582,15 @@ export function CoverageDetails({
                 <>
                     <hr />
                     <div style={{display: 'flex', gap: '8px', marginBottom: '4px'}}>
-                        <button
-                            style={{fontWeight: statsView === 'protocol' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'protocol' ? '2px solid #4488cc' : 'none'}}
-                            onClick={() => setStatsView('protocol')}
-                        >
+                        <button style={{fontWeight: statsView === 'protocol' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'protocol' ? '2px solid #4488cc' : 'none'}} onClick={() => setStatsView('protocol')}>
                             {tStats('tab_protocol')}
                         </button>
-                        <button
-                            style={{fontWeight: statsView === 'stations' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'stations' ? '2px solid #4488cc' : 'none'}}
-                            onClick={() => setStatsView('stations')}
-                        >
+                        <button style={{fontWeight: statsView === 'stations' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'stations' ? '2px solid #4488cc' : 'none'}} onClick={() => setStatsView('stations')}>
                             {tStats('tab_stations')}
                         </button>
                     </div>
-                    {statsView === 'protocol' && (
-                        <ProtocolStatsDashboard layers={layers ?? ['combined']} setLayers={setLayers ?? (() => {})} dateRange={dateRange} />
-                    )}
-                    {statsView === 'stations' && (
-                        <StationStatsDashboard dateRange={dateRange} />
-                    )}
+                    {statsView === 'protocol' && <ProtocolStatsDashboard layers={layers ?? ['combined']} setLayers={setLayers ?? (() => {})} dateRange={dateRange} />}
+                    {statsView === 'stations' && <StationStatsDashboard dateRange={dateRange} />}
                     <GlobalUptimeCard dateRange={dateRange} />
                 </>
             )}

@@ -97,6 +97,8 @@
             "coverage": "Likely coverage above: {{msl}}m ({{agl}}m agl)",
             "coverageUnknown": "Likely coverage: unknown — nothing received this way",
             "clipped": "Above the {{max}}m display limit — not coloured on the map",
+            "extended": "Extended along the terrain skyline from receptions on this bearing — nothing proven at this distance yet",
+            "beyondProven": "Carried outward from the furthest reception on this bearing — nothing proven at this distance yet",
             "unknown": "No terrain data for this cell",
             "loadingFetch": "loading horizon data",
             "loadingCompute": "computing coverage floor"
@@ -179,15 +181,8 @@
         "horizon": {
             "title": "Measured Receive Horizon",
             "frequency": "{{mhz}} MHz",
-            "any_distance": "Any distance",
-            "band_10": "5–10 km",
-            "band_20": "10–20 km",
-            "band_30": "20–30 km",
-            "band_50": "30–50 km",
-            "band_90": "50–90 km",
-            "tooltip_lowest": "Lowest cell: {{agl}} m AGL at {{distance}} km",
-            "tooltip_heights": "({{low}}–{{high}} m above station)",
-            "tooltip_max": "Furthest cell: {{distance}} km",
+            "step": "Step {{n}}",
+            "step_reach": "out to {{distance}} km (≈{{height}} m above station there)",
             "tooltip_count": "{{count}} cell arcs",
             "readout_hint": "Hover over the chart to inspect a bearing"
         },
@@ -196,7 +191,7 @@
             "readout": "{{bearing}}° ({{compass}}): terrain {{angle}}° at {{distance}} km",
             "readout_hint": "Hover to inspect a bearing — hover the receive horizon for a terrain profile",
             "profile_title": "Terrain profile {{bearing}}° ({{compass}})",
-            "profile_horizon": "Terrain horizon {{angle}}° at {{distance}} km — solid: lowest receive angle per distance band, dashed: predicted, red dotted: terrain shadowed behind each crest",
+            "profile_horizon": "Terrain horizon {{angle}}° at {{distance}} km — solid steps: proven receive envelope, dashed: inferred floor (skyline + measured margin), green: likely coverage, red dotted: terrain shadowed behind each crest",
             "antenna_warning": "⚠️ Receiver position is registered at {{beacon}}m AMSL — less than 2m above the ground here ({{ground}}m AMSL)",
             "antenna_info": "Antenna is {{agl}}m above the ground, which is {{ground}}m AMSL",
             "antenna_info_default": "Antenna height is unknown — charts assume {{agl}}m above the ground ({{ground}}m AMSL)",
@@ -211,7 +206,8 @@
             "packet": "Packet",
             "beacon": "Beacon",
             "output": "Map export",
-            "stats_export": "Stats export"
+            "stats_export": "Stats export",
+            "expires": "Expires if silent"
         },
         "cells": {
             "number": "{{count}} coverage cells",
@@ -235,6 +231,11 @@
             "reason_expired": "Coverage data was reset because this station was inactive for too long.",
             "reason_unknown": "Coverage data was reset.",
             "when": "Purged at {{when}}"
+        },
+        "expiry": {
+            "title": "Expiring Soon",
+            "pending": "Nothing has been heard from this station recently. Unless it is heard again, it will expire and its coverage data will be deleted at {{when}}.",
+            "expired": "This station expired at {{when}}. Its coverage data will be deleted at the next rollup."
         },
         "position": {
             "title": "Station Position",

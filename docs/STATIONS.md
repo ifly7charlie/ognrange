@@ -87,6 +87,8 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `bouncing` | `bool` | Station is oscillating between two locations, or a move is pending confirmation |
 | `mobile` | `bool` | Station appears to be on a moving vehicle (3+ consecutive new locations) |
 | `newLocationCount` | `u16` | Consecutive packets at locations matching neither primary nor previous |
+| `previousLocationCount` | `u16` | Consecutive packets at `previous_location` with none at the primary in between; at 3 the station has returned (see [Move Detection](#move-detection)) |
+| `moveConfirmed` | `bool` | The current primary was established by a rollup-confirmed (purged) move. Set at confirmation, cleared by any rotation or return |
 | `purgedAt` | `u32?` | Unix timestamp when the station's coverage data was last purged |
 | `purgeReason` | `string?` | Reason for the last data purge (`"moved"` or `"expired"`) |
 | `lastSeenAtPrimary` | `u32?` | Unix timestamp of the last packet received near `primary_location` |
@@ -97,6 +99,7 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `outputDate` | `string?` | Date string (`YYYY-MM-DD`) of the last coverage output |
 | `lastOutputFile` | `u32?` | Epoch of the last arrow file written for this station |
 | `exportedAt` | `u64?` | Unix timestamp when the per-station day JSON was last written (updated every rollup cycle). More current than `outputEpoch` for the stats and beacon activity fields. **Per-station day files only** |
+| `expiresAt` | `u32?` | When rollup will expire the station (and purge its coverage) if nothing more is heard: last packet (or beacon) plus `STATION_EXPIRY_TIME_DAYS`, or `TEST_STATION_EXPIRY_TIME_DAYS` for test callsigns. Same computation rollup uses (`StationDetails::expires_at`). The details API strips it from historical-period files. The frontend flags it when under 7 days away. **Per-station day files only** |
 | `stats` | `object` | Packet filtering statistics (see [Stats](#stats)) |
 | `beaconActivity` | `string?` | Daily beacon activity bitvector, hex-encoded (see [Beacon activity](#beacon-activity)). **Not included in `stations.json`** — only in per-station `{name}/{name}.json` files |
 | `beaconActivityDate` | `string?` | UTC date (`YYYY-MM-DD`) the beacon activity bitvector covers. **Not included in `stations.json`** — only in per-station files |
@@ -188,12 +191,17 @@ Station location is tracked from Location beacons. The system maintains two know
 Each incoming packet is compared against both known locations using a distance threshold (default 200m, configurable via `STATION_MOVE_THRESHOLD_KM`):
 
 1. **At primary location** (within threshold): `lastSeenAtPrimary` is updated. If the station was mobile, it settles: `mobile` and `bouncing` are cleared, `previous_location` is set to match `primary_location`.
-2. **At previous location** (within threshold): `lastSeenAtPrevious` is updated, `bouncing = true`. If the station was mobile, `mobile` is cleared.
+2. **At previous location** (within threshold): `lastSeenAtPrevious` is updated, `bouncing = true`, `previousLocationCount` increments. If the station was mobile, `mobile` is cleared. On the 3rd consecutive packet here (no primary packet in between) the station has **returned**:
+   - move to the current primary not yet confirmed (`moveConfirmed = false`): an aborted excursion. It settles back: `primary_location = previous_location`, `bouncing` cleared, nothing purged.
+   - move was confirmed and purged (`moveConfirmed = true`): a genuine move back. Primary and previous swap along with their timestamps, `bouncing` stays set, so rollup confirms (and purges) the move back once the abandoned site ages out.
+
+   Either way, elevation, the ground horizon, and `beaconAltitude` are reset to the returned-to site, as on a rotation.
 3. **At neither location** (new location): `newLocationCount` increments. Locations rotate: the new position becomes `primary_location`, the old primary becomes `previous_location`, and timestamps follow their coordinates. `bouncing = true`.
 
 Three scenarios emerge from this model:
 
-- **Bouncing** (two stations sharing a callsign): packets alternate between primary and previous. Both `lastSeenAt*` timestamps stay fresh. Neither decays, so no purge occurs.
+- **Bouncing** (two stations sharing a callsign): packets alternate between primary and previous. Both `lastSeenAt*` timestamps stay fresh. Neither decays, so no purge occurs. Short runs (fewer than 3) at the previous location don't swap the primary, so the ground-horizon file doesn't churn.
+- **Accidental move** (moved, then put back before `STATION_MOVE_CONFIRM_DAYS`): the return settles back to the original location with no purge.
 - **Moved** (test→production relocation): packets arrive only at the new primary. `lastSeenAtPrevious` ages. After `STATION_MOVE_CONFIRM_DAYS` (default 7) without activity at the previous location, rollup confirms the move: `moved = true`, data is purged.
 - **Mobile** (receiver on a vehicle): every packet is at a new location. After 3 consecutive new locations, `mobile = true`. `lastSeenAtPrevious` is always recent (refreshed on each rotation) so no confirmed move occurs. When the station stops moving and sends a packet at its current primary location, `mobile` is cleared and the station settles.
 
@@ -206,4 +214,4 @@ Moved stations are marked `valid = false` during rollup and excluded from covera
 3. **Each rollup**: `stations.json`, `stations-complete.json`, and Arrow files are written. Symlinks are updated.
 4. **Shutdown**: All station data is flushed to LevelDB.
 
-Stations that have not received any packets for 31 days (configurable via `STATION_EXPIRY_TIME_DAYS`) are considered expired and may be excluded from active station output.
+Stations that have not received any packets for 31 days (configurable via `STATION_EXPIRY_TIME_DAYS`) are considered expired and may be excluded from active station output. Stations with "test" as a word in their callsign (delimited by `-`, `_` or digits, or a camelCase `Test`) expire after `TEST_STATION_EXPIRY_TIME_DAYS` (default 2) instead, and are kept out of the mass-expiry safety valve's count.

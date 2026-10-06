@@ -9,8 +9,8 @@ import {useState, useMemo, useRef, useCallback, useEffect, useLayoutEffect} from
 // Runs before paint on the client; falls back to useEffect during SSR to avoid warnings
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
-import {useTranslation} from 'next-i18next';
-import {serverSideTranslations} from 'next-i18next/serverSideTranslations';
+import {useTranslation} from 'next-i18next/pages';
+import {serverSideTranslations} from 'next-i18next/pages/serverSideTranslations';
 
 import {debounce as _debounce} from 'lodash';
 
