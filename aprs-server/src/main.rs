@@ -1210,12 +1210,8 @@ async fn outage_monitor(state: Arc<AppState>) {
         let mut generated = 0usize;
         let mut deferred = 0usize;
         let mut suppressed = 0usize;
-        let mut offline_sent = 0usize;
-        let mut online_sent = 0usize;
-        let mut online = 0usize;
-        let mut outage_beacons = 0usize;
-        let mut outage_traffic = 0usize;
-        let mut notified_count = 0usize;
+        let mut offline_sent: Vec<String> = Vec::new();
+        let mut online_sent: Vec<String> = Vec::new();
         let mut send_budget = *NTFY_SENDS_PER_CYCLE;
 
         for details in state.station_manager.all_stations() {
@@ -1224,14 +1220,6 @@ async fn outage_monitor(state: Arc<AppState>) {
             }
 
             let outage = ntfy::evaluate_outage(&details, now_epoch, beacon_secs, traffic_secs);
-            match outage.map(|o| o.reason) {
-                None => online += 1,
-                Some(ntfy::OutageReason::Beacons) => outage_beacons += 1,
-                Some(ntfy::OutageReason::Traffic) => outage_traffic += 1,
-            }
-            if details.outage_notified_at.is_some() {
-                notified_count += 1;
-            }
 
             let needs_mint = match &details.ntfy_url {
                 None => true,
@@ -1347,11 +1335,11 @@ async fn outage_monitor(state: Arc<AppState>) {
                     if let Some(o) = outage {
                         fresh.outage_notified_at = Some(Epoch(now_epoch));
                         fresh.outage_reason = Some(o.reason.as_str().to_string());
-                        offline_sent += 1;
+                        offline_sent.push(name.to_string());
                     } else {
                         fresh.outage_notified_at = None;
                         fresh.outage_reason = None;
-                        online_sent += 1;
+                        online_sent.push(name.to_string());
                     }
                     state.station_manager.update_and_persist(&fresh);
                 }
@@ -1362,18 +1350,61 @@ async fn outage_monitor(state: Arc<AppState>) {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
 
+        // Summarise from a fresh read so the counts reflect this cycle's
+        // updates. Flagged = outage_notified_at set; a flagged station that's
+        // online (or an unflagged one in outage) has a transition held for
+        // its notify window, the send budget, or a failed send.
+        let mut online = 0usize;
+        let mut outage_beacons = 0usize;
+        let mut outage_traffic = 0usize;
+        let mut flagged = 0usize;
+        let mut awaiting_online = 0usize;
+        let mut awaiting_offline = 0usize;
+        for details in state.station_manager.all_stations() {
+            if details.station.as_str() == "global" || details.last_packet.is_none() {
+                continue;
+            }
+            let outage = ntfy::evaluate_outage(&details, now_epoch, beacon_secs, traffic_secs);
+            match outage.map(|o| o.reason) {
+                None => online += 1,
+                Some(ntfy::OutageReason::Beacons) => outage_beacons += 1,
+                Some(ntfy::OutageReason::Traffic) => outage_traffic += 1,
+            }
+            let notified = details.outage_notified_at.is_some();
+            if notified {
+                flagged += 1;
+            }
+            match (outage.is_some(), notified) {
+                (false, true) => awaiting_online += 1,
+                (true, false) => awaiting_offline += 1,
+                _ => {}
+            }
+        }
+
         info!(
-            "outage monitor: {} online, {} offline ({} no beacons, {} no traffic), {} notified",
+            "outage monitor: {} online, {} offline ({} no beacons, {} no traffic), {} flagged outages ({} awaiting back-online, {} awaiting offline notification)",
             online,
             outage_beacons + outage_traffic,
             outage_beacons,
             outage_traffic,
-            notified_count
+            flagged,
+            awaiting_online,
+            awaiting_offline
         );
-        if generated > 0 || deferred > 0 || suppressed > 0 || offline_sent > 0 || online_sent > 0 {
+        if !offline_sent.is_empty() {
+            info!("ntfy sent offline: {}", offline_sent.join(", "));
+        }
+        if !online_sent.is_empty() {
+            info!("ntfy sent back-online: {}", online_sent.join(", "));
+        }
+        if generated > 0 || deferred > 0 || suppressed > 0 || !offline_sent.is_empty() || !online_sent.is_empty() {
             info!(
                 "outage monitor: {} topic URLs generated, {} offline, {} back-online notifications, {} sends deferred to later cycles, {} pre-existing outages marked without sending",
-                generated, offline_sent, online_sent, deferred, suppressed
+                generated,
+                offline_sent.len(),
+                online_sent.len(),
+                deferred,
+                suppressed
             );
         }
     }
