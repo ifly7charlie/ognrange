@@ -6,11 +6,18 @@ services:
             context: .
             dockerfile: ./conf/Dockerfile
             target: next
+            args:
+                GIT_REF: ${GIT_REF:-dev}
+        env_file:
+            - path: ./conf/.env.local
+              required: false
+        # read at request time, so can be changed with a restart (no rebuild)
         environment:
             - NEXT_PUBLIC_SITEURL
             - NEXT_PUBLIC_DATA_URL
             - NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
             - NEXT_PUBLIC_AIRSPACE_API_KEY
+            - OUTPUT_PATH=/ognrange/data/arrow/
         volumes:
             - arrow:/ognrange/data/arrow:ro
         restart: always
@@ -21,15 +28,24 @@ services:
             context: .
             dockerfile: ./conf/Dockerfile
             target: aprs
-        command: ./aprs-server
+            args:
+                GIT_REF: ${GIT_REF:-dev}
         deploy:
             resources:
                 limits:
                     cpus: '1'
                     memory: 5000M
         restart: always
+        # settings previously baked into the image from conf/.env.local
+        env_file:
+            - path: ./conf/.env.local
+              required: false
         environment:
-            - NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
+            - NEXT_PUBLIC_SITEURL
+            - NEXT_PUBLIC_DEM_TILE_URL
+            # must match the volume mounts below (defaults are ./db and ./data)
+            - DB_PATH=/ognrange/data/db/
+            - OUTPUT_PATH=/ognrange/data/arrow/
         volumes:
             - db:/ognrange/data/db
             - arrow:/ognrange/data/arrow

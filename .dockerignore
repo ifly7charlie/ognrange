@@ -28,7 +28,21 @@ yarn-error.log*
 
 # rust
 aprs-server/target
+aprs-server/data
+aprs-server/reject.aprs*
 
-# emacs
+# local config and secrets - images are configured at runtime
+**/.env*
+**/*.env.local*
+
+# local data and tooling, not needed in any image
+.git
+.github
+.claude
+db/
+public/data.old
+tsconfig.tsbuildinfo
+
+# emacs (a leading # is a comment, so match autosave files with *#)
 *~
-#*#
+**/*#

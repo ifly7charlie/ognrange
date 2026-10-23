@@ -10,10 +10,17 @@ You can see this project running at https://ognrange.glidernet.org or https://og
 
 ### Using docker
 
-Check the configuration file is correct - for docker it is located in `./conf/.env.local`
+Images are published to `ghcr.io/ifly7charlie/ogr-{next,aprs,apache}` on every push to `main`.
+They contain no site configuration - everything, including the `NEXT_PUBLIC_*` values, is read
+from the container environment at runtime, so changing a value only needs a restart, not a rebuild.
+
+Put your configuration in `./conf/.env.local`, which compose loads into the `next` and `aprs`
+containers at runtime. `DB_PATH` and `OUTPUT_PATH` are set in `docker-compose.yml` to match the
+volume mounts and override any values in that file. Apache serves the arrow volume at `/arrow/`, so set
+`NEXT_PUBLIC_DATA_URL=/arrow/`.
 
 ```
-docker compose build --build-arg 'NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=<>'
+docker compose pull     # or: docker compose build
 docker compose up -d
 ```
 

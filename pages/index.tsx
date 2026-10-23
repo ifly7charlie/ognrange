@@ -300,14 +300,15 @@ export default function CombinePage(props) {
     );
 }
 
-// Just to force server side rendering
+// Server side rendering so these are read from the runtime environment on each
+// request rather than inlined at build time - the same image works for any site
 export const getServerSideProps = (async ({locale}) => {
     return {
         props: {
             env: {
                 NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN: process.env['NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN'] ?? '',
                 NEXT_PUBLIC_SITEURL: process.env['NEXT_PUBLIC_SITEURL'] ?? '',
-                NEXT_PUBLIC_DATA_URL: process.env['NEXT_PUBLIC_DATA_URL'] ?? '',
+                NEXT_PUBLIC_DATA_URL: process.env['NEXT_PUBLIC_DATA_URL'] || '/data/',
                 NEXT_PUBLIC_AIRSPACE_API_KEY: process.env['NEXT_PUBLIC_AIRSPACE_API_KEY'] ?? ''
             },
             ...(await serverSideTranslations(locale, ['common']))

@@ -1,0 +1,17 @@
+# Keeps the SHA-pinned actions and digest-pinned base images current
+version: 2
+updates:
+    - package-ecosystem: github-actions
+      directory: /
+      schedule:
+          interval: weekly
+      groups:
+          actions:
+              patterns: ['*']
+    - package-ecosystem: docker
+      directory: /conf
+      schedule:
+          interval: weekly
+      groups:
+          base-images:
+              patterns: ['*']

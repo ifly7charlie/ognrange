@@ -140,7 +140,7 @@ export function StationMeta(props: React.PropsWithChildren<{env: {NEXT_PUBLIC_DA
     }, [applyFilters]);
 
     useEffect(() => {
-        const dataUrl = props.env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL;
+        const dataUrl = props.env?.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL;
 
         // null means 'not there' so the caller can try the older layout
         const loadStations = async (url: string): Promise<StationMeta | null> => {
