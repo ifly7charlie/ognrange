@@ -1,0 +1,1541 @@
+//! Station metadata management.
+//!
+//! Tracks station details (location, ID, stats) in memory with LevelDB persistence.
+//! The LevelDB handle is NOT held in the struct (it's not Send/Sync).
+//! Instead, all DB operations go through `spawn_blocking`.
+
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::RwLock;
+use tracing::{error, info, warn};
+
+use crate::bitvec::{bitvec_to_hex, hex_to_bitvec, slot_from_timestamp};
+use crate::config::{
+    DB_PATH, OUTPUT_PATH, STATION_EXPIRY_TIME_SECS, STATION_MOVE_THRESHOLD_KM,
+    TEST_STATION_EXPIRY_TIME_SECS,
+};
+use crate::db::TrackedDb;
+use crate::types::{Epoch, StationId, StationName};
+
+pub use crate::packet_stats::AprsPacketStats;
+
+/// Message sent to the DB writer thread
+enum DbWrite {
+    Put { key: String, value: Vec<u8> },
+    Delete { key: String },
+    Shutdown,
+}
+
+// Re-export compute_uptime for external callers (rollup etc.)
+pub use crate::bitvec::compute_uptime;
+
+/// Deserialize an `Option<[f64; 2]>` that tolerates nulls inside the array.
+/// JSON like `[null, null]` or `[52.1, null]` becomes `None` instead of a parse error.
+fn deserialize_coord_pair<'de, D>(deserializer: D) -> Result<Option<[f64; 2]>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v: Option<[Option<f64>; 2]> = Option::deserialize(deserializer)?;
+    Ok(v.and_then(|[a, b]| Some([a?, b?])))
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StationDetails {
+    pub id: StationId,
+    pub station: StationName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lng: Option<f64>,
+    /// Ground elevation (m MSL) at lat/lng, resolved during rollup; cleared on move
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elevation: Option<f64>,
+    /// Antenna altitude (m MSL) from the station's location beacon (/A=);
+    /// cleared on move. Antenna height above ground for the horizon viewpoint
+    /// is derived from this against the DEM ground, sanity-window checked
+    /// (see ground_horizon::antenna_agl_m)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_altitude: Option<f64>,
+    /// Position the ground-horizon terrain file was generated for; cleared on
+    /// move so the file is rebuilt for the new location
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ground_horizon_pos: Option<[f64; 2]>,
+    /// Beacon altitude (m MSL, the raw /A= input) the ground-horizon file was
+    /// generated with; None = no beacon was known then. Compared against the
+    /// live beacon_altitude so an operator correcting their configured
+    /// altitude gets the file regenerated without moving the station.
+    /// Records written before this field existed read as None, which forces
+    /// one regeneration for beacon-carrying stations - deliberate healing
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ground_horizon_beacon: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "primary_location",
+            deserialize_with = "deserialize_coord_pair")]
+    pub primary_location: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "previous_location",
+            deserialize_with = "deserialize_coord_pair")]
+    pub previous_location: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_packet: Option<Epoch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_packet_packet_time: Option<Epoch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_location: Option<Epoch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_beacon: Option<Epoch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+    /// Receiver RF capability: the cumulative `+X.XdB@10km[n]` figure from OGN
+    /// status beacons. Only updated when a beacon parses AND n >=
+    /// RF_CAPABILITY_MIN_SAMPLES — receivers alternate status message types
+    /// (weather lines have no RF:) and reset n on restart, so a good value is
+    /// never clobbered
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rf_capability_db: Option<f32>,
+    /// Sample count n behind rf_capability_db, to judge the value's maturity
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rf_capability_n: Option<u32>,
+    /// Persistent ntfy.sh topic URL for outage notifications - random suffix
+    /// generated once by the outage monitor, exported so the frontend can
+    /// render a subscribe QR code (see ntfy.rs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ntfy_url: Option<String>,
+    /// When the current outage was notified (or suppressed, for stations
+    /// already down when their topic URL was first generated). None = healthy
+    /// or recovery already announced
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outage_notified_at: Option<Epoch>,
+    /// Why: "beacons" (no status beacons) or "traffic" (no aircraft heard)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outage_reason: Option<String>,
+    #[serde(default)]
+    pub moved: bool,
+    #[serde(default)]
+    pub bouncing: bool,
+    #[serde(default)]
+    pub mobile: bool,
+    /// Consecutive packets at locations matching neither primary nor previous
+    #[serde(default)]
+    pub new_location_count: u16,
+    /// Consecutive packets at `previous_location` with no packet at the
+    /// primary in between - at 3 the station is treated as having returned
+    #[serde(default)]
+    pub previous_location_count: u16,
+    /// The current primary was established by a move that rollup confirmed
+    /// (and purged for). Decides what a return to the previous location
+    /// means: confirmed → a genuine move back (rotate, re-confirm, purge);
+    /// unconfirmed → an aborted excursion (settle back, no purge)
+    #[serde(default)]
+    pub move_confirmed: bool,
+    /// Epoch when the station's coverage data was last purged
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purged_at: Option<Epoch>,
+    /// Reason for the last data purge (e.g. "moved", "expired")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purge_reason: Option<String>,
+    /// Last time a packet was received near `primary_location`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_primary: Option<Epoch>,
+    /// Last time a packet was received near `previous_location`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_previous: Option<Epoch>,
+    #[serde(default)]
+    pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer_mask: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_epoch: Option<Epoch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_output_file: Option<Epoch>,
+    #[serde(default)]
+    pub stats: AprsPacketStats,
+    // NOTE: changes to StationDetails fields must be reflected in docs/STATIONS.md and docs/STATION.md
+    /// Daily beacon activity bitvector: 144 bits (one per 10-min UTC slot), hex-encoded
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_activity: Option<String>,
+    /// UTC date (YYYY-MM-DD) the beacon activity bitvector covers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_activity_date: Option<String>,
+    /// Previous day's beacon bitvector, stashed at day rollover so the midnight
+    /// rollup can archive the completed day after `beacon_activity` has reset.
+    /// Persisted to the station DB but stripped from JSON exports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_activity_prev: Option<String>,
+    /// UTC date (YYYY-MM-DD) covered by `beacon_activity_prev`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beacon_activity_prev_date: Option<String>,
+    /// Station uptime today as a percentage (0.0–100.0). Computed at output time, not persisted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime: Option<f32>,
+    /// Human-readable layer names derived from layer_mask. Computed at output time, not persisted.
+    #[serde(skip_deserializing)]
+    pub layers: Vec<String>,
+}
+
+impl StationDetails {
+    /// Last packet (or, failing that, beacon) - the activity that keeps a
+    /// station from expiring
+    pub fn last_activity(&self) -> Option<Epoch> {
+        self.last_packet.or(self.last_beacon)
+    }
+
+    /// When rollup will expire the station if nothing more is heard:
+    /// last activity plus STATION_EXPIRY_TIME_DAYS, or the shorter
+    /// TEST_STATION_EXPIRY_TIME_DAYS for test callsigns. None = no activity
+    /// yet, which never expires
+    pub fn expires_at(&self) -> Option<Epoch> {
+        let mut period = *STATION_EXPIRY_TIME_SECS;
+        if crate::ignore_station::is_test_station(self.station.as_str()) {
+            period = period.min(*TEST_STATION_EXPIRY_TIME_SECS);
+        }
+        self.last_activity()
+            .map(|e| Epoch(e.0.saturating_add(period.min(u32::MAX as u64) as u32)))
+    }
+}
+
+/// Station status manager with thread-safe access.
+/// DB writes are serialized through a channel to a dedicated writer thread.
+pub struct StationManager {
+    stations: RwLock<HashMap<StationName, StationDetails>>,
+    station_ids: RwLock<HashMap<StationId, StationName>>,
+    next_id: AtomicU16,
+    db_path: String,
+    write_tx: std::sync::mpsc::Sender<DbWrite>,
+    /// Writer thread, joined by close() so queued writes land before exit
+    writer: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+    case_insensitive: bool,
+}
+
+impl StationManager {
+    /// Create and load station status from the database
+    pub fn new(case_insensitive: bool) -> Self {
+        let db_path = format!("{}status", *DB_PATH);
+
+        // Channel for the writer thread (created now, thread spawned after load)
+        let (write_tx, write_rx) = std::sync::mpsc::channel::<DbWrite>();
+
+        let mut manager = StationManager {
+            stations: RwLock::new(HashMap::new()),
+            station_ids: RwLock::new(HashMap::new()),
+            next_id: AtomicU16::new(1),
+            db_path: db_path.clone(),
+            write_tx,
+            writer: std::sync::Mutex::new(None),
+            case_insensitive,
+        };
+
+        // Load synchronously first - opens and closes the DB
+        if let Err(e) = manager.load_sync() {
+            error!("Fatal: failed to open station database {}: {}", db_path, e);
+            error!("Is another instance already running?");
+            error!("If the database is corrupt, consider restoring from a backup.");
+            error!("To rebuild from the last exported data, run: yarn tsx bin/recover_station_db.ts");
+            std::process::exit(1);
+        }
+
+        // Spawn the writer thread which takes over the DB lock
+        let writer_db_path = db_path;
+        let writer = std::thread::spawn(move || {
+            let mut db = match TrackedDb::open(&writer_db_path, true) {
+                Ok(db) => db,
+                Err(e) => {
+                    error!("Fatal: writer thread failed to open status DB {}: {}", writer_db_path, e);
+                    return;
+                }
+            };
+            while let Ok(msg) = write_rx.recv() {
+                match msg {
+                    DbWrite::Put { key, value } => {
+                        let _ = db.put(key.as_bytes(), &value);
+                        let _ = db.flush();
+                    }
+                    DbWrite::Delete { key } => {
+                        let _ = db.delete(key.as_bytes());
+                        let _ = db.flush();
+                    }
+                    DbWrite::Shutdown => {
+                        let _ = db.flush();
+                        break;
+                    }
+                }
+            }
+        });
+        *manager.writer.lock().unwrap() = Some(writer);
+
+        manager
+    }
+
+    fn load_sync(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut db = TrackedDb::open(&self.db_path, true)?;
+        let entries = crate::db::read_all(&mut db);
+
+        let mut max_id: u16 = 0;
+        let mut has_global = false;
+
+        for (raw_name, val_buf) in &entries {
+            if raw_name == "global" {
+                has_global = true;
+                continue;
+            }
+            let name = if self.case_insensitive {
+                raw_name.to_uppercase()
+            } else {
+                raw_name.clone()
+            };
+            match serde_json::from_slice::<StationDetails>(val_buf) {
+                Ok(mut details) => {
+                    if details.id.0 > max_id {
+                        max_id = details.id.0;
+                    }
+                    let station_name = StationName(name);
+                    details.station = station_name.clone();
+                    details.layers = crate::layers::layer_names_from_mask(details.layer_mask.unwrap_or(0));
+                    // Migrate old TypeScript format: count was the accepted counter,
+                    // accepted field didn't exist. Detected by accepted==0 && count > sum(rejections).
+                    if details.stats.accepted == 0 && details.stats.count > 0 {
+                        let s = &mut details.stats;
+                        let rejected = s.ignored_tracker as u64
+                            + s.invalid_tracker as u64
+                            + s.invalid_timestamp as u64
+                            + s.ignored_stationary as u64
+                            + s.ignored_signal0 as u64
+                            + s.ignored_h3stationary as u64
+                            + s.ignored_elevation as u64
+                            + s.ignored_future_timestamp as u64
+                            + s.ignored_stale_timestamp as u64;
+                        if s.count > rejected {
+                            s.accepted = s.count;
+                            s.count = s.accepted + rejected;
+                        }
+                    }
+                    self.station_ids
+                        .write()
+                        .unwrap()
+                        .insert(details.id, station_name.clone());
+                    self.stations
+                        .write()
+                        .unwrap()
+                        .insert(station_name, details);
+                }
+                Err(e) => {
+                    warn!("Failed to parse station {}: {}", name, e);
+                }
+            }
+        }
+
+        if has_global {
+            info!("Removing stale 'global' entry from station status DB");
+            let _ = db.delete(b"global");
+            let _ = db.flush();
+        }
+
+        let next = max_id + 1;
+        self.next_id.store(next, Ordering::SeqCst);
+        let count = self.stations.read().unwrap().len();
+        info!("Loaded {} stations, next ID: {}", count, next);
+
+        Ok(())
+    }
+
+    pub fn next_station_id(&self) -> u16 {
+        self.next_id.load(Ordering::SeqCst)
+    }
+
+    /// Get or create station details.
+    /// Returns None if the station ID limit has been reached.
+    pub fn get_or_create(&self, name: &StationName) -> Option<StationDetails> {
+        // Fast path: read lock
+        {
+            let stations = self.stations.read().unwrap();
+            if let Some(details) = stations.get(name) {
+                return Some(details.clone());
+            }
+        }
+
+        // Slow path: write lock, re-check to avoid duplicate ID allocation
+        let mut stations = self.stations.write().unwrap();
+        if let Some(details) = stations.get(name) {
+            return Some(details.clone());
+        }
+
+        // Hard cap: prevent u16 wrap-around
+        use crate::config::{MAX_STATION_ID, STATION_ID_WARN_PERCENT};
+        let current = self.next_id.load(Ordering::SeqCst);
+        if current > MAX_STATION_ID {
+            error!(
+                "Station ID limit reached ({}/{}), rejecting new station: {}",
+                current, MAX_STATION_ID, name
+            );
+            return None;
+        }
+        let warn_threshold = (MAX_STATION_ID as u32 * STATION_ID_WARN_PERCENT as u32 / 100) as u16;
+        if current >= warn_threshold {
+            warn!(
+                "Station ID allocation at {:.0}% ({}/{}), new station: {}",
+                current as f64 / MAX_STATION_ID as f64 * 100.0,
+                current,
+                MAX_STATION_ID,
+                name
+            );
+        }
+
+        let new_id = StationId(self.next_id.fetch_add(1, Ordering::SeqCst));
+        let details = StationDetails {
+            id: new_id,
+            station: name.clone(),
+            lat: None,
+            lng: None,
+            elevation: None,
+            beacon_altitude: None,
+            ground_horizon_pos: None,
+            ground_horizon_beacon: None,
+            primary_location: None,
+            previous_location: None,
+            last_packet: None,
+            last_packet_packet_time: None,
+            last_location: None,
+            last_beacon: None,
+            status: None,
+            notice: None,
+            rf_capability_db: None,
+            rf_capability_n: None,
+            ntfy_url: None,
+            outage_notified_at: None,
+            outage_reason: None,
+            moved: false,
+            bouncing: false,
+            mobile: false,
+            new_location_count: 0,
+            previous_location_count: 0,
+            move_confirmed: false,
+            purged_at: None,
+            purge_reason: None,
+            last_seen_at_primary: None,
+            last_seen_at_previous: None,
+            valid: false,
+            layer_mask: None,
+            output_epoch: None,
+            output_date: None,
+            last_output_file: None,
+            stats: AprsPacketStats::default(),
+            beacon_activity: None,
+            beacon_activity_date: None,
+            beacon_activity_prev: None,
+            beacon_activity_prev_date: None,
+            uptime: None,
+            layers: Vec::new(),
+        };
+
+        info!(
+            "Allocated ID {} to {}, {} stations total",
+            new_id.0, name, stations.len() + 1
+        );
+
+        stations.insert(name.clone(), details.clone());
+        self.station_ids
+            .write()
+            .unwrap()
+            .insert(new_id, name.clone());
+
+        self.persist(&details);
+
+        Some(details)
+    }
+
+    /// Get station details without creating
+    pub fn get(&self, name: &StationName) -> Option<StationDetails> {
+        self.stations.read().unwrap().get(name).cloned()
+    }
+
+    /// Update station details in memory only. Call flush_all() to persist to the DB.
+    pub fn update(&self, details: &StationDetails) {
+        self.stations
+            .write()
+            .unwrap()
+            .insert(details.station.clone(), details.clone());
+    }
+
+    /// Update station details in memory and write them to the DB immediately.
+    /// Use for state that must survive an unclean shutdown (e.g. a station's
+    /// generated ntfy URL - regenerating it would strand existing subscribers).
+    pub fn update_and_persist(&self, details: &StationDetails) {
+        self.update(details);
+        self.persist(details);
+    }
+
+    /// Remove all stations except those matching a predicate.
+    pub fn retain(&self, f: impl Fn(&StationName) -> bool) {
+        let mut stations = self.stations.write().unwrap();
+        stations.retain(|name, _| f(name));
+    }
+
+    /// Persist all in-memory station state to the DB.
+    pub fn flush_all(&self) {
+        let stations: Vec<StationDetails> = self.stations.read().unwrap().values().cloned().collect();
+        for details in &stations {
+            self.persist(&details);
+        }
+    }
+
+    /// Send a station update to the writer thread
+    fn persist(&self, details: &StationDetails) {
+        if details.station.as_str() == "global" {
+            return;
+        }
+        let key = details.station.as_str().to_string();
+        let json = match serde_json::to_vec(details) {
+            Ok(j) => j,
+            Err(e) => {
+                error!("Failed to serialize station {}: {}", details.station, e);
+                return;
+            }
+        };
+        let _ = self.write_tx.send(DbWrite::Put { key, value: json });
+    }
+
+    /// Get station name by ID
+    pub fn get_name(&self, id: StationId) -> Option<StationName> {
+        if id.0 == 0 {
+            return Some(StationName("global".to_string()));
+        }
+        self.station_ids.read().unwrap().get(&id).cloned()
+    }
+
+    /// Create a StationManager for tests (no database, no writer thread)
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        let (write_tx, _write_rx) = std::sync::mpsc::channel::<DbWrite>();
+        StationManager {
+            stations: RwLock::new(HashMap::new()),
+            station_ids: RwLock::new(HashMap::new()),
+            next_id: AtomicU16::new(1),
+            db_path: String::new(),
+            write_tx,
+            writer: std::sync::Mutex::new(None),
+            case_insensitive: false,
+        }
+    }
+
+    /// Check if a station has moved and update its location.
+    ///
+    /// Unified model for three scenarios:
+    /// - **Bouncing**: two stations sharing a callsign - both locations stay fresh
+    /// - **Moved**: test→production relocation - old location decays (handled in rollup)
+    /// - **Mobile**: receiver on a vehicle - consecutive new locations exceed threshold
+    pub fn check_station_moved(
+        &self,
+        name: &StationName,
+        lat: f64,
+        lng: f64,
+        altitude: Option<f64>,
+        timestamp: Epoch,
+        raw_packet: &str,
+    ) {
+        let mut details = match self.get(name) {
+            Some(d) => d,
+            None => return,
+        };
+
+        if details.primary_location.is_none() {
+            details.primary_location = Some([lat, lng]);
+        }
+        if details.previous_location.is_none() {
+            details.previous_location = details
+                .lat
+                .zip(details.lng)
+                .map(|(la, lo)| [la, lo])
+                .or(details.primary_location);
+        }
+
+        let primary = details.primary_location.unwrap_or([lat, lng]);
+        let previous = details.previous_location.unwrap_or(primary);
+        let dist_primary = great_circle_distance(primary[0], primary[1], lat, lng);
+        let dist_previous = great_circle_distance(previous[0], previous[1], lat, lng);
+        let threshold = *STATION_MOVE_THRESHOLD_KM;
+
+        // 1. At primary location - station is where we expect it
+        if dist_primary <= threshold {
+            // Beaconed antenna altitude (m MSL) belongs to the primary site -
+            // sanity-checked against the DEM ground only when the horizon
+            // viewpoint is derived from it
+            if altitude.is_some() {
+                details.beacon_altitude = altitude;
+            }
+            details.last_seen_at_primary = Some(timestamp);
+            details.new_location_count = 0;
+            details.previous_location_count = 0;
+            if details.mobile {
+                info!("{} appears to have stopped moving", name);
+                details.mobile = false;
+                details.bouncing = false;
+                // Settle: previous = primary, with matching timestamp
+                details.previous_location = details.primary_location;
+                details.last_seen_at_previous = details.last_seen_at_primary;
+            }
+        }
+        // 2. At previous location - bouncing between two known locations.
+        // This packet's altitude is deliberately ignored: a bouncing
+        // partner's beacon must not clobber the primary site's
+        // beacon_altitude and churn the ground-horizon file.
+        // A sustained run at the previous location (no primary packets in
+        // between) means the station has gone back there, so it becomes the
+        // primary again - otherwise an A→B→A relocation leaves the abandoned
+        // B as primary forever, with A refreshed as "previous"
+        else if dist_previous <= threshold {
+            details.last_seen_at_previous = Some(timestamp);
+            details.bouncing = true;
+            details.new_location_count = 0;
+            details.previous_location_count += 1;
+            if details.mobile {
+                info!("{} appears to have stopped moving", name);
+                details.mobile = false;
+            }
+
+            if details.previous_location_count >= 3 {
+                if details.move_confirmed {
+                    // The move to the current primary was confirmed and
+                    // purged, so this is a genuine move back: rotate, and
+                    // rollup confirms it once the abandoned site ages out
+                    info!("{} has moved back to its previous location", name);
+                    std::mem::swap(&mut details.primary_location, &mut details.previous_location);
+                    std::mem::swap(&mut details.last_seen_at_primary, &mut details.last_seen_at_previous);
+                } else {
+                    // Returned before the move was confirmed: an aborted
+                    // excursion, settle back with nothing to purge
+                    info!("{} has returned to its previous location, move abandoned", name);
+                    details.primary_location = details.previous_location;
+                    details.last_seen_at_primary = details.last_seen_at_previous;
+                    details.bouncing = false;
+                }
+                details.previous_location_count = 0;
+                details.move_confirmed = false;
+                // Same as a rotation: site-specific data belongs to the
+                // abandoned primary
+                details.elevation = None;
+                details.ground_horizon_pos = None;
+                details.ground_horizon_beacon = None;
+                details.beacon_altitude = altitude;
+            }
+        }
+        // 3. Neither location - new location
+        else {
+            details.new_location_count += 1;
+            details.previous_location_count = 0;
+            details.move_confirmed = false;
+
+            if details.new_location_count >= 3 {
+                if !details.mobile {
+                    info!("{} appears to be mobile ({:.1}km from primary)", name, dist_primary);
+                }
+                details.mobile = true;
+            } else if details.new_location_count == 1 {
+                // First new location: log once
+                warn!("{}", raw_packet);
+                warn!(
+                    "Station {} at {},{} ({:.1}km from primary) - pending confirmation",
+                    name, lat, lng, dist_primary
+                );
+            }
+
+            // Rotate: new → primary, old primary → previous
+            // Timestamps follow their coordinates
+            details.previous_location = details.primary_location;
+            details.last_seen_at_previous = details.last_seen_at_primary;
+            details.primary_location = Some([lat, lng]);
+            details.last_seen_at_primary = Some(timestamp);
+            details.bouncing = true;
+            // Ground elevation and the terrain horizon belong to the old
+            // location - re-resolve/regenerate at next rollup. Likewise the
+            // beaconed altitude: this packet's value is the new primary's,
+            // and without one the old-location altitude must not linger
+            // against the new ground.
+            details.elevation = None;
+            details.ground_horizon_pos = None;
+            details.ground_horizon_beacon = None;
+            details.beacon_altitude = altitude;
+        }
+
+        details.lat = Some(lat);
+        details.lng = Some(lng);
+        details.last_location = Some(timestamp);
+        self.update(&details);
+    }
+
+    /// Update station beacon status
+    pub fn update_station_beacon(&self, name: &StationName, body: &str, timestamp: Epoch) {
+        let mut details = match self.get(name) {
+            Some(d) => d,
+            None => return,
+        };
+        details.last_beacon = Some(timestamp);
+        details.status = Some(body.to_string());
+        if let Some((db, n)) = parse_rf_capability(body) {
+            if n >= RF_CAPABILITY_MIN_SAMPLES {
+                details.rf_capability_db = Some(db);
+                details.rf_capability_n = Some(n);
+            }
+        }
+        self.update(&details);
+    }
+
+    /// Record a station beacon in the daily beacon activity bitvector.
+    /// Sets the bit for the 10-minute UTC slot corresponding to `timestamp`.
+    /// On day rollover the completed day's bitvector moves to the prev stash
+    /// (so the midnight rollup can archive it); beacons timestamped in the
+    /// prev day that arrive after the rollover still land in the stash.
+    pub fn record_beacon(&self, name: &StationName, timestamp: u32) {
+        let utc_date = match chrono::DateTime::from_timestamp(timestamp as i64, 0) {
+            Some(dt) => dt.format("%Y-%m-%d").to_string(),
+            None => return,
+        };
+
+        let slot = slot_from_timestamp(timestamp);
+
+        let mut details = match self.get(name) {
+            Some(d) => d,
+            None => return,
+        };
+
+        let set_bit = |hex: &Option<String>| {
+            let mut bits = hex
+                .as_deref()
+                .and_then(hex_to_bitvec)
+                .unwrap_or([0u64; 3]);
+            bits[slot / 64] |= 1u64 << (slot % 64);
+            bitvec_to_hex(&bits)
+        };
+
+        match details.beacon_activity_date.as_deref() {
+            Some(date) if date == utc_date => {
+                details.beacon_activity = Some(set_bit(&details.beacon_activity));
+            }
+            Some(date) if date < utc_date.as_str() => {
+                // New day: stash the completed day, start a fresh bitvector
+                details.beacon_activity_prev = details.beacon_activity.take();
+                details.beacon_activity_prev_date = details.beacon_activity_date.take();
+                details.beacon_activity = Some(set_bit(&None));
+                details.beacon_activity_date = Some(utc_date);
+            }
+            Some(_) => {
+                // Beacon timestamped before the current day: record it in the
+                // stash if it covers that date, otherwise drop it
+                if details.beacon_activity_prev_date.as_deref() == Some(utc_date.as_str()) {
+                    details.beacon_activity_prev = Some(set_bit(&details.beacon_activity_prev));
+                } else {
+                    return;
+                }
+            }
+            None => {
+                details.beacon_activity = Some(set_bit(&None));
+                details.beacon_activity_date = Some(utc_date);
+            }
+        }
+        self.update(&details);
+    }
+
+    /// Close the database, persisting final state via the writer thread
+    pub fn close(&self) {
+        let all_stations: Vec<StationDetails> =
+            self.stations.read().unwrap().values().cloned().collect();
+
+        for details in &all_stations {
+            self.persist(details);
+        }
+        let _ = self.write_tx.send(DbWrite::Shutdown);
+        if let Some(writer) = self.writer.lock().unwrap().take() {
+            let _ = writer.join();
+        }
+    }
+
+    /// Get all station details
+    pub fn all_stations(&self) -> Vec<StationDetails> {
+        self.stations.read().unwrap().values().cloned().collect()
+    }
+
+    /// Write live-status JSON for every active station without triggering a rollup.
+    ///
+    /// Writes the same `{name}.day.{date}.json` format as rollup, but sources all
+    /// data from in-memory `StationDetails`. Rollup-derived fields (`arrowRecords`,
+    /// `activity`) are preserved by reading the existing JSON file if one exists.
+    /// Call this on a timer shorter than `ROLLUP_PERIOD_MINUTES` so the frontend
+    /// sees fresh timestamps and uptime percentages between rollups.
+    pub fn write_status_snapshots(&self, accumulators: &crate::accumulators::Accumulators) {
+        use chrono::{Datelike, Timelike, Utc};
+        use crate::symlinks::create_accumulator_symlinks;
+
+        let now = Utc::now();
+        let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
+        let current_slot = now.hour() * 6 + now.minute() / 10 + 1;
+        let day_file = &accumulators.day.file;
+        let now_epoch = now.timestamp() as u64;
+        let output_path = &**OUTPUT_PATH;
+
+        let stations = self.stations.read().unwrap();
+        let mut count = 0usize;
+
+        for (name, meta) in stations.iter() {
+            if meta.last_packet.is_none() || name.as_str() == "global" {
+                continue;
+            }
+
+            let uptime = crate::bitvec::compute_uptime(
+                &meta.beacon_activity,
+                &meta.beacon_activity_date,
+                &today,
+                current_slot,
+            );
+
+            let mut json = match serde_json::to_value(meta) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("status snapshot serialize error for {}: {}", name, e);
+                    continue;
+                }
+            };
+
+            let obj = json.as_object_mut().unwrap();
+            obj.insert("uptime".to_string(), serde_json::json!(uptime));
+            obj.insert("exportedAt".to_string(), serde_json::json!(now_epoch));
+            obj.insert("expiresAt".to_string(), serde_json::json!(meta.expires_at().map(|e| e.0)));
+            // Internal rollover stash, not part of the export format
+            obj.remove("beaconActivityPrev");
+            obj.remove("beaconActivityPrevDate");
+
+            // Preserve rollup-derived fields from the most recently written station JSON.
+            // Reading the symlink target gives us arrowRecords and activity from the
+            // last rollup without needing to recompute them here.
+            let station_dir = format!("{}{}", output_path, name.as_str());
+            let existing_path = format!("{}/{}.json", station_dir, name.as_str());
+            if let Ok(existing_str) = std::fs::read_to_string(&existing_path) {
+                if let Ok(existing) = serde_json::from_str::<serde_json::Value>(&existing_str) {
+                    for key in &["arrowRecords", "activity"] {
+                        if let Some(v) = existing.get(*key) {
+                            obj.insert(key.to_string(), v.clone());
+                        }
+                    }
+                }
+            }
+
+            let json_str = match serde_json::to_string_pretty(&json) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("status snapshot format error for {}: {}", name, e);
+                    continue;
+                }
+            };
+
+            let _ = std::fs::create_dir_all(&station_dir);
+            let base_name = format!("{}.day.{}", name.as_str(), day_file);
+            let json_path = format!("{}/{}.json", station_dir, base_name);
+            if crate::json_io::write_atomic_path(&json_path, &json_str) {
+                let target = format!("{}.json", base_name);
+                create_accumulator_symlinks(&station_dir, name.as_str(), "json", accumulators, &target, true);
+                count += 1;
+            }
+        }
+
+        info!("Wrote status snapshots for {} stations", count);
+    }
+
+    /// All stations with global first (id=0), matching TypeScript's allStationsDetails({includeGlobal: true})
+    pub fn all_stations_with_global(&self) -> Vec<StationDetails> {
+        let mut result = vec![StationDetails {
+            id: StationId(0),
+            station: StationName("global".to_string()),
+            lat: None,
+            lng: None,
+            elevation: None,
+            beacon_altitude: None,
+            ground_horizon_pos: None,
+            ground_horizon_beacon: None,
+            primary_location: None,
+            previous_location: None,
+            last_packet: None,
+            last_packet_packet_time: None,
+            last_location: None,
+            last_beacon: None,
+            status: None,
+            notice: None,
+            rf_capability_db: None,
+            rf_capability_n: None,
+            ntfy_url: None,
+            outage_notified_at: None,
+            outage_reason: None,
+            moved: false,
+            bouncing: false,
+            mobile: false,
+            new_location_count: 0,
+            previous_location_count: 0,
+            move_confirmed: false,
+            purged_at: None,
+            purge_reason: None,
+            last_seen_at_primary: None,
+            last_seen_at_previous: None,
+            valid: false,
+            layer_mask: None,
+            output_epoch: None,
+            output_date: None,
+            last_output_file: None,
+            stats: AprsPacketStats::default(),
+            beacon_activity: None,
+            beacon_activity_date: None,
+            beacon_activity_prev: None,
+            beacon_activity_prev_date: None,
+            uptime: None,
+            layers: Vec::new(),
+        }];
+        result.extend(
+            self.stations.read().unwrap().values()
+                .filter(|d| d.station.as_str() != "global")
+                .cloned()
+        );
+        result
+    }
+}
+
+/// Minimum sample count before a status beacon's RF capability figure is
+/// trusted (receivers reset n on restart; low-n values are noise)
+const RF_CAPABILITY_MIN_SAMPLES: u32 = 5000;
+/// Parse suspects: no real receiver reports beyond this
+const RF_CAPABILITY_MAX_ABS_DB: f32 = 45.0;
+
+/// Extract the cumulative RF capability (`+X.XdB@10km[n]`) from an OGN status
+/// beacon body, e.g.
+/// "... RF:+38+2.5ppm/-0.3dB/+10.7dB@10km[23481]/+12.3dB@10km[7/13]".
+/// The third RF field (cumulative) is wanted; the recent-window field's
+/// bracket holds "x/y" so `\[([0-9]+)\]` cannot false-match it. Returns None
+/// for weather/short RF lines, unparseable numbers, or |dB| beyond
+/// RF_CAPABILITY_MAX_ABS_DB (parse suspects)
+pub(crate) fn parse_rf_capability(body: &str) -> Option<(f32, u32)> {
+    static RE_RF_CAPABILITY: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"RF:[^ ]*?/([+-]?[0-9]+(?:\.[0-9]+)?)dB@10km\[([0-9]+)\]").unwrap()
+    });
+    let caps = RE_RF_CAPABILITY.captures(body)?;
+    let db: f32 = caps[1].parse().ok()?;
+    let n: u32 = caps[2].parse().ok()?;
+    (db.abs() <= RF_CAPABILITY_MAX_ABS_DB).then_some((db, n))
+}
+
+/// Haversine great-circle distance in kilometers
+pub(crate) fn great_circle_distance(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
+    let r = 6371.0;
+    let d_lat = (lat2 - lat1).to_radians();
+    let d_lng = (lng2 - lng1).to_radians();
+    let a = (d_lat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (d_lng / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().asin();
+    r * c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bitvec::bitvec_to_hex;
+
+    fn make_test_details() -> StationDetails {
+        StationDetails {
+            id: StationId(1),
+            station: StationName("TEST".to_string()),
+            lat: None,
+            lng: None,
+            elevation: None,
+            beacon_altitude: None,
+            ground_horizon_pos: None,
+            ground_horizon_beacon: None,
+            primary_location: None,
+            previous_location: None,
+            last_packet: None,
+            last_packet_packet_time: None,
+            last_location: None,
+            last_beacon: None,
+            status: None,
+            notice: None,
+            rf_capability_db: None,
+            rf_capability_n: None,
+            ntfy_url: None,
+            outage_notified_at: None,
+            outage_reason: None,
+            moved: false,
+            bouncing: false,
+            mobile: false,
+            new_location_count: 0,
+            previous_location_count: 0,
+            move_confirmed: false,
+            purged_at: None,
+            purge_reason: None,
+            last_seen_at_primary: None,
+            last_seen_at_previous: None,
+            valid: false,
+            layer_mask: None,
+            output_epoch: None,
+            output_date: None,
+            last_output_file: None,
+            stats: AprsPacketStats::default(),
+            beacon_activity: None,
+            beacon_activity_date: None,
+            beacon_activity_prev: None,
+            beacon_activity_prev_date: None,
+            uptime: None,
+            layers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_last_seen_timestamps_serde() {
+        let mut details = make_test_details();
+
+        // Without timestamps
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(!json.contains("lastSeenAtPrimary"));
+        assert!(!json.contains("lastSeenAtPrevious"));
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.last_seen_at_primary, None);
+        assert_eq!(restored.last_seen_at_previous, None);
+
+        // With timestamps
+        details.last_seen_at_primary = Some(Epoch(1000000));
+        details.last_seen_at_previous = Some(Epoch(900000));
+        let json = serde_json::to_string(&details).unwrap();
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.last_seen_at_primary, Some(Epoch(1000000)));
+        assert_eq!(restored.last_seen_at_previous, Some(Epoch(900000)));
+    }
+
+    const RF_STATUS: &str = "v0.3.2.RPI-GPU CPU:1.4 RAM:463.6/970.3MB NTP:0.5ms/-8.6ppm 2/2Acfts[1h] RF:+38+2.5ppm/-0.3dB/+10.7dB@10km[23481]/+12.3dB@10km[7/13]";
+    const WEATHER_STATUS: &str = "82:0 2.562s/0ms 35dB/-2kHz 131/9/14kt 82.6F 26.2% UVI:20.4 0.0mm/h";
+
+    #[test]
+    fn test_parse_rf_capability() {
+        assert_eq!(parse_rf_capability(RF_STATUS), Some((10.7, 23481)));
+        // weather line has no RF: block
+        assert_eq!(parse_rf_capability(WEATHER_STATUS), None);
+        // short RF line without the @10km fields
+        assert_eq!(parse_rf_capability("RF:+41+56.0ppm/+1.5dB"), None);
+        // negative capability values are real (deaf receivers)
+        assert_eq!(
+            parse_rf_capability("RF:-3-1.0ppm/-0.71dB/-15.8dB@10km[9000]/-13.8dB@10km[2/3]"),
+            Some((-15.8, 9000))
+        );
+        // parse suspects rejected
+        assert_eq!(parse_rf_capability("RF:+0+0.0ppm/+1.0dB/+55.0dB@10km[9000]"), None);
+        // recent-window bracket [x/y] must not be matched when cumulative is absent
+        assert_eq!(parse_rf_capability("RF:+0+0.0ppm/+1.0dB/+12.3dB@10km[7/13]"), None);
+    }
+
+    #[test]
+    fn test_beacon_rf_capability_updates() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // mature beacon stores the value
+        mgr.update_station_beacon(&name, RF_STATUS, Epoch(1000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, Some(10.7));
+        assert_eq!(d.rf_capability_n, Some(23481));
+
+        // an alternating weather beacon must not clobber it
+        mgr.update_station_beacon(&name, WEATHER_STATUS, Epoch(2000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, Some(10.7));
+        assert_eq!(d.status.as_deref(), Some(WEATHER_STATUS));
+
+        // a post-restart beacon (low n) must not clobber it either
+        mgr.update_station_beacon(&name, "RF:+38+2.5ppm/-0.3dB/+2.1dB@10km[143]", Epoch(3000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, Some(10.7));
+        assert_eq!(d.rf_capability_n, Some(23481));
+
+        // once n matures again the fresh value wins
+        mgr.update_station_beacon(&name, "RF:+38+2.5ppm/-0.3dB/+9.9dB@10km[5000]", Epoch(4000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, Some(9.9));
+        assert_eq!(d.rf_capability_n, Some(5000));
+    }
+
+    #[test]
+    fn test_beacon_rf_capability_low_n_first_stays_none() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+        mgr.update_station_beacon(&name, "RF:+0+0.0ppm/+1.0dB/+3.0dB@10km[42]", Epoch(1000));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.rf_capability_db, None);
+        assert_eq!(d.rf_capability_n, None);
+    }
+
+    #[test]
+    fn test_rf_capability_serde() {
+        let mut details = make_test_details();
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(!json.contains("rfCapabilityDb"));
+        assert!(!json.contains("rfCapabilityN"));
+
+        details.rf_capability_db = Some(10.7);
+        details.rf_capability_n = Some(23481);
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(json.contains("\"rfCapabilityDb\":10.7"));
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.rf_capability_db, Some(10.7));
+        assert_eq!(restored.rf_capability_n, Some(23481));
+    }
+
+    // Locations for movement tests
+    // Victoria, Australia (-37.308, 142.988)
+    const LOC_A: (f64, f64) = (-37.308, 142.988);
+    // Sydney, Australia (-33.918, 151.099) - ~824km from LOC_A
+    const LOC_B: (f64, f64) = (-33.918, 151.099);
+    // Perth, Australia (-31.95, 115.86) - far from both A and B
+    const LOC_C: (f64, f64) = (-31.95, 115.86);
+    // 500m north of LOC_A
+    const LOC_D: (f64, f64) = (-37.3035, 142.988);
+
+    fn get_station(mgr: &StationManager, name: &str) -> StationDetails {
+        mgr.get_or_create(&StationName(name.to_string())).expect("test station allocation failed")
+    }
+
+    #[test]
+    fn test_stationary_station() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Repeated packets at same location
+        for i in 0..5 {
+            mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000 + i * 1000), "raw");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert!(!s.moved);
+        assert!(!s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.new_location_count, 0);
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(5000)));
+    }
+
+    #[test]
+    fn test_bouncing_two_locations() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish at LOC_A
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+
+        // Packet from LOC_B - new location, bouncing starts
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw2");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.previous_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(2000)));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
+
+        // Back to LOC_A - hits "at previous" branch, both timestamps fresh
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(3000), "raw3");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(3000)));
+        assert_eq!(s.new_location_count, 0);
+
+        // Many more alternating packets - all silently accepted
+        for i in 0..10 {
+            let (loc, ts) = if i % 2 == 0 {
+                (LOC_B, 4000 + i * 100)
+            } else {
+                (LOC_A, 4000 + i * 100)
+            };
+            mgr.check_station_moved(&name, loc.0, loc.1, None, Epoch(ts), "raw_repeat");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert!(!s.moved);
+        assert!(!s.mobile);
+    }
+
+    #[test]
+    fn test_beacon_altitude_follows_primary() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish at LOC_A with a beaconed altitude
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(1000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(240.0));
+
+        // Rotation to LOC_B takes the new primary's beacon with it
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(15.0), Epoch(2000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(15.0));
+
+        // Bouncing back at LOC_A (now previous): its beacon must not clobber
+        // the primary's - that flap would churn the ground-horizon file
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(3000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert_eq!(s.beacon_altitude, Some(15.0));
+
+        // At the primary: a fresh value updates, an altitude-less location
+        // packet leaves it alone
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(17.0), Epoch(4000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(17.0));
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(5000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(17.0));
+
+        // A rotation without an altitude clears the old site's beacon
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(6000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, None);
+    }
+
+    #[test]
+    fn test_relocation() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish at LOC_A
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+
+        // Move to LOC_B
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw2");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
+
+        // Only packets from LOC_B - last_seen_at_previous stays stale
+        for i in 1..5 {
+            mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000 + i * 1000), "raw_b");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(6000)));
+    }
+
+    #[test]
+    fn test_aborted_move_returns_to_previous() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Established at LOC_A, accidentally moved to LOC_B, then back
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(4000), "raw");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(5000), "raw");
+        let s = get_station(&mgr, "TEST");
+        // Two packets back is not yet a return - still bouncing
+        assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.previous_location_count, 2);
+
+        // Third consecutive packet at LOC_A: settles back, LOC_B forgotten
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(6000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.previous_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(6000)));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(6000)));
+        assert!(!s.bouncing);
+        assert!(!s.move_confirmed);
+        assert_eq!(s.previous_location_count, 0);
+        assert_eq!(s.beacon_altitude, Some(240.0));
+        assert_eq!(s.elevation, None);
+
+        // And it's then just a stationary station at LOC_A
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(7000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert!(!s.bouncing);
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(7000)));
+    }
+
+    #[test]
+    fn test_confirmed_move_back_rotates() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+
+        // Rollup confirms the move to LOC_B (see evaluate_station_validity)
+        let mut s = get_station(&mgr, "TEST");
+        s.bouncing = false;
+        s.move_confirmed = true;
+        mgr.update(&s);
+
+        for ts in [3000, 4000, 5000] {
+            mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(ts), "raw");
+        }
+        let s = get_station(&mgr, "TEST");
+        // Rotated with timestamps: LOC_B now ages out as previous, so rollup
+        // confirms (and purges) the move back
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.previous_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(5000)));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(2000)));
+        assert!(s.bouncing);
+        assert!(!s.move_confirmed);
+    }
+
+    #[test]
+    fn test_bouncing_short_runs_keep_primary() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+
+        // Shared callsign with uneven interleave: runs of two at LOC_A
+        let mut ts = 3000;
+        for _ in 0..5 {
+            for loc in [LOC_A, LOC_A, LOC_B] {
+                mgr.check_station_moved(&name, loc.0, loc.1, None, Epoch(ts), "raw");
+                ts += 100;
+            }
+        }
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.previous_location, Some([LOC_A.0, LOC_A.1]));
+        assert!(s.bouncing);
+    }
+
+    #[test]
+    fn test_mobile_fast() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish at LOC_A
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+
+        // Consecutive packets at new locations: B, C, D - all far from each other
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw2");
+        let s = get_station(&mgr, "TEST");
+        assert!(!s.mobile);
+        assert_eq!(s.new_location_count, 1);
+
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(3000), "raw3");
+        let s = get_station(&mgr, "TEST");
+        assert!(!s.mobile);
+        assert_eq!(s.new_location_count, 2);
+
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, None, Epoch(4000), "raw4");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+        assert_eq!(s.new_location_count, 3);
+
+        // Further new locations keep mobile=true
+        mgr.check_station_moved(&name, LOC_A.0 + 1.0, LOC_A.1 + 1.0, None, Epoch(5000), "raw5");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+    }
+
+    #[test]
+    fn test_mobile_slow() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish at origin
+        let base_lat = -37.0;
+        let base_lng = 143.0;
+        mgr.check_station_moved(&name, base_lat, base_lng, None, Epoch(1000), "raw");
+
+        // Drift 300m per step (well above 200m threshold)
+        // ~0.003 degrees latitude ≈ 333m
+        for i in 1..=4 {
+            let lat = base_lat + (i as f64) * 0.003;
+            mgr.check_station_moved(&name, lat, base_lng, None, Epoch(1000 + i * 1000), "raw");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+        assert!(s.new_location_count >= 3);
+    }
+
+    #[test]
+    fn test_mobile_stops() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish, then become mobile
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, None, Epoch(4000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+
+        // Now the primary is LOC_D. Send 2 packets from LOC_D - station stops
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, None, Epoch(5000), "raw");
+        let s = get_station(&mgr, "TEST");
+        // First packet at primary clears mobile
+        assert!(!s.mobile);
+        assert!(!s.bouncing);
+        // previous = primary (settled)
+        assert_eq!(s.previous_location, s.primary_location);
+        assert_eq!(s.last_seen_at_previous, s.last_seen_at_primary);
+        assert_eq!(s.new_location_count, 0);
+    }
+
+    #[test]
+    fn test_mobile_stops_at_previous() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish at LOC_A, move around, become mobile
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(3000), "raw");
+        mgr.check_station_moved(&name, LOC_D.0, LOC_D.1, None, Epoch(4000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert!(s.mobile);
+
+        // After LOC_D as primary, previous is LOC_C
+        // Now send a packet from LOC_C (previous location)
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(5000), "raw");
+        let s = get_station(&mgr, "TEST");
+        // Stops mobile, but bouncing=true because two locations remain
+        assert!(!s.mobile);
+        assert!(s.bouncing);
+        assert_eq!(s.new_location_count, 0);
+    }
+
+    #[test]
+    fn test_mobile_serde() {
+        let mut details = make_test_details();
+        details.mobile = true;
+        details.new_location_count = 5;
+
+        let json = serde_json::to_string(&details).unwrap();
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert!(restored.mobile);
+        assert_eq!(restored.new_location_count, 5);
+
+        // Default deserialization (missing fields)
+        let minimal = r#"{"id":1,"station":"X","moved":false,"bouncing":false,"valid":false,"stats":{}}"#;
+        let restored: StationDetails = serde_json::from_str(minimal).unwrap();
+        assert!(!restored.mobile);
+        assert_eq!(restored.new_location_count, 0);
+    }
+
+    #[test]
+    fn test_timestamp_follows_coordinates() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+
+        // Establish at LOC_A with timestamp 1000
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(1000)));
+
+        // Move to LOC_B with timestamp 2000
+        // Old primary (LOC_A, ts=1000) becomes previous
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(2000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(2000)));
+        assert_eq!(s.previous_location, Some([LOC_A.0, LOC_A.1]));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(1000)));
+
+        // Move to LOC_C with timestamp 3000
+        // Old primary (LOC_B, ts=2000) becomes previous
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(3000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_C.0, LOC_C.1]));
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(3000)));
+        assert_eq!(s.previous_location, Some([LOC_B.0, LOC_B.1]));
+        assert_eq!(s.last_seen_at_previous, Some(Epoch(2000)));
+    }
+
+    #[test]
+    fn test_first_packet_sets_primary_and_last_seen() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, None, Epoch(1000), "raw");
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.primary_location, Some([LOC_A.0, LOC_A.1]));
+        assert!(!s.moved);
+        assert!(!s.bouncing);
+        assert!(!s.mobile);
+        assert_eq!(s.last_seen_at_primary, Some(Epoch(1000)));
+    }
+
+    #[test]
+    fn test_record_beacon_rollover_stashes_prev() {
+        let mgr = StationManager::new_for_test();
+        mgr.update(&make_test_details());
+        let name = StationName("TEST".to_string());
+        let popcount = |hex: &Option<String>| {
+            crate::bitvec::popcount_144(&crate::bitvec::hex_to_bitvec(hex.as_deref().unwrap()).unwrap())
+        };
+        let date_of = |ts: u32| {
+            chrono::DateTime::from_timestamp(ts as i64, 0)
+                .unwrap()
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+
+        let day1 = 1_900_000_800u32; // mid-day
+        let day2 = day1 + 86400;
+
+        mgr.record_beacon(&name, day1);
+        mgr.record_beacon(&name, day1 + 600);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.beacon_activity_date, Some(date_of(day1)));
+        assert_eq!(popcount(&s.beacon_activity), 2);
+        assert!(s.beacon_activity_prev.is_none());
+
+        // First beacon of the next day moves the completed day into the stash
+        mgr.record_beacon(&name, day2);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.beacon_activity_date, Some(date_of(day2)));
+        assert_eq!(popcount(&s.beacon_activity), 1);
+        assert_eq!(s.beacon_activity_prev_date, Some(date_of(day1)));
+        assert_eq!(popcount(&s.beacon_activity_prev), 2);
+
+        // A late beacon timestamped in the previous day lands in the stash
+        mgr.record_beacon(&name, day1 + 1200);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(popcount(&s.beacon_activity_prev), 3);
+        assert_eq!(popcount(&s.beacon_activity), 1);
+
+        // A beacon older than the stash is dropped
+        mgr.record_beacon(&name, day1 - 86400);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(popcount(&s.beacon_activity_prev), 3);
+        assert_eq!(popcount(&s.beacon_activity), 1);
+        assert_eq!(s.beacon_activity_prev_date, Some(date_of(day1)));
+    }
+
+    #[test]
+    fn test_activity_serde_roundtrip() {
+        let mut details = make_test_details();
+
+        // Without beacon activity
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(!json.contains("beaconActivity"));
+
+        // With beacon activity
+        let bits = [0x01u64, 0x00, 0x00];
+        details.beacon_activity = Some(bitvec_to_hex(&bits));
+        details.beacon_activity_date = Some("2026-03-15".to_string());
+        let json = serde_json::to_string(&details).unwrap();
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.beacon_activity, details.beacon_activity);
+        assert_eq!(restored.beacon_activity_date, details.beacon_activity_date);
+    }
+}

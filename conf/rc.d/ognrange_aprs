@@ -1,0 +1,34 @@
+#!/bin/sh
+
+# PROVIDE: ognrange_aprs
+# REQUIRE: DAEMON NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="ognrange_aprs"
+rcvar="${name}_enable"
+
+load_rc_config $name
+
+: ${ognrange_aprs_enable:="NO"}
+: ${ognrange_aprs_user:="ognrange"}
+: ${ognrange_aprs_dir:="/usr/local/ognrange"}
+: ${ognrange_aprs_env_file:="${ognrange_aprs_dir}/.env.local"}
+
+pidfile="/var/run/${name}.pid"
+command="/usr/sbin/daemon"
+ognrange_aprs_env="LOG_SYSLOG=1 LOG_STDOUT=0"
+command_args="-P ${pidfile} -r -f -S -t ${name} env ${ognrange_aprs_env} ${ognrange_aprs_dir}/aprs-server"
+
+start_precmd="${name}_prestart"
+
+ognrange_aprs_prestart()
+{
+	if [ ! -f "${ognrange_aprs_env_file}" ]; then
+		warn "${ognrange_aprs_env_file} not found"
+	fi
+	install -o ${ognrange_aprs_user} /dev/null ${pidfile}
+}
+
+run_rc_command "$1"

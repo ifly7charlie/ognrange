@@ -6,6 +6,7 @@ import {tableFromIPC, Table} from 'apache-arrow/Arrow.node';
 import {gunzipSync} from 'zlib';
 
 import {MAX_ARROW_FILES, ARROW_PATH, UNCOMPRESSED_ARROW_FILES} from '../common/config';
+import {ALL_LAYER_NAMES, Layer, shouldProduceOutput} from '../common/layers';
 
 type ArrowTableType = Table<any>;
 
@@ -15,7 +16,7 @@ const options = {max: MAX_ARROW_FILES, updateAgeOnGet: true, allowStale: true, t
 
 const dateFormat = new Intl.DateTimeFormat(['en-US'], {month: '2-digit', day: '2-digit', timeZone: 'UTC'});
 
-interface RowResult {
+export interface RowResult {
     h3lo: number;
     h3hi: number;
     minAgl: number;
@@ -32,6 +33,51 @@ interface RowResult {
 }
 
 type RowResultFunction = (data: RowResult | void) => void;
+
+export function mergeRows(rows: RowResult[]): RowResult | void {
+    if (!rows.length) return;
+    if (rows.length === 1) return rows[0];
+
+    let count = 0;
+    let maxSig = -Infinity;
+    let minAgl = Infinity;
+    let minAlt = Infinity;
+    let minAltSig = 0;
+    let weightedSig = 0;
+    let weightedGap = 0;
+    let weightedCrc = 0;
+    let expectedGap: number | undefined;
+
+    for (const row of rows) {
+        count += row.count;
+        if (row.maxSig > maxSig) maxSig = row.maxSig;
+        if (row.minAgl < minAgl) minAgl = row.minAgl;
+        if (row.minAlt < minAlt) {
+            minAlt = row.minAlt;
+            minAltSig = row.minAltSig;
+        }
+        weightedSig += row.avgSig * row.count;
+        weightedGap += row.avgGap * row.count;
+        weightedCrc += row.avgCrc * row.count;
+        if (row.expectedGap !== undefined) {
+            expectedGap = expectedGap === undefined ? row.expectedGap : Math.min(expectedGap, row.expectedGap);
+        }
+    }
+
+    return {
+        h3lo: rows[0].h3lo,
+        h3hi: rows[0].h3hi,
+        count,
+        maxSig,
+        minAgl,
+        minAlt,
+        minAltSig,
+        avgSig: count > 0 ? weightedSig / count : 0,
+        avgGap: count > 0 ? weightedGap / count : 0,
+        avgCrc: count > 0 ? weightedCrc / count : 0,
+        expectedGap
+    };
+}
 
 //
 // Search a single file
@@ -73,40 +119,72 @@ export function searchArrowFile(fileName: string, h3SplitLong: [number, number],
     });
 }
 
+// Encode a date string (YYYY, YYYY-MM, or YYYY-MM-DD) as a sortable integer
+// Missing month/day default to 1 so "2026-03" encodes as 2026-03-01
+function dateToNum(dateStr: string): number {
+    const parts = dateStr.split('-');
+    return (parseInt(parts[0]) || 0) * 384 + (parseInt(parts[1]) || 1) * 32 + (parseInt(parts[2]) || 1);
+}
+
 // Scan directory for files
-export async function searchMatchingArrowFiles(station: string, fileDateMatch: string, h3SplitLong: [number, number], oldest: Date | undefined, combine: Function) {
+export async function searchMatchingArrowFiles(station: string, dateStart: string, dateEnd: string, h3SplitLong: [number, number], oldest: Date | undefined, combine: (row: RowResult, date: string, layer: string) => void, layers?: string[]) {
+    const effectiveLayers = (layers?.length ? layers : ['combined']).filter((l) => ALL_LAYER_NAMES.has(l));
+    if (!effectiveLayers.length) return;
+    const includeCombined = effectiveLayers.includes('combined');
+    const nonCombined = effectiveLayers.filter((l) => l !== 'combined');
+
+    let layerPart: string;
+    if (includeCombined && nonCombined.length > 0) layerPart = `(?:\\.(${nonCombined.join('|')}))?`;
+    else if (!includeCombined) layerPart = `\\.(${nonCombined.join('|')})`;
+    else layerPart = '';
+
+    const fileMatcher = new RegExp(`(day|month|year)\\.([0-9-]+)${layerPart}\\.arrow\\.gz$`);
+
+    const queryStart = dateStart ? dateToNum(dateStart) : 0;
+    const queryEnd = dateEnd ? dateToNum(dateEnd) : Infinity;
+
     const pending = new Map<string, Promise<string>>();
     try {
         const files = readdirSync(ARROW_PATH + station)
             .map((fn) => {
-                return {date: fn.match(/day\.([0-9-]+)\.arrow\.gz$/)?.[1] || '', fileName: fn};
+                const m = fn.match(fileMatcher);
+                if (!m) return null;
+                return {periodType: m[1], date: m[2], layer: m[3] || 'combined', fileName: fn};
             })
-            .filter((x) => x.date?.substring(0, fileDateMatch.length) == fileDateMatch);
-        //            .sort((a, b) => a.fileName.localeCompare(b.fileName));
+            .filter((x): x is NonNullable<typeof x> => {
+                if (!x) return false;
+                const fileNum = dateToNum(x.date);
+                if (fileNum < queryStart || fileNum > queryEnd) return false;
+                // Daily layers use day.* files; non-daily layers use month/year files
+                const isDaily = shouldProduceOutput(x.layer as Layer, 'day');
+                return isDaily ? x.periodType === 'day' : x.periodType !== 'day';
+            });
 
         for (const file of files) {
-            const fileDate = new Date(file.date);
-            if (oldest && fileDate < oldest) {
-                continue;
+            if (file.periodType === 'day') {
+                const fileDate = new Date(file.date);
+                if (oldest && fileDate < oldest) continue;
             }
+
+            const dateStr = file.periodType === 'day' ? dateFormat.format(new Date(file.date)).replace(' ', '-') : file.date;
 
             pending.set(
                 file.fileName,
                 new Promise<string>((resolve) => {
                     searchArrowFile(`${station}/${file.fileName}`, h3SplitLong, (row) => {
                         if (row) {
-                            combine(row, dateFormat.format(fileDate).replace(' ', '-'));
+                            combine(row, dateStr, file.layer);
                         }
                         resolve(file.fileName);
                     });
                 })
             );
-        }
-        // Keep the queue size down so we don't run out of files
-        // or memory
-        if (pending.size > 0) {
-            const done = await Promise.race(pending.values());
-            pending.delete(done);
+            // Keep the queue size down so we don't run out of files
+            // or memory
+            if (pending.size > 0) {
+                const done = await Promise.race(pending.values());
+                pending.delete(done);
+            }
         }
     } catch (e) {
         console.log(e);

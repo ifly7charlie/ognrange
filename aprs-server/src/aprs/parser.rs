@@ -1,0 +1,530 @@
+//! APRS packet parser focused on OGN (Open Glider Network) packet formats.
+//!
+//! Handles the subset of APRS used by OGN:
+//! - Position reports with timestamps (aircraft tracking)
+//! - Station location/status beacons
+//! - Comment parsing for signal strength, CRC, rotation, vertical speed
+
+use once_cell::sync::Lazy;
+use regex::Regex;
+
+/// Compiled regexes for comment field extraction (matching the TypeScript originals)
+static RE_EXTRACT_DB: Lazy<Regex> = Lazy::new(|| Regex::new(r" (-?[0-9.]+)dB( |$)").unwrap());
+static RE_EXTRACT_CRC: Lazy<Regex> = Lazy::new(|| Regex::new(r" ([0-9])e ").unwrap());
+static RE_EXTRACT_ROT: Lazy<Regex> = Lazy::new(|| Regex::new(r" [+-]([0-9.]+)rot ").unwrap());
+static RE_EXTRACT_VC: Lazy<Regex> = Lazy::new(|| Regex::new(r" [+-]([0-9]+)fpm ").unwrap());
+/// DAO extension for position precision: !Wab! where a,b are base-91 digits
+static RE_DAO: Lazy<Regex> = Lazy::new(|| Regex::new(r"!W([0-9])([0-9])!").unwrap());
+static RE_EXTRACT_ID: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?:^| )id([0-9A-Fa-f]{2})[0-9A-Fa-f]{6}(?: |$)").unwrap());
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PacketType {
+    Location,
+    Status,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct Digipeater {
+    pub callsign: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AprsPacket {
+    pub source_callsign: String,
+    pub dest_callsign: String,
+    pub digipeaters: Vec<Digipeater>,
+    pub packet_type: PacketType,
+    pub timestamp: Option<u32>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub altitude: Option<f64>, // meters
+    pub speed: Option<f64>,    // knots
+    pub comment: Option<String>,
+    pub body: Option<String>,
+}
+
+impl Default for AprsPacket {
+    fn default() -> Self {
+        Self {
+            source_callsign: String::new(),
+            dest_callsign: String::new(),
+            digipeaters: Vec::new(),
+            packet_type: PacketType::Other,
+            timestamp: None,
+            latitude: None,
+            longitude: None,
+            altitude: None,
+            speed: None,
+            comment: None,
+            body: None,
+        }
+    }
+}
+
+/// Extract signal strength in dB from comment, returns raw float
+pub fn extract_signal_db(comment: &str) -> Option<f32> {
+    RE_EXTRACT_DB
+        .captures(comment)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<f32>().ok())
+}
+
+/// Quantise a reported dB signal to storage units: quarter-dB, clamped to
+/// [1, 255] so full scale is 63.75dB. 0 is reserved for "no signal report",
+/// so any present report floors to 1 even if it parsed as zero or negative.
+pub fn quantise_signal_db(raw_db: f32) -> u8 {
+    ((raw_db.max(0.0) * 4.0).round() as u16).min(255).max(1) as u8
+}
+
+/// Extract the address type from the OGN `id` field's flags byte (bits 0-1):
+/// 0 = random/unknown, 1 = ICAO, 2 = FLARM, 3 = OGN tracker.
+/// Only matches the 32-bit id form (`idXXYYYYYY`); Naviter's 40-bit ids
+/// return None, as does a comment with no id field.
+pub fn extract_address_type(comment: &str) -> Option<u8> {
+    RE_EXTRACT_ID
+        .captures(comment)
+        .and_then(|c| c.get(1))
+        .and_then(|m| u8::from_str_radix(m.as_str(), 16).ok())
+        .map(|flags| flags & 0x03)
+}
+
+/// Extract CRC error count from comment
+pub fn extract_crc(comment: &str) -> u8 {
+    RE_EXTRACT_CRC
+        .captures(comment)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<u8>().ok())
+        .unwrap_or(0)
+}
+
+/// Extract rotation rate from comment
+pub fn extract_rotation(comment: &str) -> f32 {
+    RE_EXTRACT_ROT
+        .captures(comment)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<f32>().ok())
+        .unwrap_or(0.0)
+}
+
+/// Extract vertical climb rate in fpm from comment
+pub fn extract_vertical_speed(comment: &str) -> f32 {
+    RE_EXTRACT_VC
+        .captures(comment)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<f32>().ok())
+        .unwrap_or(0.0)
+}
+
+/// Parse a raw APRS packet line into structured data.
+///
+/// OGN APRS format examples:
+/// ```text
+/// FLR1234AB>OGFLR,qAS,MyStation:/123456h4800.00N/01200.00E'000/000/A=001234 !W42! id06... 7.0dB 0e
+/// MyStation>OGNSDR,TCPIP*,qAC,GLIDERN2:/123456h4800.00N/01200.00E'/A=000123 v0.2.8...
+/// MyStation>OGNSDR,TCPIP*,qAC,GLIDERN2:>123456h v0.2.8 status info
+/// ```
+pub fn parse_aprs(raw: &str) -> Option<AprsPacket> {
+    let mut packet = AprsPacket::default();
+
+    // Split header from body at first ':'
+    let colon_pos = raw.find(':')?;
+    let header = &raw[..colon_pos];
+    let body = &raw[colon_pos + 1..];
+
+    // Parse header: SOURCE>DEST[,DIGI1[*],DIGI2[*],...]
+    let gt_pos = header.find('>')?;
+    packet.source_callsign = header[..gt_pos].to_string();
+    let path = &header[gt_pos + 1..];
+
+    let path_parts: Vec<&str> = path.split(',').collect();
+    if path_parts.is_empty() {
+        return None;
+    }
+    packet.dest_callsign = path_parts[0].trim_end_matches('*').to_string();
+
+    for &part in &path_parts[1..] {
+        packet.digipeaters.push(Digipeater {
+            callsign: part.trim_end_matches('*').to_string(),
+        });
+    }
+
+    if body.is_empty() {
+        return Some(packet);
+    }
+
+    let first_char = body.as_bytes()[0];
+
+    match first_char {
+        // Timestamp + position (most common for OGN)
+        b'/' | b'@' => {
+            parse_position_with_timestamp(body, &mut packet);
+        }
+        // Position without timestamp
+        b'!' | b'=' => {
+            parse_position_without_timestamp(body, &mut packet);
+        }
+        // Status report
+        b'>' => {
+            packet.packet_type = PacketType::Status;
+            let status_body = &body[1..];
+
+            // Status may have a timestamp prefix: HHMMSSh or DDHHMMz
+            if status_body.len() >= 7 {
+                let seventh = status_body.as_bytes().get(6).copied().unwrap_or(0);
+                if seventh == b'h' || seventh == b'z' {
+                    packet.timestamp = parse_timestamp(&status_body[..7]);
+                    packet.body = Some(status_body[7..].trim().to_string());
+                } else {
+                    packet.body = Some(status_body.to_string());
+                }
+            } else {
+                packet.body = Some(status_body.to_string());
+            }
+        }
+        _ => {
+            packet.packet_type = PacketType::Other;
+            packet.body = Some(body.to_string());
+        }
+    }
+
+    Some(packet)
+}
+
+/// Parse a position report with timestamp prefix.
+/// Format: /HHMMSSh DDmm.hhN/DDDmm.hhE symbol CSE/SPD /A=AAAAAA comment
+fn parse_position_with_timestamp(body: &str, packet: &mut AprsPacket) {
+    packet.packet_type = PacketType::Location;
+
+    // Need at least: /HHMMSSh (8) + DDmm.hhN (8) + / (1) + DDDmm.hhE (9) + sym (1) = 27
+    if body.len() < 27 {
+        packet.packet_type = PacketType::Other;
+        return;
+    }
+
+    // Parse timestamp: /HHMMSSh or /DDHHMMz
+    // get(): offsets can land inside a multi-byte char when the line was decoded lossily
+    let (Some(ts_str), Some(pos_str)) = (body.get(1..8), body.get(8..)) else {
+        packet.packet_type = PacketType::Other;
+        return;
+    };
+    packet.timestamp = parse_timestamp(ts_str);
+    parse_position(pos_str, packet);
+}
+
+/// Parse a position report without timestamp.
+/// Format: !DDmm.hhN/DDDmm.hhE symbol CSE/SPD /A=AAAAAA comment
+fn parse_position_without_timestamp(body: &str, packet: &mut AprsPacket) {
+    packet.packet_type = PacketType::Location;
+    if body.len() < 20 {
+        packet.packet_type = PacketType::Other;
+        return;
+    }
+    parse_position(&body[1..], packet);
+}
+
+/// Parse position from: DDmm.hhN/DDDmm.hhE<sym> CSE/SPD /A=AAAAAA comment
+fn parse_position(pos_str: &str, packet: &mut AprsPacket) {
+    if pos_str.len() < 19 {
+        packet.packet_type = PacketType::Other;
+        return;
+    }
+
+    // Latitude DDmm.hhN (8), symbol table (1), longitude DDDmm.hhE (9), symbol code (1),
+    // then the rest at offset 19.
+    // get(): offsets can land inside a multi-byte char when the line was decoded lossily
+    let (Some(lat_str), Some(lon_str), Some(rest)) =
+        (pos_str.get(..8), pos_str.get(9..18), pos_str.get(19..))
+    else {
+        packet.packet_type = PacketType::Other;
+        return;
+    };
+
+    let mut lat = parse_latitude(lat_str);
+    let mut lon = parse_longitude(lon_str);
+
+    if lat.is_none() || lon.is_none() {
+        packet.packet_type = PacketType::Other;
+        return;
+    }
+
+    // Parse course/speed if present: CCC/SSS
+    if rest.len() >= 7 && rest.as_bytes()[3] == b'/' {
+        if let Some(Ok(speed)) = rest.get(4..7).map(|s| s.parse::<f64>()) {
+            packet.speed = Some(speed); // knots
+        }
+    }
+
+    // Extract altitude: /A=NNNNNN (feet → meters)
+    if let Some(alt_pos) = rest.find("/A=") {
+        let alt_str = &rest[alt_pos + 3..];
+        let alt_end = alt_str.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(alt_str.len());
+        if let Ok(alt_feet) = alt_str[..alt_end].parse::<f64>() {
+            packet.altitude = Some(alt_feet * 0.3048); // feet to meters
+        }
+    }
+
+    // Extract comment (everything after /A=NNNNNN or after course/speed)
+    // For OGN, the comment contains signal info and starts with !Wab! idXX...
+    let comment_start = rest.find(" ").map(|p| p + 1).unwrap_or(0);
+    let comment = &rest[comment_start..];
+
+    // Apply DAO position enhancement (!Wab!)
+    if let Some(caps) = RE_DAO.captures(comment) {
+        if let (Some(a), Some(b)) = (caps.get(1), caps.get(2)) {
+            if let (Ok(da), Ok(db)) = (a.as_str().parse::<f64>(), b.as_str().parse::<f64>()) {
+                if let Some(ref mut lat_val) = lat {
+                    let sign = if *lat_val >= 0.0 { 1.0 } else { -1.0 };
+                    *lat_val += sign * da * 0.001 / 60.0;
+                }
+                if let Some(ref mut lon_val) = lon {
+                    let sign = if *lon_val >= 0.0 { 1.0 } else { -1.0 };
+                    *lon_val += sign * db * 0.001 / 60.0;
+                }
+            }
+        }
+    }
+
+    packet.latitude = lat;
+    packet.longitude = lon;
+    packet.comment = Some(comment.to_string());
+}
+
+/// Parse APRS latitude: DDmm.hhN → decimal degrees
+fn parse_latitude(s: &str) -> Option<f64> {
+    if s.len() < 8 {
+        return None;
+    }
+    let degrees: f64 = s.get(..2)?.parse().ok()?;
+    let minutes: f64 = s.get(2..7)?.parse().ok()?;
+    let hemisphere = s.as_bytes()[7];
+
+    let mut lat = degrees + minutes / 60.0;
+    if hemisphere == b'S' {
+        lat = -lat;
+    } else if hemisphere != b'N' {
+        return None;
+    }
+
+    if lat < -90.0 || lat > 90.0 {
+        return None;
+    }
+    Some(lat)
+}
+
+/// Parse APRS longitude: DDDmm.hhE → decimal degrees
+fn parse_longitude(s: &str) -> Option<f64> {
+    if s.len() < 9 {
+        return None;
+    }
+    let degrees: f64 = s.get(..3)?.parse().ok()?;
+    let minutes: f64 = s.get(3..8)?.parse().ok()?;
+    let hemisphere = s.as_bytes()[8];
+
+    let mut lon = degrees + minutes / 60.0;
+    if hemisphere == b'W' {
+        lon = -lon;
+    } else if hemisphere != b'E' {
+        return None;
+    }
+
+    if lon < -180.0 || lon > 180.0 {
+        return None;
+    }
+    Some(lon)
+}
+
+/// Parse APRS timestamp: HHMMSSh (UTC HMS) or DDHHMMz (UTC DDHHMM).
+///
+/// Mirrors js-aprs-fap behaviour:
+/// - HHMMSSh: if the resulting timestamp is more than 65 minutes in the future,
+///   roll back by one day - the packet is from yesterday (delayed delivery).
+/// - DDHHMMz: try current month first; if that is more than 43400 s in the
+///   future try the previous month (handles rollover near month boundaries).
+fn parse_timestamp(s: &str) -> Option<u32> {
+    if s.len() < 7 {
+        return None;
+    }
+    let format_char = s.as_bytes()[6];
+
+    let now = chrono::Utc::now();
+    let now_ts = now.timestamp();
+
+    use chrono::{Datelike, Duration, NaiveDate, NaiveTime};
+
+    match format_char {
+        b'h' => {
+            // HHMMSSh format - UTC time, no date supplied.
+            // If the time looks future by more than 65 min, it is from yesterday.
+            let hh: u32 = s.get(..2)?.parse().ok()?;
+            let mm: u32 = s.get(2..4)?.parse().ok()?;
+            let ss: u32 = s.get(4..6)?.parse().ok()?;
+
+            if hh > 23 || mm > 59 || ss > 59 {
+                return None;
+            }
+
+            let date = NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())?;
+            let time = NaiveTime::from_hms_opt(hh, mm, ss)?;
+            let mut ts = date.and_time(time).and_utc().timestamp();
+            if ts > now_ts + 3900 {
+                ts -= 86400;
+            }
+            if ts < 0 {
+                return None;
+            }
+            Some(ts as u32)
+        }
+        b'z' => {
+            // DDHHMMz format - day-of-month + UTC time; no month or year supplied.
+            // Try the current month; if that date is more than ~12 h in the future,
+            // fall back to the previous month (packet just before month rollover).
+            let dd: u32 = s.get(..2)?.parse().ok()?;
+            let hh: u32 = s.get(2..4)?.parse().ok()?;
+            let mm: u32 = s.get(4..6)?.parse().ok()?;
+
+            if dd < 1 || dd > 31 || hh > 23 || mm > 59 {
+                return None;
+            }
+
+            let time = NaiveTime::from_hms_opt(hh, mm, 0)?;
+
+            // Current-month candidate
+            let curr = NaiveDate::from_ymd_opt(now.year(), now.month(), dd)
+                .map(|d| d.and_time(time).and_utc().timestamp());
+
+            if let Some(ts) = curr {
+                if ts <= now_ts + 43400 {
+                    return if ts >= 0 { Some(ts as u32) } else { None };
+                }
+            }
+
+            // Previous-month candidate (handles packets arriving just after month roll)
+            let prev_month_date = NaiveDate::from_ymd_opt(now.year(), now.month(), 1)?
+                .checked_sub_signed(Duration::days(1))?;
+            let back = NaiveDate::from_ymd_opt(prev_month_date.year(), prev_month_date.month(), dd)
+                .map(|d| d.and_time(time).and_utc().timestamp());
+
+            if let Some(ts) = back {
+                if ts >= 0 {
+                    return Some(ts as u32);
+                }
+            }
+
+            None
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_latitude() {
+        assert!((parse_latitude("4539.16N").unwrap() - 45.65267).abs() < 0.001);
+        assert!((parse_latitude("3412.50S").unwrap() - (-34.20833)).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_longitude() {
+        assert!((parse_longitude("00555.89E").unwrap() - 5.93150).abs() < 0.001);
+        assert!((parse_longitude("12030.00W").unwrap() - (-120.5)).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_ogn_packet() {
+        let raw = "FLRDDA5BA>APRS,qAS,LFLE:/072319h4539.16N/00555.89E'267/131/A=004567 !W97! id06DDA5BA -019fpm +0.0rot 7.0dB 0e +51.2kHz gps4x6";
+        let packet = parse_aprs(raw).unwrap();
+        assert_eq!(packet.source_callsign, "FLRDDA5BA");
+        assert_eq!(packet.dest_callsign, "APRS");
+        assert_eq!(packet.digipeaters.len(), 2);
+        assert_eq!(packet.digipeaters[0].callsign, "qAS");
+        assert_eq!(packet.digipeaters[1].callsign, "LFLE");
+        assert_eq!(packet.packet_type, PacketType::Location);
+        assert!(packet.latitude.is_some());
+        assert!(packet.longitude.is_some());
+        assert!(packet.altitude.is_some());
+        // Altitude: 4567 feet = ~1392 meters
+        assert!((packet.altitude.unwrap() - 1392.0).abs() < 1.0);
+        assert!(packet.comment.as_ref().unwrap().contains("id06DDA5BA"));
+        assert!(packet.comment.as_ref().unwrap().contains("7.0dB"));
+    }
+
+    #[test]
+    fn test_extract_signal() {
+        let comment = "!W97! id06DDA5BA -019fpm +0.0rot 7.0dB 0e +51.2kHz gps4x6";
+        assert!((extract_signal_db(comment).unwrap() - 7.0).abs() < 0.01);
+        assert_eq!(extract_crc(comment), 0);
+        assert!((extract_rotation(comment) - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_extract_address_type() {
+        // 0x06 = FLARM address (type 2)
+        let flarm = "!W97! id06DDA5BA -019fpm +0.0rot 7.0dB 0e +51.2kHz gps4x6";
+        assert_eq!(extract_address_type(flarm), Some(2));
+        // 0x25 = ICAO address (type 1)
+        assert_eq!(extract_address_type("!W25! id254CAE1D -320fpm FL038.24"), Some(1));
+        // 0x07 = OGN tracker address (type 3)
+        assert_eq!(extract_address_type("id07DF0A52 +020fpm"), Some(3));
+        // 0x20 = random/unknown address (type 0)
+        assert_eq!(extract_address_type("!W28! id20DD1234 +000fpm +0.0rot"), Some(0));
+        // Naviter 40-bit id doesn't match the 32-bit form
+        assert_eq!(extract_address_type("!W76! id1C4007220E +180fpm +0.0rot"), None);
+        // No id field at all
+        assert_eq!(extract_address_type("v0.2.8 CPU:0.9"), None);
+    }
+
+    #[test]
+    fn test_quantise_signal_db() {
+        assert_eq!(quantise_signal_db(7.0), 28);
+        assert_eq!(quantise_signal_db(15.75), 63);
+        // strong near-station reports must keep full quarter-dB range, not cap at 63
+        assert_eq!(quantise_signal_db(40.0), 160);
+        assert_eq!(quantise_signal_db(63.75), 255);
+        assert_eq!(quantise_signal_db(99.0), 255);
+        // 0 means "no report"; present-but-zero or negative reports floor to 1
+        assert_eq!(quantise_signal_db(0.0), 1);
+        assert_eq!(quantise_signal_db(-2.5), 1);
+    }
+
+    #[test]
+    fn test_parse_station_status() {
+        let raw = "MyStation>OGNSDR,TCPIP*,qAC,GLIDERN2:>072319h v0.2.8 CPU:0.9";
+        let packet = parse_aprs(raw).unwrap();
+        assert_eq!(packet.source_callsign, "MyStation");
+        assert_eq!(packet.dest_callsign, "OGNSDR");
+        assert_eq!(packet.packet_type, PacketType::Status);
+        assert!(packet.body.is_some());
+    }
+
+    #[test]
+    fn test_multibyte_chars_in_position_no_panic() {
+        // Packet seen live (2026-07-19): binary garbage in the position field.
+        // Multi-byte chars must not panic the byte-offset slicing, whether they
+        // arrive as real UTF-8 or as U+FFFD from a lossy decode.
+        let raw_bytes: &[u8] = b"ICA4CAE1D>OGADSB,qAS,AVX:/\xf2\xf0*\x1d\xfdd\x85XJ\x1a'\x8a\xda\x11\xdfSG\xfd\xd6\xe87\xddD\x13NAt\xd14/280/A=004067 !W25! id254CAE1D -320fpm FL038.24 A3:ITY721 Sq7735";
+        let line = String::from_utf8_lossy(raw_bytes);
+        let packet = parse_aprs(&line).unwrap();
+        assert_eq!(packet.packet_type, PacketType::Other);
+        assert!(packet.latitude.is_none());
+
+        // Multi-byte chars landing mid-field in each parse helper
+        assert!(parse_latitude("4é39.16N").is_none());
+        assert!(parse_longitude("00é55.89E").is_none());
+        assert!(parse_timestamp("0é2319h").is_none());
+        assert!(parse_timestamp("0é2319z").is_none());
+    }
+
+    #[test]
+    fn test_parse_station_location() {
+        let raw = "Hedensted>OGNSDR,TCPIP*,qAC,GLIDERN4:/072319h5547.67N/00934.40E'/A=000075 v0.2.8 CPU:0.9";
+        let packet = parse_aprs(raw).unwrap();
+        assert_eq!(packet.packet_type, PacketType::Location);
+        assert!(packet.latitude.is_some());
+        assert!(packet.altitude.is_some());
+    }
+}

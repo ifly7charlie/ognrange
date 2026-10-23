@@ -28,14 +28,14 @@ COPY ./lib/react ./lib/react
 COPY --from=version /ognrange/.env.local ./.env.local
 RUN yarn next build
 
-FROM build-image AS aprs-build-image
-COPY ./lib/common ./lib/common
-COPY ./bin ./bin
-COPY ./lib/bin ./lib/bin
-COPY ./lib/worker ./lib/worker
-COPY ./tsconfig-bin.json ./tsconfig-bin.json
-COPY --from=version /ognrange/.env.local ./.env.local
-RUN yarn aprs:build
+FROM rust:1-alpine AS aprs-build-image
+RUN apk add --no-cache musl-dev
+WORKDIR /aprs-server
+COPY ./aprs-server/Cargo.toml ./aprs-server/Cargo.lock ./
+# pre-build dependencies for layer caching
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
+COPY ./aprs-server/src ./src
+RUN touch src/main.rs && cargo build --release
 
 
 ########### production images
@@ -61,14 +61,14 @@ COPY --from=next-build-image /ognrange/.env.local ./.env.local
 EXPOSE 3000
 CMD yarn next start
 
-FROM node-base AS aprs
+FROM alpine:3 AS aprs
+RUN apk add --no-cache flock
 HEALTHCHECK --interval=10s --retries=5 CMD flock --exclusive --nonblock /ognrange/data/db/status/LOCK  --command 'echo lock failed' || exit 1
 WORKDIR /ognrange
 RUN mkdir data
-COPY --from=aprs-build-image /ognrange/dist ./dist
-COPY --from=aprs-build-image /ognrange/package.json .
-COPY --from=aprs-build-image /ognrange/.env.local ./.env.local
-CMD node dist/bin/aprs.js
+COPY --from=aprs-build-image /aprs-server/target/release/aprs-server ./aprs-server
+COPY --from=version /ognrange/.env.local ./.env.local
+CMD ["./aprs-server"]
 
 FROM httpd:2.4-alpine AS apache
 HEALTHCHECK --interval=10s --retries=5 CMD wget --no-verbose --tries=1 --spider http://apache:8000/ || exit 1

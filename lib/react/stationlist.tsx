@@ -1,10 +1,19 @@
 import Link from 'next/link';
 import {useMemo, useCallback} from 'react';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
+import {useSearchParams} from 'next/navigation';
 
 import {reduce as _reduce, sortedIndexOf as _sortedIndexOf} from 'lodash';
 
-import {useStationMeta} from './stationmeta';
+import {useStationListMetaUnfiltered} from './stationmeta';
+import {LAYER_BIT, LAYER_COLOR, Layer, layerMaskFromSet, ALL_LAYER_NAMES} from '../common/layers';
+
+// Ordered to match protocol statistics tab order
+const LAYER_DOT_ORDER = [Layer.FLARM, Layer.ADSB, Layer.ADSL, Layer.FANET, Layer.OGNTRK, Layer.PAW, Layer.SAFESKY] as const;
+
+function rgbToHex([r, g, b]: [number, number, number]): string {
+    return '#' + [r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('');
+}
 import {cellToLatLng, greatCircleDistance} from 'h3-js';
 
 export function StationList({
@@ -18,7 +27,16 @@ export function StationList({
     setStation: (a: string) => void;
 }) {
     const {t} = useTranslation('common', {keyPrefix: 'details.stations'});
-    const stationMeta = useStationMeta();
+    const stationMeta = useStationListMetaUnfiltered();
+    const params = useSearchParams();
+    const selectedLayerMask = useMemo(() => {
+        const layersParam = params.get('layers');
+        if (!layersParam) return null;
+        const layerValues = layersParam.split(',').map((s) => s.trim()).filter((s) => ALL_LAYER_NAMES.has(s)) as Layer[];
+        return layerValues.length > 0 ? layerMaskFromSet(layerValues) : null;
+    }, [params]);
+    const combinedBit = 1 << LAYER_BIT[Layer.COMBINED];
+
     const selectStation = useCallback(
         (e) => {
             setStation(e.currentTarget?.id);
@@ -41,12 +59,33 @@ export function StationList({
                     const loc = index != -1 && !isNaN(stationMeta.lat[index]) ? [stationMeta.lat[index], stationMeta.lng[index]] : null;
                     const name = index != -1 ? stationMeta.name[index] : null;
                     const dist = loc ? greatCircleDistance(cellToLatLng(selectedH3), loc, 'km').toFixed(0) + ' km' : '';
+                    const mask = index != -1 && stationMeta.layerMask ? stationMeta.layerMask[index] : 0;
+                    const effectiveMask = mask === 0 ? combinedBit : mask;
+                    const layerSupported = selectedLayerMask === null || (effectiveMask & selectedLayerMask) !== 0;
+                    const dots = LAYER_DOT_ORDER.filter((l) => effectiveMask & (1 << LAYER_BIT[l]));
                     acc.push(
-                        <tr key={sid}>
+                        <tr key={sid} style={layerSupported ? undefined : {opacity: 0.4}}>
                             <td>
                                 <Link replace onClick={selectStation} href={'#'} id={name}>
                                     {name || t('unknown')}
                                 </Link>
+                            </td>
+                            <td style={{width: '1px', whiteSpace: 'nowrap', paddingLeft: '4px'}}>
+                                <span style={{display: 'flex', gap: '2px'}}>
+                                    {dots.map((l) => (
+                                        <span
+                                            key={l}
+                                            title={l}
+                                            style={{
+                                                display: 'inline-block',
+                                                width: '6px',
+                                                height: '6px',
+                                                borderRadius: '50%',
+                                                background: rgbToHex(LAYER_COLOR[l])
+                                            }}
+                                        />
+                                    ))}
+                                </span>
                             </td>
                             <td>{dist}</td>
                             <td>{percentage > 10 ? percentage.toFixed(0) + '%' : ''}</td>
@@ -56,7 +95,7 @@ export function StationList({
                 },
                 []
             ),
-        [encodedList]
+        [encodedList, stationMeta, selectedLayerMask]
     );
 
     // A station is selected so do nothing

@@ -26,6 +26,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# rust
+aprs-server/target
+
 # emacs
 *~
 #*#

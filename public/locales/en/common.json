@@ -2,10 +2,26 @@
     "selectors": {
         "station": "Select station to display",
         "period": "Select time period to display",
-        "visualisation": "Select visualisation"
+        "visualisation": "Select visualisation",
+        "layers": "Select protocol layers"
+    },
+    "layers": {
+        "all": "All",
+        "combined": "FLARM+OGN",
+        "flarm": "FLARM",
+        "adsb": "ADS-B",
+        "adsl": "ADS-L",
+        "fanet": "FANET",
+        "paw": "PilotAware",
+        "ogntrk": "OGN Tracker",
+        "safesky": "SafeSky"
     },
     "period": {
         "title": "Select time period to display",
+        "from": "From",
+        "to": "To",
+        "range_expand": "Select date range",
+        "range_collapse": "Collapse date range",
         "year": "Year (Northern Hemisphere)",
         "yearnz": "Year (Southern Hemisphere)",
         "month": "Month",
@@ -13,7 +29,11 @@
         "current_year": "Current Year ({{value}})",
         "current_yearnz": "Current Year  ({{value}})",
         "current_month": "Current Month  ({{value}})",
-        "current_day": "Current Day  ({{value}})"
+        "current_day": "Current Day  ({{value}})",
+        "partial_option_title": "Some selected layers are missing data for this date",
+        "partial_warning": "Some dates in this range are missing data for: {{layers}}",
+        "no_data_warning": "No data for the selected period for: {{layers}}",
+        "unsupported_period": "{{layers}} does not support the {{period}} view"
     },
     "available": {
         "year": "Years available (Northern Hemisphere)",
@@ -32,7 +52,12 @@
         "avgGap": "Average between packet gap",
         "expectedGap": "Expected between packet gap",
         "stations": "Number of stations",
-        "primaryStation": "Primary station"
+        "primaryStation": "Primary station",
+        "layerCoverage": "Protocol coverage type",
+        "coverageFloor": "Coverage floor (lowest likely altitude)",
+        "terrainFloor": "Terrain floor (line of sight)",
+        "layerCoverageBlend": "Overlapping protocols show blended colours",
+        "presenceOnlySignalWarning": "{{layers}} use a synthetic signal value — signal-based visualisations may be misleading for this layer selection"
     },
     "stations": {
         "global": "All stations (global)",
@@ -61,6 +86,23 @@
         "title_mouse": "Details at mouse position",
         "unlock": "Unlock",
         "distance": "Distance to {{station}}: {{km}}km",
+        "angle": "Elevation angle to lowest point: {{angle}}°",
+        "floor": {
+            "title": "Coverage floor",
+            "bearing": "Bearing from station: {{bearing}}°",
+            "ground": "Terrain elevation: {{ground}}m",
+            "terrain": "Terrain visible above: {{msl}}m ({{agl}}m agl)",
+            "angles": "Skyline: {{terrain}}°, receive horizon: {{receive}}°",
+            "anglesNoReceive": "Skyline: {{terrain}}°, nothing received this way yet",
+            "coverage": "Likely coverage above: {{msl}}m ({{agl}}m agl)",
+            "coverageUnknown": "Likely coverage: unknown — nothing received this way",
+            "clipped": "Above the {{max}}m display limit — not coloured on the map",
+            "extended": "Extended along the terrain skyline from receptions on this bearing — nothing proven at this distance yet",
+            "beyondProven": "Carried outward from the furthest reception on this bearing — nothing proven at this distance yet",
+            "unknown": "No terrain data for this cell",
+            "loadingFetch": "loading horizon data",
+            "loadingCompute": "computing coverage floor"
+        },
         "lowest": {
             "title": "Lowest point",
             "summary": "{{strength}} dB @ {{altitude}}m ({{agl}}m agl)",
@@ -105,29 +147,195 @@
         },
         "statistics": {
             "title": "Statistics at {{when}}",
+            "title_range": "Statistics (aggregated)",
             "count": "Total Packet Count",
-            "ignoredTracker": "Ignored (OGN Tracker)",
-            "invalidTracker": "Invalid (OGN Tracker",
+            "raw": "Raw Packets",
+            "accepted": "Accepted Packets",
+            "ignoredTracker": "Ignored (Relayed)",
+            "invalidTracker": "Invalid (Short Tracker ID)",
             "invalidTimestamp": "Invalid Timestamp",
             "ignoredStationary": "Ignored (Stationary)",
             "ignoredSignal0": "Ignored (No signal strength)",
-            "ignoredPAW": "Ignored (PAW/fake signal strength)",
             "ignoredH3stationary": "Ignored (Mostly Stationary)",
-            "ignoredElevation": "Ignored (Corrupt elevation)"
+            "ignoredElevation": "Ignored (Corrupt elevation)",
+            "ignoredDistance": "Ignored (Too far away)",
+            "ignoredFutureTimestamp": "Ignored (Future timestamp)",
+            "ignoredStaleTimestamp": "Ignored (Stale timestamp)",
+            "avgDelaySecs": "Avg Packet Delay (s)"
+        },
+        "beacon": {
+            "title": "Beacon Activity",
+            "title_range": "Beacon Activity (date range)",
+            "hour_label": "{{hour}}:00",
+            "legend_active": "Station active",
+            "legend_inactive": "Station inactive",
+            "legend_server_down": "Server down"
+        },
+        "uptime": {
+            "title": "Station Uptime",
+            "percent": "{{percent}}%"
+        },
+        "server": {
+            "uptime_title": "Server Uptime"
+        },
+        "horizon": {
+            "title": "Measured Receive Horizon",
+            "frequency": "{{mhz}} MHz",
+            "step": "Step {{n}}",
+            "step_reach": "out to {{distance}} km (≈{{height}} m above station there)",
+            "tooltip_count": "{{count}} cell arcs",
+            "readout_hint": "Hover over the chart to inspect a bearing"
+        },
+        "ground": {
+            "title": "Ground Horizon",
+            "readout": "{{bearing}}° ({{compass}}): terrain {{angle}}° at {{distance}} km",
+            "readout_hint": "Hover to inspect a bearing — hover the receive horizon for a terrain profile",
+            "profile_title": "Terrain profile {{bearing}}° ({{compass}})",
+            "profile_horizon": "Terrain horizon {{angle}}° at {{distance}} km — solid steps: proven receive envelope, dashed: inferred floor (skyline + measured margin), green: likely coverage, red dotted: terrain shadowed behind each crest",
+            "antenna_warning": "⚠️ Receiver position is registered at {{beacon}}m AMSL — less than 2m above the ground here ({{ground}}m AMSL)",
+            "antenna_info": "Antenna is {{agl}}m above the ground, which is {{ground}}m AMSL",
+            "antenna_info_default": "Antenna height is unknown — charts assume {{agl}}m above the ground ({{ground}}m AMSL)",
+            "capability": "Estimated 868 MHz max range {{km}} km — based on the station's reported {{db}} dB average signal strength at 10 km",
+            "capability_max": "868 MHz range model {{model}} km — based on the station's reported {{db}} dB average signal strength at 10 km, capped at the {{max}} km visualisation limit",
+            "capability_min": "868 MHz range model {{model}} km — based on the station's reported {{db}} dB average signal strength at 10 km, raised to the {{min}} km minimum",
+            "capability_none": "No reported signal strength at 10 km from this station — using the full {{max}} km range"
         },
         "times": {
             "title": "Times",
             "location": "Location",
             "packet": "Packet",
-            "output": "File output"
+            "beacon": "Beacon",
+            "output": "Map export",
+            "stats_export": "Stats export",
+            "expires": "Expires if silent"
         },
         "cells": {
             "number": "{{count}} coverage cells",
             "area": "{{area}} sq km"
         },
+        "activity": {
+            "title": "Station Activity",
+            "active": "Active: {{percent}}%",
+            "periods": "Active Periods",
+            "totalRollups": "Total rollup cycles: {{count}}",
+            "activeRollups": "Active rollup cycles: {{count}}",
+            "totalCells": "Total cells processed: {{count}}",
+            "firstSeen": "First seen",
+            "lastSeen": "Last seen",
+            "lastRollup": "Last rollup",
+            "activeRanges": "{{count}} active periods"
+        },
+        "purge": {
+            "title": "Data Purged",
+            "reason_moved": "Coverage data was reset because this station moved to a new location.",
+            "reason_expired": "Coverage data was reset because this station was inactive for too long.",
+            "reason_unknown": "Coverage data was reset.",
+            "when": "Purged at {{when}}"
+        },
+        "expiry": {
+            "title": "Expiring Soon",
+            "pending": "Nothing has been heard from this station recently. Unless it is heard again, it will expire and its coverage data will be deleted at {{when}}.",
+            "expired": "This station expired at {{when}}. Its coverage data will be deleted at the next rollup."
+        },
+        "position": {
+            "title": "Station Position",
+            "mobile": "This station appears to be mobile (on a moving vehicle).",
+            "moved": "This station has moved. Coverage data has been reset.",
+            "bouncing": "This station is alternating between two locations.",
+            "primary": "Current location",
+            "previous": "Previous location"
+        },
         "status": {
             "title": "Last status message"
         },
+        "notify": {
+            "title": "Outage notifications",
+            "scan": "Scan with your phone's camera to be notified when this station goes offline (no beacons for a day, or no traffic for a week) or comes back online."
+        },
+        "no_layer_data": "No data for {{layer}} in the selected date range",
         "help": "Hover over somewhere on the map to see details.<br/>Click to lock the sidebar display to that location.<br/>Click on a station marker to show coverage records only for that station.<br/>You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information"
+    },
+    "protocols": {
+        "OGFLR": "FLARM",
+        "OGFLR6": "FLARM (v6)",
+        "OGFLR7": "FLARM (v7)",
+        "APRS": "APRS/FLARM",
+        "OGADSB": "ADS-B",
+        "OGADSL": "ADS-L",
+        "OGNFNT": "FANET",
+        "OGNTRK": "OGN Tracker",
+        "OGPAW": "PilotAware",
+        "OGNPAW": "PilotAware",
+        "OGNSKY": "SafeSky",
+        "OGSPOT": "SPOT",
+        "OGSPID": "Spider",
+        "OGLT24": "LiveTrack24",
+        "OGSKYL": "Skylines",
+        "OGCAPT": "Capturs",
+        "OGNAVI": "Naviter",
+        "OGNMAV": "MAVlink",
+        "OGFLYM": "Flymaster",
+        "OGNINRE": "InReach",
+        "OGEVARIO": "eVario",
+        "OGNWMN": "Wingman",
+        "OGNMTK": "MicroTrack",
+        "OGNMKT": "MicroTrack",
+        "OGNMYC": "MyCloudbase",
+        "OGNFNO": "Flying Neurons",
+        "OGAPIK": "APIK",
+        "OGNWGL": "WeGlide",
+        "OGNPUR": "PureTrack",
+        "OGAIRM": "Airmate",
+        "OGNEMO": "Nemo",
+        "OGNVOL": "Volandoo",
+        "OGSTUX": "Stratux",
+        "FXCAPP": "flyxc",
+        "OGNT": "OGN (legacy)"
+    },
+    "regions": {
+        "eu": "Europe",
+        "na": "North America",
+        "sa": "South America",
+        "af": "Africa",
+        "as": "Asia",
+        "oc": "Oceania",
+        "ot": "Other"
+    },
+    "altitudes": {
+        "low": "Below 3000m",
+        "mid": "3000–4500m",
+        "high": "Above 4500m"
+    },
+    "serverUptime": {
+        "title": "Server Connection",
+        "uptime": "Uptime: {{percent}}%",
+        "server": "APRS Server: {{server}}",
+        "software": "{{software}}"
+    },
+    "stats": {
+        "title": "Protocol Statistics",
+        "tab_protocol": "Protocol",
+        "tab_stations": "Stations",
+        "station_stats_title": "Station Traffic Statistics",
+        "station_traffic_by_hour": "Station traffic by hour (UTC)",
+        "generated": "Updated {{time}}",
+        "traffic_by_hour": "Traffic by hour (UTC)",
+        "period_year": "Year",
+        "period_yearnz": "Year",
+        "period_month": "Month",
+        "period_range": "Period",
+        "devices_by_day": "Unique devices by day",
+        "partial": "partial",
+        "partial_restart": "partial (restart)",
+        "regions": "Region distribution",
+        "protocol_table": "Protocols",
+        "raw": "Raw",
+        "accepted": "Accepted",
+        "devices": "Devices",
+        "devices_avg": "Avg Devices",
+        "accepted_by_day": "Accepted packets by day",
+        "no_data": "No protocol statistics available",
+        "click_to_filter": "Click to filter map",
+        "unsupported": "{{count}} unrecognised"
     }
 }

@@ -6,27 +6,41 @@ import {CoverageDetails} from './coveragedetails';
 import {VisualisationSelector} from './visualisationselector';
 import {FileSelector} from './fileselector';
 import {StationSelector} from './stationselector';
+import {LayerSelector} from './layerselector';
+import {useStationMeta} from './stationmeta';
 
 import type {PickableDetails} from './pickabledetails';
+import type {HorizonHover} from './coveragedetails/horizondata';
 
 export function Dock(props: {
     setStation: (station: string) => void; //
     station: string;
-    setFile: (file: string) => void;
-    file: string;
+    dateRange: {start: string; end: string};
+    setDateRange: (r: {start: string; end: string}) => void;
+    layers: string[];
+    setLayers: (l: string[]) => void;
     hoverDetails: PickableDetails;
     selectedDetails: PickableDetails;
     setSelectedDetails: (sd?: PickableDetails) => void;
     setVisualisation: (visualisation: string) => void;
     visualisation: string;
+    isPresenceOnly?: boolean;
+    setHorizonHover?: (h: HorizonHover) => void;
+    horizonHover?: HorizonHover;
     updateUrl: (a: Record<string, string>) => void;
     expanded: boolean;
     env: any;
 }) {
+    // Derive file/setFile for CoverageDetails backward compat
+    const file = props.dateRange?.start ?? 'year';
+    const setFile = (f: string) => props.setDateRange({start: f, end: f});
+
+    const stationMeta = useStationMeta(props.station ?? '');
+
     return (
         <>
-            <div>
-                <span style={{padding: '0px', border: '5px solid white'}}>
+            <div style={{padding: '1px'}}>
+                <span style={{border: '5px solid white'}}>
                     <img width="100" height="100" src="https://ognproject.wdfiles.com/local--files/logos/ogn-logo-150x150.png" alt="OGN Network" title="OGN Network" />
                 </span>
             </div>
@@ -34,9 +48,11 @@ export function Dock(props: {
             <div style={{padding: '7px'}}>
                 <StationSelector station={props.station} setStation={props.setStation} updateUrl={props.updateUrl} />
                 <br />
-                <FileSelector station={props.station} setFile={props.setFile} file={props.file} />
+                <LayerSelector layers={props.layers} setLayers={props.setLayers} stationLayerMask={stationMeta?.layerMask ?? 0} />
                 <br />
-                <VisualisationSelector station={props.station} setVisualisation={props.setVisualisation} visualisation={props.visualisation} />
+                <FileSelector station={props.station} dateRange={props.dateRange} setDateRange={props.setDateRange} layers={props.layers} />
+                <br />
+                <VisualisationSelector station={props.station} setVisualisation={props.setVisualisation} visualisation={props.visualisation} isPresenceOnly={props.isPresenceOnly} layers={props.layers} setLayers={props.setLayers} />
                 <br />
                 <hr />
                 {props.expanded ? (
@@ -46,8 +62,14 @@ export function Dock(props: {
                         setSelectedDetails={props.setSelectedDetails}
                         station={props.station}
                         setStation={props.setStation}
-                        file={props.file}
-                        setFile={props.setFile}
+                        file={file}
+                        setFile={setFile}
+                        layers={props.layers}
+                        setLayers={props.setLayers}
+                        dateRange={props.dateRange}
+                        setHorizonHover={props.setHorizonHover}
+                        horizonHover={props.horizonHover}
+                        visualisation={props.visualisation}
                         env={props.env}
                     />
                 ) : null}

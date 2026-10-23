@@ -1,7 +1,7 @@
 import {LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer} from 'recharts';
 import graphcolours from '../graphcolours';
 
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import {WaitForGraph} from './waitforgraph';
 

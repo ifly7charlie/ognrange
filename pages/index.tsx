@@ -4,18 +4,22 @@ import {useSearchParams} from 'next/navigation';
 import dynamic from 'next/dynamic';
 import Head from 'next/head';
 
-import {useState, useMemo, useRef, useCallback, useEffect} from 'react';
+import {useState, useMemo, useRef, useCallback, useEffect, useLayoutEffect} from 'react';
 
-import {useTranslation} from 'next-i18next';
-import {serverSideTranslations} from 'next-i18next/serverSideTranslations';
+// Runs before paint on the client; falls back to useEffect during SSR to avoid warnings
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+import {useTranslation} from 'next-i18next/pages';
+import {serverSideTranslations} from 'next-i18next/pages/serverSideTranslations';
 
 import {debounce as _debounce} from 'lodash';
 
-import {useStationMeta} from '../lib/react/stationmeta';
+import {useStationListMeta} from '../lib/react/stationmeta';
 import {useDisplayedH3s, DisplayedH3s} from '../lib/react/displayedh3s';
-
+import {COMBINED_LAYERS, DEFAULT_LAYERS_PARAM} from '../lib/common/layers';
 import type {PickableDetails} from '../lib/react/pickabledetails';
 import {getObjectFromH3s} from '../lib/react/pickabledetails';
+import type {HorizonHover} from '../lib/react/coveragedetails/horizondata';
 
 import type {GetServerSideProps} from 'next';
 
@@ -62,7 +66,13 @@ export default function CombinePage(props) {
     const lat = params.get('lat');
     const lng = params.get('lng');
     const zoom = params.get('zoom');
-    const file = params.get('file')?.toString() || 'year';
+    const file = params.get('file')?.toString();
+    const dateStart = params.get('dateStart') || file || 'year';
+    const dateEnd = params.get('dateEnd') || file || 'year';
+    const layersParam = params.get('layers') || DEFAULT_LAYERS_PARAM;
+    // Memoize to avoid invalidating FileSelector's expensive useMemo on every pan/zoom re-render
+    const dateRange = useMemo(() => ({start: dateStart, end: dateEnd}), [dateStart, dateEnd]);
+    const layers = useMemo(() => layersParam.split(',').map((s) => s.trim()).filter(Boolean), [layersParam]);
     const urlH3 = params.get('h3')?.toString();
 
     // What the map is looking at
@@ -79,11 +89,14 @@ export default function CombinePage(props) {
         pitch: !(mapType % 2) ? 70 : 0
     });
 
-    const stationMeta = useStationMeta();
+    const stationMeta = useStationListMeta();
     const displayedH3s = useDisplayedH3s();
 
     // Tooltip or sidebar
     const [hoverDetails, setHoverDetails] = useState<PickableDetails>({type: 'none'});
+
+    // Bearing hovered on the horizon chart, drawn as a line from the station on the map
+    const [horizonHover, setHorizonHover] = useState<HorizonHover>(null);
     const selectedDetails = useMemo<PickableDetails>(() => getObjectFromH3s(displayedH3s, urlH3), [displayedH3s.length, urlH3]);
 
     const setSelectedDetails = useCallback(
@@ -111,16 +124,6 @@ export default function CombinePage(props) {
             setFlyToStation(newStation);
         },
         [stationMeta, station]
-    );
-
-    const setFile = useCallback(
-        (newFile: string) => {
-            if (file === newFile) {
-                newFile = '';
-            }
-            updateUrl({file: newFile});
-        },
-        [file]
     );
 
     const setVisualisation = useCallback(
@@ -161,6 +164,33 @@ export default function CombinePage(props) {
         [params]
     );
 
+    const setDateRange = useCallback(
+        (r: {start: string; end: string}) => {
+            updateUrl({dateStart: r.start, dateEnd: r.end, file: ''});
+        },
+        [updateUrl]
+    );
+
+    const setLayers = useCallback(
+        (l: string[]) => {
+            let normalized = l;
+            const hasCombined = normalized.includes('combined');
+            const hasSublayer = normalized.some((layer) => COMBINED_LAYERS.has(layer as any));
+            if (hasCombined && hasSublayer) {
+                const addedCombined = !layers.includes('combined') && hasCombined;
+                if (addedCombined) {
+                    // user added combined → drop the sublayers
+                    normalized = normalized.filter((layer) => !COMBINED_LAYERS.has(layer as any));
+                } else {
+                    // user added a sublayer → drop combined, keep individual
+                    normalized = normalized.filter((layer) => layer !== 'combined');
+                }
+            }
+            updateUrl({layers: (normalized.length ? normalized : ['combined']).join(',')});
+        },
+        [updateUrl, layers]
+    );
+
     const delayedUpdate = useRef(
         _debounce((vs) => {
             const updates = {
@@ -185,16 +215,15 @@ export default function CombinePage(props) {
         [false]
     );
 
-    const [dockSplit, setDockSplit] = useState<number>(25);
+    const [dockSplit, setDockSplit] = useState<string | number>('25vw');
     const [dockPosition, setDockPosition] = useState<'right' | 'bottom'>('right');
     const [dockExpanded, setDockExpanded] = useState(true);
-    const [viewHeight, setViewHeight] = useState('100vh');
+    const [panelLayoutReady, setPanelLayoutReady] = useState(false);
 
-    useEffect(() => {
+    useIsomorphicLayoutEffect(() => {
         const mql = window.matchMedia('(orientation: portrait)');
         const updatePosition = () => {
             setDockPosition(mql.matches ? 'bottom' : 'right');
-            setViewHeight(`${window.innerHeight}px`);
         };
         updatePosition();
         mql.addEventListener('change', updatePosition);
@@ -207,13 +236,13 @@ export default function CombinePage(props) {
                 <title>{t('page_title')}</title>
             </Head>
 
-            <div style={{width: '100vw', height: viewHeight}}>
-                <Group orientation={dockPosition === 'right' ? 'horizontal' : 'vertical'} style={{height: '100%'}}>
-                    <Panel minSize="30%">
+            <div style={{width: '100vw', height: '100dvh'}}>
+                <Group orientation={dockPosition === 'right' ? 'horizontal' : 'vertical'} style={{height: '100%', visibility: panelLayoutReady ? undefined : 'hidden'}}>
+                    <Panel defaultSize="75%">
                         <div style={{width: '100%', height: '100%'}}>
                             <CoverageMap //
                                 env={props.env}
-                                file={file}
+                                file={dateStart}
                                 station={station}
                                 setStation={setStation}
                                 flyToStation={flyToStation}
@@ -227,18 +256,20 @@ export default function CombinePage(props) {
                                 dockSplit={dockSplit}
                                 hoverDetails={hoverDetails}
                                 selectedDetails={selectedDetails}
+                                horizonHover={horizonHover}
                             />
                         </div>
                     </Panel>
                     <Separator style={dockPosition === 'right' ? {width: '6px', background: '#ccc', cursor: 'col-resize'} : {height: '6px', background: '#ccc', cursor: 'row-resize'}} />
                     <Panel
                         defaultSize="25%"
-                        minSize="10%"
+                        minSize={100}
                         collapsible
-                        collapsedSize="0%"
+                        collapsedSize={0}
                         onResize={(size) => {
+                            setPanelLayoutReady(true);
                             setDockSplit(size.asPercentage);
-                            setDockExpanded(size.asPercentage > 2);
+                            setDockExpanded(size.asPercentage > 10);
                         }}
                     >
                         <div style={{height: '100%', overflowY: 'auto'}}>
@@ -248,8 +279,13 @@ export default function CombinePage(props) {
                                 setStation={setStation}
                                 visualisation={visualisation}
                                 setVisualisation={setVisualisation}
-                                file={file}
-                                setFile={setFile}
+                                dateRange={dateRange}
+                                setDateRange={setDateRange}
+                                layers={layers}
+                                setLayers={setLayers}
+                                isPresenceOnly={displayedH3s.isPresenceOnly}
+                                setHorizonHover={setHorizonHover}
+                                horizonHover={horizonHover}
                                 hoverDetails={hoverDetails}
                                 setSelectedDetails={setSelectedDetails}
                                 selectedDetails={selectedDetails}

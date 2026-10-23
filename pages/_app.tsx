@@ -2,7 +2,7 @@
 import 'mapbox-gl/dist/mapbox-gl.css';
 import '../styles/styles.css';
 
-import {appWithTranslation} from 'next-i18next';
+import {appWithTranslation} from 'next-i18next/pages';
 
 import {StationMeta} from '../lib/react/stationmeta';
 import {DisplayedH3s} from '../lib/react/displayedh3s';

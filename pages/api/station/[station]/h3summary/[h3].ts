@@ -7,75 +7,17 @@ import {h3IndexToSplitLong} from 'h3-js';
 
 import {searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../lib/api/searcharrow';
 
-import {MAXIMUM_GRAPH_AGE_MSEC} from '../../../../../lib/common/config';
+import {MAXIMUM_GRAPH_AGE_MSEC, ROLLUP_PERIOD_MINUTES} from '../../../../../lib/common/config';
 
-import {ignoreStation} from '../../../../../lib/common/ignorestation';
-
-import {prefixWithZeros} from '../../../../../lib/common/prefixwithzeros';
+import {dateBounds} from '../../../../../lib/common/datebounds';
 
 import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
-export default async function getH3Details(req, res) {
-    // Top level
-    const stationName: string = req.query.station;
-    const selectedFile: string = req.query.file;
-    const lockedH3 = parseInt(req.query.lockedH3 || '0');
-    const h3SplitLong = h3IndexToSplitLong(req.query.h3);
-    const now = new Date();
-
-    if (!h3SplitLong) {
-        res.status(200).json([]);
-        return;
-    }
-
-    // We only work on a global
-    if (stationName !== 'global') {
-        res.status(200).json([]);
-        return;
-    }
-
-    // Get a Year/Month component from the file
-    let fileDateMatches = selectedFile?.match(/([0-9]{4})(-[0-9]{2})*(-[0-9]{2})*$/);
-    let fileDateMatch: string = (fileDateMatches?.[1] || '') + (fileDateMatches?.[2] || '');
-    let oldest: Date | undefined = undefined;
-    if (!fileDateMatch) {
-        if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
-            fileDateMatch = '' + now.getUTCFullYear();
-            oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
-        } else {
-            fileDateMatch = `${now.getUTCFullYear()}-${prefixWithZeros(2, String(now.getUTCMonth() + 1))}`;
-        }
-    }
-
-    console.log(now.toISOString(), ' h3summary', stationName, selectedFile, fileDateMatch, req.query.h3, h3SplitLong);
-
-    const result: Record<string, Record<string, number>> = {};
-    const sids = {};
-
-    await searchMatchingArrowFiles(stationName, fileDateMatch, h3SplitLong, oldest, (row, date) => {
-        result[date] ??= {}; //Object.assign(result[date] || {});
-        result[date] = _reduce(
-            row?.stations?.split(',') || [],
-            (acc, x) => {
-                const decoded = parseInt(x, 36);
-                const percentage = (decoded & 0x0f) * 10;
-                if (percentage) {
-                    const sid = decoded >> 4;
-                    sids[sid] ??= searchStationArrowFile(sid)?.name || 'unknown';
-                    const sname = sids[sid];
-                    acc[sname] = percentage;
-                }
-                return acc;
-            },
-            {}
-        );
-    });
-
-    // Sum up how many points
+function buildSeriesData(result: Record<string, Record<string, number>>) {
     let total = 0;
     const summed = _reduce(
         result,
-        (r, v, k) => {
+        (r, v) => {
             return _reduce(
                 v,
                 (r, v, k) => {
@@ -86,19 +28,11 @@ export default async function getH3Details(req, res) {
                 r
             );
         },
-        {}
+        {} as Record<string, number>
     );
 
-    // Sort and find top 5
     const top5 = _sortBy(
-        _reduce(
-            summed,
-            (r, v, k) => {
-                r.push({s: k, c: v});
-                return r;
-            },
-            []
-        ),
+        _reduce(summed, (r, v, k) => { r.push({s: k, c: v}); return r; }, [] as {s: string; c: number}[]),
         (v) => -v.c
     ).slice(0, 5);
 
@@ -113,19 +47,101 @@ export default async function getH3Details(req, res) {
                 r[top5key.s] = v[top5key.s] || 0;
                 return r;
             },
-            {
-                date: k,
-                Other: 100
-            }
+            {date: k, Other: 100} as Record<string, any>
         );
     }).sort((a, b) => a.date.localeCompare(b.date));
 
-    // Return the selected top 5 along with the number left over so we can
-    // do a proper graph
-    res.status(200).json({
-        series: [...top5, {s: 'Other', c: _reduce(top5, (r, v) => (r = r - v.c), total)}],
+    return {
+        series: [...top5, {s: 'Other', c: _reduce(top5, (r, v) => r - v.c, total)}],
         data
-    });
+    };
+}
 
-    console.log('<-', Date.now() - now.getTime(), 'msec', data.length);
+export default async function getH3Details(req, res) {
+    // Top level
+    const stationName: string = req.query.station;
+    const selectedFile: string = req.query.file;
+    const lockedH3 = parseInt(req.query.lockedH3 || '0');
+    const h3SplitLong = h3IndexToSplitLong(req.query.h3);
+    const layers = (req.query.layers as string || 'combined').split(',').map((s) => s.trim());
+    const now = new Date();
+
+    if (!h3SplitLong) {
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+        res.status(200).json({layers: {}});
+        return;
+    }
+
+    // We only work on a global
+    if (stationName !== 'global') {
+        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+        res.status(200).json({layers: {}});
+        return;
+    }
+
+    // Resolve date range from dateStart/dateEnd params, falling back to file param
+    const dateStartParam = (req.query.dateStart as string) || selectedFile || 'year';
+    const dateEndParam = (req.query.dateEnd as string) || selectedFile || 'year';
+    const startBounds = dateBounds(dateStartParam);
+    const endBounds = dateBounds(dateEndParam);
+    const rangeStart = startBounds?.start || `${now.getUTCFullYear()}-01-01`;
+    const rangeEnd = endBounds?.end || `${now.getUTCFullYear()}-12-31`;
+    let oldest: Date | undefined = undefined;
+    if (!req.query.dateStart && !req.query.dateEnd) {
+        if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
+            oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
+        }
+    }
+
+    console.log(now.toISOString(), ' h3summary', stationName, selectedFile, rangeStart, rangeEnd, req.query.h3, h3SplitLong);
+
+    const sids = {};
+    const stationsByLayer: Record<string, Record<string, Record<string, number>>> = {};
+
+    await searchMatchingArrowFiles(
+        stationName,
+        rangeStart,
+        rangeEnd,
+        h3SplitLong,
+        oldest,
+        (row, date, layer) => {
+            stationsByLayer[layer] ??= {};
+            stationsByLayer[layer][date] ??= {};
+            for (const x of row?.stations?.split(',') || []) {
+                const decoded = parseInt(x, 36);
+                const percentage = (decoded & 0x0f) * 10;
+                if (percentage) {
+                    const sid = decoded >> 4;
+                    sids[sid] ??= searchStationArrowFile(sid)?.name || 'unknown';
+                    const sname = sids[sid];
+                    stationsByLayer[layer][date][sname] = (stationsByLayer[layer][date][sname] || 0) + percentage;
+                }
+            }
+        },
+        layers
+    );
+
+    const resultByLayer: Record<string, any> = {};
+    for (const [layer, result] of Object.entries(stationsByLayer)) {
+        resultByLayer[layer] = buildSeriesData(result);
+    }
+
+    // Build 'all' whenever multiple layers were requested (even if only one has data)
+    const layerKeys = Object.keys(resultByLayer);
+    if (layers.length > 1) {
+        const allResult: Record<string, Record<string, number>> = {};
+        for (const result of Object.values(stationsByLayer)) {
+            for (const [date, stations] of Object.entries(result)) {
+                allResult[date] ??= {};
+                for (const [sname, count] of Object.entries(stations)) {
+                    allResult[date][sname] = (allResult[date][sname] || 0) + count;
+                }
+            }
+        }
+        resultByLayer['all'] = buildSeriesData(allResult);
+    }
+
+    res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+    res.status(200).json({layers: resultByLayer});
+    console.log('<-', Date.now() - now.getTime(), 'msec', layerKeys.join(','));
 }

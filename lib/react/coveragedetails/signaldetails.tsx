@@ -11,7 +11,7 @@ import {
 
 import {findIndex as _findIndex, reduce as _reduce, debounce as _debounce, map as _map} from 'lodash';
 
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 
 import {WaitForGraph} from './waitforgraph';
 import graphcolours from '../graphcolours';

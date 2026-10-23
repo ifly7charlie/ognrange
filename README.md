@@ -25,9 +25,7 @@ Copy the .env.local file from ./conf/.env.local to the current directory and upd
 
 For development you need to install the packages `yarn install`
 
-Then in different windows you'll want: `yarn next dev` and `yarn aprs:dev` or `yarn aprs:devbrk`
-
-If yarn aprs `SIGSEGVs` as soon as it starts try using `npm_config_build_from_source=true yarn install`.
+Then in different windows you'll want: `yarn next dev` and the collector, `cargo run` in `./aprs-server`
 
 There are some complexities - in particular the .arrow files need to be served to the browser
 somehow. Easiest for development is to use `yarn next dev` and output the arrow files into `./public/data`
@@ -62,12 +60,16 @@ To build & run - note that this is a summary not a set of command lines ;)
 ```
 yarn install
 yarn next build
-yarn aprs:build
 yarn next start
-yarn aprs
+cd aprs-server && cargo build --release
+./aprs-server/target/release/aprs-server
 ```
 
 ## Learn More
+
+- [Protocol Statistics](docs/STATISTICS.md) — per-protocol packet counts, regions, altitude bands, hourly activity
+- [Station Files](docs/STATIONS.md) — station list JSON and Arrow format, fields, move detection
+- [Per-Station JSON](docs/STATION.md) — individual station detail files with beacon activity and rollup history
 
 ## Overview
 
@@ -81,7 +83,10 @@ information from that to record information about signal strength
 globally.
 
 It aggregates information into multiple buckets, yearly, monthly and
-daily.
+daily, across multiple protocol layers (FLARM, ADS-B, ADS-L, FANET,
+OGN Tracker, PilotAware, SafeSky, and a combined view). Layers are
+configurable via `ENABLED_LAYERS` in `.env.local`; see
+`lib/common/layers.ts` for definitions.
 
 For each aggregation static output files are produced that can be
 displayed by a Next.JS (and deck.gl) front end. These files compress
@@ -123,7 +128,7 @@ to averages (sum/count).
 
 _Lowest AGL_ (meters) is the lowest height data above ground that data was received.
 
--   agl varies across the cell and this is taken from the lat/long looked up on mapbox elevation tile
+-   agl varies across the cell and this is taken from the lat/long looked up on a DEM elevation tile
 -   it's possible that lowest AGL point is actually above lowest ALT
 
 _Lowest ALT_ (meters) is the lowest height AMSL that data was received
@@ -164,22 +169,21 @@ APRS packets are NOT recorded in the following situations:
 -   not having both latitude & longitude values,
 -   not having a comment that stats with 'id'
 
-2. they are from PAW devices (sourceCallsign starts with PAW). These devices have a hard coded the received signal strength to a large number destroying the coverage map)
-3. Their station name is excluded by the file [https://github.com/ifly7charlie/ognrange/blob/d0862f6dddbb7d748d3108e3526b2904197b78e1/lib/common/ignorestation.ts ignorestation.ts] this includes (for example)
+2. Their station name is excluded by the file [`ignorestation.ts`](lib/common/ignorestation.ts) this includes (for example)
 
 -   ones that start with FNB, XCG, XCC, OGN, RELAY, RND, FLR, bSky, AIRS, N0TEST-
 -   a list of ones matching TEST, UNKNOWN, GLOBAL, STATIONS, and others etc
 -   numeric only station names
 -   any station that has a non ANSI alphanumeric character (eg not A-Z & 0-9)
 
-4. Have an source callsign length < 6 characters
-5. Have no timestamp
-6. have a dest callsign of OGNTRK, or their first Digipeaters entry is not qA
-7. Are stationary or nearly stationary (more specifically bouncing between a small number of locations)
-8. Have no signal strength
-9. Have invalid coordinates
+3. Have a source callsign length < 6 characters or the last 6 characters are not valid hex
+4. Have no timestamp
+5. Their first Digipeaters entry is not qA (relayed packets)
+6. Are stationary or nearly stationary (more specifically bouncing between a small number of locations)
+7. Have no signal strength
+8. Have invalid coordinates
 
-If you wish to update the list of stations that are excluded please raise a pull request to change the file `ignorestation.ts`. For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in `bin/aprs.ts`
+If you wish to update the list of stations that are excluded please raise a pull request to change the file `aprs-server/src/ignore_station.rs` (and its frontend copy `lib/common/ignorestation.ts`). For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in the `aprs-server`
 
 In the user interface the stats are:
 
@@ -190,7 +194,6 @@ invalidTimestamp: packet doesn't have a reasonable timestamp
 ignoredSignal0: means there is no signal strength in the received packet
 ignoredStationary: means that a device isn't moving, repeated packets are ignored
 ignoredH3stationary: means that a device is moving but only between a very small number of locations (eg due to poor GPS reception - indoors etc)
-ignoredPAW: Means PAW tracker that is ignored (source callsign begins PAW)
 ignoredElevation: Unable to do elevation lookup of packet - probably means lat/lng is not valid
 count: total number of packets
 ```
@@ -333,20 +336,42 @@ the number of H3s in the database. This means the global database will
 take longer to run than the stations, it's also why stations are separated
 and global uses a lower resolution H3.
 
-## configuration
+## Logging
 
-config file is .env.local for aprs collector, for the front end it
+Logging defaults to `info` level. You can control verbosity via the
+`RUST_LOG` environment variable (see
+[`tracing-subscriber` EnvFilter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)
+for full syntax).
+
+```
+# show debug output for the aprs-server only
+RUST_LOG=aprs_server=debug
+
+# enable trace logging for everything (very noisy)
+RUST_LOG=trace
+```
+
+Output destination is controlled by `LOG_STDOUT` (default 1) and
+`LOG_SYSLOG` (default 0, Unix only).
+
+## Configuration
+
+Config file is .env.local for aprs collector, for the front end it
 follows nextjs naming convention NEXT_PUBLIC_XX goes to browser!
 
-See `lib/common/config.js` for the latest values and documentation of
+See `lib/common/config.ts` for the latest values and documentation of
 configuration variables
 
 ```
 # url of website
 NEXT_PUBLIC_SITEURL=
 
-# mapbox token, used for elevation tiles on server and for the map on the client
+# mapbox token, used for the map on the client
 NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=
+
+# terrarium-encoded DEM tiles used for server elevation lookups, defaults to the
+# free AWS Open Data bucket; override to front it through your own CDN
+#NEXT_PUBLIC_DEM_TILE_URL=https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png
 
 # where to store the accumulator databases
 DB_PATH=/Users/melissa/ognrange/db/
@@ -361,13 +386,14 @@ NEXT_PUBLIC_DATA_URL=
 
 # control the elevation tile cache, note tiles are not evicted on expiry
 # so it will fill to MAX before anything happens. These tiles don't change so
-# if this is too low you'll just be hammering your mapbox account. Flip side
-# is the data will occupy ram or swap, 0 means no expiry
+# if this is too low you'll just be re-fetching the same tiles (though fetches
+# usually hit the on-disk cache in DB_PATH/dem-tiles rather than the network).
+# Flip side is the data will occupy ram or swap, 0 means no expiry
 MAX_ELEVATION_TILES=32000
 ELEVATION_TILE_EXPIRY_HOURS=0
 
 # control how precise the ground altitude is, difficult balance for mountains..
-# see https://docs.mapbox.com/help/glossary/zoom-level/,
+# (this is a web-mercator tile zoom level)
 # resolution 11 gives ~30m per pixel at 40 degrees which should be good enough
 # if you are memory constrained then increase this number before you drop the
 # number of tiles!
@@ -419,12 +445,25 @@ H3_GLOBAL_CELL_LEVEL=7
 # until approximately this many hours have passed
 FORGET_AIRCRAFT_AFTER_HOURS=12
 
-# How far a station is allowed to move without resetting the history for it
-STATION_MOVE_THRESHOLD_KM = 2
+# Packets claiming a position further than this (in km) from the station's
+# known location are rejected as corrupt - well beyond real reception range
+# even for mountain/ducting records (~450km)
+MAX_PACKET_DISTANCE_KM=500
+
+# How far a station is allowed to move (in km) without triggering move detection
+STATION_MOVE_THRESHOLD_KM=0.2
+
+# How many days a station must remain at a new location (with no packets from
+# the original location) before the move is confirmed and old data is purged
+STATION_MOVE_CONFIRM_DAYS=7
 
 # If we haven't had traffic in this long then we expire the station and
 # delete all the history
 STATION_EXPIRY_TIME_DAYS=31
+
+# Stations with "test" as a word in their callsign (TEST1, LFLE-test, MyTestRx
+# - not Contest or Testwood) expire after this much silence instead
+TEST_STATION_EXPIRY_TIME_DAYS=2
 
 
 # ROLLUP is when the current accumulators are merged with the daily/monthly/annual
@@ -449,6 +488,9 @@ MAX_SIMULTANEOUS_ROLLUPS=100
 # helps with testing
 ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_SECONDS=60
 
+# APRS-IS login callsign, max 8 characters (default: OGNRANGE)
+APRS_CALLSIGN=OGNRANGE
+
 # how often do we need to report to the APRS server, also how often
 # we check for lost connection to the server
 APRS_KEEPALIVE_PERIOD_SECONDS=45
@@ -459,5 +501,11 @@ APRS_TRAFFIC_FILTER=t/spuoimnwt
 
 # Server and port to connect to
 APRS_SERVER=aprs.glidernet.org:14580
+
+# Optional reject log for debugging filtered packets. Set to a file path
+# to enable. Each line is: reason<TAB>raw_packet
+# The log rotates when it exceeds REJECT_LOG_MAX_MB, renaming to .1
+#REJECT_LOG=/tmp/ognrange-rejects.log
+REJECT_LOG_MAX_MB=50
 
 ```

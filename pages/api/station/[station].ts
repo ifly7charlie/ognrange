@@ -4,10 +4,12 @@
 
 import {ARROW_PATH, ROLLUP_PERIOD_MINUTES} from '../../../lib/common/config';
 import {ignoreStation} from '../../../lib/common/ignorestation';
+import {Layer, shouldProduceOutput} from '../../../lib/common/layers';
 
 import {readdirSync} from 'fs';
 
-const fileMatcher = /\.(day|month|year|yearnz)\.([0-9-]+)([nz]*)\.arrow\.gz$/;
+const layerPattern = Object.values(Layer).join('|');
+const fileMatcher = new RegExp(`\\.(day|month|year|yearnz)\\.([0-9-]+[nz]*)(?:\\.(${layerPattern}))?\\.arrow\\.gz$`);
 
 export default async function getH3Details(req, res) {
     const stationName: string = req.query.station;
@@ -17,44 +19,27 @@ export default async function getH3Details(req, res) {
         return;
     }
 
-    // This will produce a list of arrays of available arrow files for the
-    // station, we need to convert that into
-    /*
-  "files": {
-    "day": {
-      "current": "UKDUN2/UKDUN2.day.2023-09-23",
-      "all": [
-        "UKDUN2/UKDUN2.day.2023-09-23",
-      ]
-    },
-    "month": ...
-    "year": ...
-  }
-
-*/
-
-    const files = readdirSync(ARROW_PATH + stationName)
+    // Produces: { day: { combined: ["2024-03-18", ...], flarm: [...] }, month: {...}, ... }
+    const result = readdirSync(ARROW_PATH + stationName)
         .map((fileName: string) => {
             const parts = fileName.match(fileMatcher);
             if (!parts || parts.length < 2) {
                 return null;
             }
-            return {fileName, type: parts[1], date: parts[2]};
+            return {fileName, type: parts[1], date: parts[2], layerName: parts[3] || 'combined'};
         })
-        .filter((parts) => parts && parts.type && parts.date)
+        .filter((parts) => parts && parts.type && parts.date && shouldProduceOutput((parts.layerName ?? 'combined') as Layer, parts.type))
         .sort((a, b) => a.date.localeCompare(b.date))
         .reduce((output, parts) => {
-            const pathToUse = `${stationName}/${stationName}.${parts.type}.${parts.date}`;
-            output[parts.type] ??= {all: []};
-            output[parts.type].all.push(pathToUse);
-            output[parts.type].current = pathToUse;
+            const {type, date, layerName} = parts;
+            output[type] ??= {};
+            output[type][layerName] ??= [];
+            output[type][layerName].push(date);
             return output;
         }, {} as any);
 
     // How long should it be cached - rollup period is good enough
-    res.setHeader('Cache-Control', `public, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
+    res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
 
-    // Return the selected top 5 along with the number left over so we can
-    // do a proper graph
-    res.status(200).json({files: {day: files.day, month: files.month, year: files.year, yearnz: files.yearnz}});
+    res.status(200).json(result);
 }

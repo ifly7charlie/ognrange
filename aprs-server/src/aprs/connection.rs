@@ -1,0 +1,227 @@
+//! APRS-IS TCP client connection.
+//!
+//! Connects to an APRS-IS server (e.g., aprs.glidernet.org:14580),
+//! authenticates, applies a traffic filter, and streams packets.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+use socket2::SockRef;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+use tracing::{info, warn};
+
+use crate::config;
+
+/// Cumulative count of packets shed because the event channel was full
+/// (the processor fell too far behind). Read by the periodic stats log.
+pub static DROPPED_PACKETS: AtomicU64 = AtomicU64::new(0);
+
+/// Messages sent from the APRS connection to the main processing loop
+#[derive(Debug)]
+pub enum AprsEvent {
+    /// A raw APRS packet line, stamped with its arrival time so the
+    /// processor can measure how far behind the backlog it is running
+    Packet { raw: String, received: Instant },
+    /// Server comment/keepalive line
+    ServerMessage(String),
+    /// Connection lost or errored
+    Disconnected(String),
+}
+
+pub struct AprsConnection {
+    /// Held to keep the shutdown channel alive; dropping `AprsConnection`
+    /// closes the sender, which signals the connection task to stop.
+    #[allow(dead_code)]
+    shutdown_tx: Option<mpsc::Sender<()>>,
+}
+
+impl AprsConnection {
+    /// Create a new APRS connection that streams events to the provided channel.
+    ///
+    /// Spawns a tokio task that handles the TCP connection, reconnection,
+    /// and keepalive. Returns a handle that can be used to shut down.
+    pub fn start(
+        event_tx: mpsc::Sender<AprsEvent>,
+        git_version: String,
+    ) -> Self {
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
+        tokio::spawn(connection_loop(event_tx, shutdown_rx, git_version));
+        AprsConnection {
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+
+}
+
+async fn connection_loop(
+    event_tx: mpsc::Sender<AprsEvent>,
+    mut shutdown_rx: mpsc::Receiver<()>,
+    git_version: String,
+) {
+    let callsign = &*config::APRS_CALLSIGN;
+    let siteurl = &*config::NEXT_PUBLIC_SITEURL;
+    let filter = &*config::APRS_TRAFFIC_FILTER;
+    let keepalive_ms = *config::APRS_KEEPALIVE_PERIOD_MS;
+
+    loop {
+        let server_addr = &*config::APRS_SERVER;
+        info!("Connecting to APRS server: {}", server_addr);
+
+        match connect_and_stream(
+            server_addr,
+            callsign,
+            siteurl,
+            filter,
+            &git_version,
+            keepalive_ms,
+            &event_tx,
+            &mut shutdown_rx,
+        )
+        .await
+        {
+            Ok(()) => {
+                // Clean shutdown requested
+                info!("APRS connection shut down cleanly");
+                return;
+            }
+            Err(e) => {
+                warn!("APRS connection error: {}, reconnecting in 5s...", e);
+                let _ = event_tx.try_send(AprsEvent::Disconnected(e.to_string()));
+
+                // Wait before reconnecting, but honour shutdown
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = shutdown_rx.recv() => {
+                        info!("Shutdown during reconnect wait");
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn connect_and_stream(
+    server_addr: &str,
+    callsign: &str,
+    siteurl: &str,
+    filter: &str,
+    git_version: &str,
+    keepalive_ms: u64,
+    event_tx: &mpsc::Sender<AprsEvent>,
+    shutdown_rx: &mut mpsc::Receiver<()>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let stream = TcpStream::connect(server_addr).await?;
+
+    // Enable TCP keepalive so the kernel detects dead connections -
+    // without this, read_until hangs forever on a half-open connection
+    let sock_ref = SockRef::from(&stream);
+    let tcp_keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(10));
+    sock_ref.set_tcp_keepalive(&tcp_keepalive)?;
+
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    // Send login
+    let login = format!(
+        "user {} pass -1 vers ognrange {} filter {}\r\n",
+        callsign, git_version, filter
+    );
+    writer.write_all(login.as_bytes()).await?;
+
+    // Send identification comment
+    let ident = format!("# ognrange {} {}\r\n", siteurl, git_version);
+    writer.write_all(ident.as_bytes()).await?;
+
+    info!("APRS login sent as {}", callsign);
+
+    let mut keepalive_interval = tokio::time::interval(Duration::from_millis(keepalive_ms));
+    keepalive_interval.tick().await; // consume immediate first tick
+    let mut had_traffic = false;
+    let mut dropped_packets: u64 = 0;
+    let mut raw_buf = Vec::new();
+
+    loop {
+        tokio::select! {
+            // Incoming APRS data - read raw bytes to handle non-UTF-8
+            read_result = reader.read_until(b'\n', &mut raw_buf) => {
+                match read_result {
+                    Ok(0) => {
+                        // Connection closed
+                        return Err("APRS server closed connection".into());
+                    }
+                    Ok(_) => {
+                        had_traffic = true;
+                        let line = match std::str::from_utf8(&raw_buf) {
+                            Ok(s) => s.trim().to_string(),
+                            Err(_) => {
+                                // Corrupt line: log with non-UTF-8 bytes shown as \xHH, then discard
+                                let escaped: String = raw_buf.iter().map(|&b| {
+                                    if b.is_ascii_graphic() || b == b' ' {
+                                        (b as char).to_string()
+                                    } else {
+                                        format!("\\x{:02x}", b)
+                                    }
+                                }).collect();
+                                warn!("APRS non-UTF-8 line discarded: {}", escaped);
+                                raw_buf.clear();
+                                continue;
+                            }
+                        };
+                        raw_buf.clear();
+                        // try_send, never block: if this loop stops reading (e.g. the
+                        // processor is slow and the channel fills), the APRS server
+                        // drops us for not consuming. Shedding packets is the lesser evil.
+                        if line.starts_with('#') || line.starts_with("user") {
+                            let _ = event_tx.try_send(AprsEvent::ServerMessage(line));
+                        } else if !line.is_empty() {
+                            let event = AprsEvent::Packet { raw: line, received: Instant::now() };
+                            if event_tx.try_send(event).is_err() {
+                                dropped_packets += 1;
+                                DROPPED_PACKETS.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("APRS read error: {}", e).into());
+                    }
+                }
+            }
+
+            // Keepalive timer
+            _ = keepalive_interval.tick() => {
+                if !had_traffic {
+                    return Err("No traffic received since last keepalive".into());
+                }
+                had_traffic = false;
+
+                if dropped_packets > 0 {
+                    warn!("Event channel full: dropped {} packets since last keepalive (processor too slow)", dropped_packets);
+                    dropped_packets = 0;
+                }
+
+                let keepalive = format!("# {} {}\r\n", siteurl, git_version);
+                // Timeout the write - on a half-open TCP connection write_all
+                // can block for minutes (kernel TCP retransmissions) which
+                // stalls this entire select loop including traffic checks
+                match tokio::time::timeout(
+                    Duration::from_secs(10),
+                    writer.write_all(keepalive.as_bytes()),
+                ).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(format!("Keepalive write error: {}", e).into()),
+                    Err(_) => return Err("Keepalive write timed out (connection likely dead)".into()),
+                }
+            }
+
+            // Shutdown signal
+            _ = shutdown_rx.recv() => {
+                info!("Shutdown signal received, closing APRS connection");
+                return Ok(());
+            }
+        }
+    }
+}

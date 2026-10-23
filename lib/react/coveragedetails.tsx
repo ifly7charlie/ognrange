@@ -1,20 +1,25 @@
-import {useMemo, useState, useCallback} from 'react';
+import {useState, useCallback, useEffect, useMemo} from 'react';
 import useSWR from 'swr';
 
-import {useTranslation, Trans} from 'next-i18next';
+import {useTranslation, Trans} from 'next-i18next/pages';
+
+import type {ProtocolStatsApiResponse, GlobalUptimeHistoryEntry} from '../common/protocolstats';
+import {dateBounds} from '../common/datebounds';
 
 import {useStationMeta} from './stationmeta';
 import type {PickableDetails} from './pickabledetails';
+import {LayerBadges} from './layerbadges';
 
 import {cellToLatLng, greatCircleDistance, getResolution, getHexagonAreaAvg, UNITS} from 'h3-js';
 
 import {IoLockOpenOutline} from 'react-icons/io5';
 
-import {findIndex as _findIndex, reduce as _reduce, debounce as _debounce, map as _map} from 'lodash';
+import {debounce as _debounce} from 'lodash';
 
 import VisibilitySensor from 'react-visibility-sensor';
 
 import {StationList} from './stationlist';
+import {LayerTabs} from './layertabs';
 
 import {GapDetails} from './coveragedetails/gapdetails';
 import {OtherStationsDetails} from './coveragedetails/otherstationdetails';
@@ -22,19 +27,96 @@ import {CountDetails} from './coveragedetails/countdetails';
 import {SignalDetails} from './coveragedetails/signaldetails';
 import {LowestPointDetails} from './coveragedetails/lowestpointdetails';
 import {AvailableFiles} from './coveragedetails/availablefiles';
+import {ActivityDetails} from './coveragedetails/activitydetails';
+import {UptimeBar} from './coveragedetails/uptimebar';
+import {BeaconActivity} from './coveragedetails/beaconactivity';
+import {StationPosition} from './coveragedetails/stationposition';
+import {StationNotify} from './coveragedetails/stationnotify';
+import {HorizonDetails} from './coveragedetails/horizondetails';
+import {GroundDetails, FloorProfileChart} from './coveragedetails/grounddetails';
+import type {HorizonHover} from './coveragedetails/horizondata';
+import {elevationAngleDeg} from './coveragedetails/horizondata';
+import {initialBearingDeg} from './floordata';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, RECEIVE_PROVEN, RECEIVE_BEYOND_PROVEN, floorFrequencyFor} from '../common/floor';
+import {capabilityRange, CAPABILITY_MAX_RANGE_KM, CAPABILITY_MIN_RANGE_KM} from '../common/capability';
+import {ProtocolStatsDashboard} from './coveragedetails/protocolstats';
+import {GlobalUptimeCard} from './coveragedetails/globaluptime';
+import {StationStatsDashboard, StationHourlyDetailChart} from './coveragedetails/stationstats';
 
-import {NEXT_PUBLIC_DATA_URL} from '../common/config';
+import {formatEpoch} from './formatdate';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-export function CoverageDetailsToolTip({details, station}) {
+// Flag a station's pending expiry once it's this close (test stations, with
+// their 2-day expiry, are always inside it)
+const EXPIRY_WARNING_SECS = 7 * 86400;
+
+// Readout for a hovered coverage-floor cell, shared between the tooltip and
+// the details panel. All values come straight off the computed disc
+// (pickabledetails 'floor' type) so they match the map colouring exactly;
+// the active visualisation decides which floor is emphasised and whether the
+// display-limit note applies (it refers to the value colouring the map)
+function FloorDetailsBody({details, station, visualisation}: {details: import('./pickabledetails').PickableFloorDetails; station: string; visualisation?: string}) {
+    const {t} = useTranslation('common', {keyPrefix: 'details'});
+    const stationMeta = useStationMeta(station ?? '');
+    const hasPos = stationMeta && !isNaN(stationMeta.lat);
+    const cellPos = cellToLatLng(details.h);
+    const known = details.terrainFloor !== FLOOR_UNKNOWN;
+    // Terrain can be known while coverage is not: nothing was ever received
+    // over the cell's arc, so there is no likely-coverage claim to show
+    const coverageKnown = details.coverageFloor !== FLOOR_UNKNOWN;
+    const terrainActive = visualisation === 'terrainFloor';
+    const displayedFloor = terrainActive ? details.terrainFloor : details.coverageFloor;
+    // Floors in front of the first obstruction sit below the cell's own ground
+    // (line of sight at ground level) - show that as 0m above ground
+    const agl = (msl: number) => Math.max(msl - details.ground, 0);
+    const emphasise = (active: boolean, text: string) => (active ? <b>{text}</b> : text);
+    return (
+        <>
+            {hasPos ? (
+                <>
+                    {t('distance', {station, km: greatCircleDistance(cellPos, [stationMeta.lat, stationMeta.lng], 'km').toFixed(0)})}
+                    <br />
+                    {t('floor.bearing', {bearing: initialBearingDeg(stationMeta.lat, stationMeta.lng, cellPos[0], cellPos[1]).toFixed(0)})}
+                    <br />
+                </>
+            ) : null}
+            <hr />
+            {known ? (
+                <>
+                    {t('floor.ground', {ground: details.ground})}
+                    <br />
+                    {emphasise(terrainActive, t('floor.terrain', {msl: details.terrainFloor, agl: agl(details.terrainFloor)}))}
+                    <br />
+                    {details.receiveAngle != null ? t('floor.angles', {terrain: details.terrainAngle?.toFixed(2), receive: details.receiveAngle.toFixed(2)}) : t('floor.anglesNoReceive', {terrain: details.terrainAngle?.toFixed(2)})}
+                    <br />
+                    {coverageKnown ? emphasise(!terrainActive, t('floor.coverage', {msl: details.coverageFloor, agl: agl(details.coverageFloor)})) : emphasise(!terrainActive, t('floor.coverageUnknown'))}
+                    {!terrainActive && coverageKnown && details.receiveExtended !== RECEIVE_PROVEN ? (
+                        <>
+                            <br />
+                            {/* Nothing was proven at this distance: either the skyline+margin extension set the floor, or the furthest breakpoint's angle is being carried outward past it */}
+                            <i>{t(details.receiveExtended === RECEIVE_BEYOND_PROVEN ? 'floor.beyondProven' : 'floor.extended')}</i>
+                        </>
+                    ) : null}
+                    {displayedFloor !== FLOOR_UNKNOWN && displayedFloor > details.stationGround + FLOOR_DISPLAY_MAX_M ? (
+                        <>
+                            <br />
+                            {/* The ceiling is FLOOR_DISPLAY_MAX_M above the station ground; the banner quotes it in MSL like every other readout */}
+                            <i>{t('floor.clipped', {max: details.stationGround + FLOOR_DISPLAY_MAX_M})}</i>
+                        </>
+                    ) : null}
+                </>
+            ) : (
+                t('floor.unknown')
+            )}
+        </>
+    );
+}
+
+export function CoverageDetailsToolTip({details, station, visualisation}: {details: any; station: string; visualisation?: string}) {
     //
     const {t} = useTranslation();
-    const stationMeta = useStationMeta();
-    const sd = useMemo(() => {
-        const index = _findIndex<string>(stationMeta?.name, station ?? 'global');
-        return index != -1 ? [stationMeta.lng[index], stationMeta.lat[index]] : null;
-    }, [station, stationMeta != undefined]);
+    const stationMeta = useStationMeta(station ?? '');
 
     if (details.type === 'station') {
         return (
@@ -69,9 +151,9 @@ export function CoverageDetailsToolTip({details, station}) {
     } else if (details.type === 'hexagon') {
         return (
             <div>
-                {sd ? (
+                {stationMeta ? (
                     <>
-                        {greatCircleDistance(cellToLatLng(details.h), sd, 'km').toFixed(0)}km to <b>{station}</b>
+                        {greatCircleDistance(cellToLatLng(details.h), [stationMeta.lng, stationMeta.lat], 'km').toFixed(0)}km to <b>{station}</b>
                         <hr />
                     </>
                 ) : null}
@@ -98,6 +180,14 @@ export function CoverageDetailsToolTip({details, station}) {
                 {t('packets.summary', {count: details.c})}
             </div>
         );
+    } else if (details.type === 'floor') {
+        return (
+            <div>
+                <b>{t('details.floor.title')}</b>
+                <br />
+                <FloorDetailsBody details={details} station={station} visualisation={visualisation} />
+            </div>
+        );
     }
     return <div> </div>;
 }
@@ -112,6 +202,12 @@ export function CoverageDetails({
     setStation,
     file,
     setFile,
+    layers,
+    setLayers,
+    dateRange,
+    setHorizonHover,
+    horizonHover,
+    visualisation,
     env
 }: //
 {
@@ -122,17 +218,34 @@ export function CoverageDetails({
     setStation: (s: string) => void;
     file: string;
     setFile: (s: string) => void;
+    layers?: string[];
+    setLayers?: (l: string[]) => void;
+    dateRange?: {start: string; end: string};
+    setHorizonHover?: (h: HorizonHover) => void;
+    horizonHover?: HorizonHover;
+    visualisation?: string;
     env: any;
 }) {
     // Tidy up code later by simplifying typescript types
     const h3 = details.type === 'hexagon' ? details.h3 : '';
     const key = station + (details.type === 'hexagon' ? details.h3 + (locked ? 'L' : '') : details.type);
     const isLocked = details.type === 'hexagon' && locked;
+    const layersParam = layers?.join(',') || 'combined';
+    const displayType = (file?.match(/^(day|month|year|yearnz)/)?.[1] ?? 'year') as 'day' | 'month' | 'year' | 'yearnz';
 
     //
     const [doFetch, setDoFetch] = useState(key);
     const [extraVisible, setExtraVisible] = useState(false);
+    const [selectedLayer, setSelectedLayer] = useState('all');
+    const [statsView, setStatsView] = useState<'protocol' | 'stations'>('protocol');
+
+    // Reset layer selection when the hexagon changes
+    useEffect(() => {
+        setSelectedLayer('all');
+    }, [key]);
     const {t} = useTranslation('common', {keyPrefix: 'details'});
+    const {t: tLayer} = useTranslation('common', {keyPrefix: 'layers'});
+    const {t: tStats} = useTranslation('common', {keyPrefix: 'stats'});
 
     const updateExtraVisibility = useCallback((visible: boolean) => {
         if (!extraVisible && visible) {
@@ -152,41 +265,118 @@ export function CoverageDetails({
 
     const {data: byDay} = useSWR(
         key == doFetch && h3 //
-            ? `/api/station/${station || 'global'}/h3details/${h3}?file=${file}&lockedH3=${isLocked ? 1 : 0}`
+            ? `/api/station/${station || 'global'}/h3details/${h3}?dateStart=${dateRange?.start || file}&dateEnd=${dateRange?.end || file}&lockedH3=${isLocked ? 1 : 0}&layers=${layersParam}`
             : null,
         fetcher
     );
 
-    // Find the station not ideal as linear search so memoize it
-    const stationMeta = useStationMeta();
-    const sd = useMemo(() => {
-        const index = stationMeta && station ? _findIndex<string>(stationMeta?.name, (a) => a === station) : -1;
-        return index != -1 ? [stationMeta.lat[index], stationMeta.lng[index]] : null;
-    }, [station, stationMeta.length]);
+    // Tabs are driven by the requested layers, not what the API happened to return
+    const showTabs = (layers?.length ?? 0) > 1;
+    const tabKeys = showTabs ? ['all', ...(layers ?? [])] : [];
+    const activeByDay = showTabs ? byDay?.layers?.[selectedLayer] : byDay?.layers?.[Object.keys(byDay?.layers ?? {})[0]] ?? byDay;
 
-    const {data: stationDataDate, error} = useSWR(
-        !h3 && station //
-            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.${file}.json`
-            : null,
-        fetcher
-    );
+    const stationMeta = useStationMeta(station ?? '');
 
-    //
-    const {data: stationDataLatest} = useSWR(
-        !h3 && station && (error || !stationDataDate?.lastOutputEpoch) //
-            ? `${env.NEXT_PUBLIC_DATA_URL ?? NEXT_PUBLIC_DATA_URL}${station}/${station}.json`
-            : null,
-        fetcher
-    );
+    // Capability-derived maximum useful range: same source (stations.arrow via
+    // stationMeta) as the map's floor disc, so panel and map always agree.
+    // Only the 868MHz chain is described by the RF figure; adsb keeps the
+    // full extent
+    const capabilityDb = stationMeta?.rfCapabilityDb;
+    const capRange = capabilityRange(capabilityDb);
+    const maxRangeKm = floorFrequencyFor(layersParam) === 868 ? capRange.km : CAPABILITY_MAX_RANGE_KM;
 
-    // Find the one that actually has some content
-    const stationData = stationDataDate && stationDataDate.lastOutputEpoch ? stationDataDate : stationDataLatest;
+    // Station ground elevation (m MSL) from the latest station JSON, used to compute
+    // the elevation angle to the hexagon's lowest point. Ground elevation is static
+    // so the latest file is correct for historical periods too
+    const {data: stationLatest} = useSWR(h3 && station ? `/api/station/${station}/details` : null, fetcher);
+    const stationElevation = typeof stationLatest?.elevation === 'number' ? stationLatest.elevation : null;
+
+    const isRange = dateRange && dateRange.start !== dateRange.end;
+
+    // Always use the API for station details
+    const stationDetailsUrl = !h3 && station ? (isRange ? `/api/station/${station}/details?dateStart=${dateRange.start}&dateEnd=${dateRange.end}` : `/api/station/${station}/details?file=${file}`) : null;
+
+    const {data: stationDataRaw} = useSWR(stationDetailsUrl, fetcher);
+
+    const stationData = stationDataRaw && Object.keys(stationDataRaw).length > 0 ? stationDataRaw : null;
+
+    // Convert raw delaySumSecs + accepted/count into avgDelaySecs for display
+    // Filter out hourly (object, not a number) and delaySumSecs (replaced by avg)
+    const displayStats = useMemo(() => {
+        if (!stationData?.stats) return null;
+        const {delaySumSecs, hourly: _hourly, ...rest} = stationData.stats as any;
+        const accepted = rest.accepted ?? rest.count ?? 0;
+        if (delaySumSecs != null && accepted > 0) {
+            return {...rest, avgDelaySecs: Math.round(delaySumSecs / accepted)} as Record<string, number>;
+        }
+        return rest as Record<string, number>;
+    }, [stationData]);
+
+    // Fetch server uptime data for station view overlay
+    const statsUrl = useMemo(() => {
+        if (h3 || !station) return null;
+        const params = new URLSearchParams();
+        if (dateRange?.start) params.set('dateStart', dateRange.start);
+        if (dateRange?.end) params.set('dateEnd', dateRange.end);
+        else if (file) params.set('dateStart', file);
+        const qs = params.toString();
+        return qs ? `/api/stats?${qs}` : '/api/stats';
+    }, [h3, station, dateRange?.start, dateRange?.end, file]);
+
+    const {data: statsData} = useSWR<ProtocolStatsApiResponse>(statsUrl, fetcher);
+
+    const serverUptime = useMemo((): GlobalUptimeHistoryEntry[] | null => {
+        if (!statsData) return null;
+        // Start with all historical entries.  For today specifically, always replace any
+        // dated snapshot with the live data — dated snapshots are written hourly and have
+        // a stale slot count / activity bitvector for the rest of that hour.
+        const today = new Date().toISOString().slice(0, 10);
+        const entries: GlobalUptimeHistoryEntry[] = (statsData.globalUptimeHistory ?? []).filter(
+            (e) => e.date !== today
+        );
+        if (statsData.globalUptime) {
+            const liveDate = statsData.globalUptime.date;
+            const periodStart = dateRange?.start || file;
+            const periodEnd = dateRange?.end || file;
+            const sb = periodStart ? dateBounds(periodStart) : null;
+            const eb = periodEnd ? dateBounds(periodEnd) : null;
+            const inRange = !sb || (liveDate >= sb.start && liveDate <= (eb?.end ?? sb.end));
+            if (inRange) {
+                entries.push({date: liveDate, activity: statsData.globalUptime.activity, uptime: statsData.globalUptime.uptime});
+            }
+        }
+        return entries.length > 0 ? entries : null;
+    }, [statsData, dateRange?.start, dateRange?.end, file]);
+
+    const serverUptimePercent = useMemo(() => {
+        if (!serverUptime) return null;
+        const total = serverUptime.reduce((sum, e) => sum + e.uptime, 0);
+        return total / serverUptime.length;
+    }, [serverUptime]);
 
     const clearSelectedH3 = useCallback(() => setSelectedDetails({type: 'none'}), [false]);
 
     delayedUpdateFrom(key);
 
+    if (details.type === 'floor') {
+        return (
+            <div>
+                <b>{t('title_mouse')}</b>
+                <br style={{clear: 'both'}} />
+                <FloorDetailsBody details={details} station={station} visualisation={visualisation} />
+                <hr />
+                <FloorProfileChart details={details} station={station} visualisation={visualisation} maxRangeKm={maxRangeKm} dateStart={dateRange?.start || file} layers={layers?.join(',')} env={env} />
+            </div>
+        );
+    }
+
     if (details.type === 'hexagon') {
+        const distanceKm = stationMeta ? greatCircleDistance(cellToLatLng(details.h), [stationMeta.lat, stationMeta.lng], 'km') : null;
+        // Same 2km floor as the horizon writer - nearer cells give meaninglessly steep angles
+        const lowestAngle =
+            distanceKm != null && distanceKm >= 2 && stationElevation != null //
+                ? elevationAngleDeg(details.b - stationElevation, distanceKm)
+                : null;
         return (
             <div>
                 {details?.length ? (
@@ -206,21 +396,35 @@ export function CoverageDetails({
                         &nbsp;<span>{t('unlock')}</span>
                     </button>
                 ) : null}
-                {sd ? (
+                {distanceKm != null ? (
                     <>
                         <br />
-                        {t('distance', {station, km: greatCircleDistance(cellToLatLng(details.h), sd, 'km').toFixed(0)})}
+                        {t('distance', {station, km: distanceKm.toFixed(0)})}
+                        {lowestAngle != null ? (
+                            <>
+                                <br />
+                                {t('angle', {angle: lowestAngle.toFixed(2)})}
+                            </>
+                        ) : null}
                     </>
                 ) : null}
                 <br style={{clear: 'both'}} />
                 <hr />
-                <LowestPointDetails d={details.d} b={details.b} g={details.g} byDay={byDay} />
-                <SignalDetails a={details.a} e={details.e} byDay={byDay} />
-                <GapDetails p={details.p} q={details.q} stationCount={details.t} byDay={byDay} />
-                {t('crc.summary', {crc: details.f / 10})}
-                <br />
-                <hr />
-                <CountDetails c={details.c} byDay={byDay} />
+                {showTabs ? <LayerTabs tabs={tabKeys} selectedTab={selectedLayer} setSelectedTab={setSelectedLayer} hasData={(tab) => !!byDay?.layers?.[tab]} /> : null}
+                <AvailableFiles station={station || 'global'} setFile={setFile} displayType={displayType} layer={selectedLayer} />
+                {showTabs && byDay && !activeByDay?.length ? (
+                    <p style={{color: 'gray', fontStyle: 'italic'}}>{t('no_layer_data', {layer: tLayer(selectedLayer, selectedLayer)})}</p>
+                ) : (
+                    <>
+                        <LowestPointDetails d={details.d} b={details.b} g={details.g} byDay={activeByDay} />
+                        <SignalDetails a={details.a} e={details.e} byDay={activeByDay} />
+                        <GapDetails p={details.p} q={details.q} stationCount={details.t} byDay={activeByDay} />
+                        {t('crc.summary', {crc: details.f / 10})}
+                        <br />
+                        <hr />
+                        <CountDetails c={details.c} byDay={activeByDay} />
+                    </>
+                )}
                 <StationList encodedList={details.s} selectedH3={details.h} setStation={setStation} />
                 <br />
                 {locked && byDay ? ( //
@@ -228,7 +432,7 @@ export function CoverageDetails({
                         <>
                             <div style={{height: '10px'}}></div>
                             {extraVisible ? ( //
-                                <OtherStationsDetails h3={details.h3} file={file} station={station} locked={locked} />
+                                <OtherStationsDetails h3={details.h3} file={file} station={station} locked={locked} layers={layers} selectedLayer={selectedLayer} dateRange={dateRange} />
                             ) : (
                                 <span>Loading...</span>
                             )}
@@ -243,61 +447,57 @@ export function CoverageDetails({
         return (
             <>
                 <b>{station}</b>
-                <br />
+                <LayerBadges layerMask={stationData.layerMask} />
                 <br />
                 <AvailableFiles station={station} setFile={setFile} displayType="day" />
                 <AvailableFiles station={station} setFile={setFile} displayType="month" />
                 <AvailableFiles station={station} setFile={setFile} displayType="year" />
 
-                {stationData?.stats ? (
+                {stationData?.purgedAt ? (
                     <>
-                        <b>{t('statistics.title', {when: new Date(stationData.outputEpoch * 1000).toISOString().replace('.000', '')})}</b>
+                        <hr />
+                        <b>{'\u26A0\uFE0F '}{t('purge.title')}</b>
+                        <br />
+                        {t(`purge.reason_${stationData.purgeReason || 'unknown'}`)}
+                        <br />
+                        {t('purge.when', {when: formatEpoch(stationData.purgedAt)})}
+                        <hr />
+                    </>
+                ) : null}
+                {stationData?.expiresAt && stationData.expiresAt - Date.now() / 1000 < EXPIRY_WARNING_SECS ? (
+                    <>
+                        <hr />
+                        <b>{'⏳ '}{t('expiry.title')}</b>
+                        <br />
+                        {t(stationData.expiresAt * 1000 <= Date.now() ? 'expiry.expired' : 'expiry.pending', {when: formatEpoch(stationData.expiresAt)})}
+                        <hr />
+                    </>
+                ) : null}
+                <ActivityDetails activity={stationData?.activity} />
+                <UptimeBar uptime={stationData?.uptime} />
+                <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} exportedAt={stationData?.exportedAt} />
+                <HorizonDetails station={station} period={dateRange?.start || file} env={env} setHorizonHover={setHorizonHover} groundHoverBearing={horizonHover?.source === 'ground' ? horizonHover.bearing : null} />
+                <GroundDetails station={station} horizonHover={horizonHover} setHorizonHover={setHorizonHover} beaconAltitude={stationData?.beaconAltitude ?? null} maxRangeKm={maxRangeKm} env={env} />
+                <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>{capRange.modelKm == null ? t('ground.capability_none', {max: CAPABILITY_MAX_RANGE_KM}) : capRange.clamped === 'max' ? t('ground.capability_max', {db: capabilityDb!.toFixed(1), model: Math.round(capRange.modelKm), max: CAPABILITY_MAX_RANGE_KM}) : capRange.clamped === 'min' ? t('ground.capability_min', {db: capabilityDb!.toFixed(1), model: Math.max(1, Math.round(capRange.modelKm)), min: CAPABILITY_MIN_RANGE_KM}) : t('ground.capability', {db: capabilityDb!.toFixed(1), km: Math.round(capRange.km)})}</div>
+                {serverUptimePercent != null && serverUptimePercent < 100 && <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />}
+                <br />
+                {displayStats ? (
+                    <>
+                        <b>{isRange ? t('statistics.title_range') : t('statistics.title', {when: formatEpoch(stationData.exportedAt ?? stationData.outputEpoch)})}</b>
                         <table>
                             <tbody>
-                                {Object.keys(stationData.stats).map((key) => (
+                                {Object.keys(displayStats).map((key) => (
                                     <tr key={key}>
                                         <td>{t(`statistics.${key}`)}</td>
-                                        <td>{stationData.stats[key]}</td>
+                                        <td>{displayStats[key]}</td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
+                        {stationData?.stats?.hourly && Object.keys(stationData.stats.hourly).length > 0 && <StationHourlyDetailChart hourly={stationData.stats.hourly as Record<string, number[]>} isToday={!isRange} />}
                     </>
                 ) : null}
-                {stationData?.notice ? (
-                    <>
-                        <br />
-                        <b>Notice</b>
-                        <br />
-                        {stationData.notice}
-                    </>
-                ) : null}
-                <>
-                    <br />
-                    <b>{t('times.title')}</b>
-                    <table>
-                        <tbody>
-                            {stationData?.lastLocation ? (
-                                <tr key="location">
-                                    <td>{t('times.location')}</td>
-                                    <td>{new Date((stationData.lastLocation ?? 0) * 1000).toISOString().replace('.000', '')}</td>
-                                </tr>
-                            ) : null}
-                            {stationData?.lastPacket ? (
-                                <tr key="packet">
-                                    <td>{t('times.packet')}</td>
-                                    <td>{new Date((stationData.lastPacket ?? 0) * 1000).toISOString().replace('.000', '')}</td>
-                                </tr>
-                            ) : null}
-                            {stationData?.outputDate ? (
-                                <tr key="output">
-                                    <td>{t('times.output')}</td>
-                                    <td>{stationData.outputDate?.replace(/\.[0-9]*Z/, 'Z')}</td>
-                                </tr>
-                            ) : null}
-                        </tbody>
-                    </table>
-                </>
+                {stationData?.mobile || stationData?.moved || stationData?.bouncing ? <StationPosition mobile={stationData.mobile} moved={stationData.moved} bouncing={stationData.bouncing} primaryLocation={stationData.primary_location} previousLocation={stationData.previous_location} lastSeenAtPrimary={stationData.lastSeenAtPrimary} lastSeenAtPrevious={stationData.lastSeenAtPrevious} mapboxToken={env?.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || ''} /> : null}
                 {stationData?.status ? (
                     <>
                         <br />
@@ -314,6 +514,53 @@ export function CoverageDetails({
                         </div>
                     </>
                 ) : null}
+                {stationData?.lastLocation || stationData?.lastPacket || stationData?.lastBeacon || stationData?.outputDate ? (
+                    <>
+                        <br />
+                        <b>{t('times.title')}</b>
+                        <table>
+                            <tbody>
+                                {stationData.lastLocation ? (
+                                    <tr key="location">
+                                        <td>{t('times.location')}</td>
+                                        <td>{formatEpoch(stationData.lastLocation)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.lastPacket ? (
+                                    <tr key="packet">
+                                        <td>{t('times.packet')}</td>
+                                        <td>{formatEpoch(stationData.lastPacket)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.lastBeacon ? (
+                                    <tr key="beacon">
+                                        <td>{t('times.beacon')}</td>
+                                        <td>{formatEpoch(stationData.lastBeacon)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.outputDate ? (
+                                    <tr key="output">
+                                        <td>{t('times.output')}</td>
+                                        <td>{formatEpoch(stationData.outputEpoch)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.exportedAt ? (
+                                    <tr key="stats_export">
+                                        <td>{t('times.stats_export')}</td>
+                                        <td>{formatEpoch(stationData.exportedAt)}</td>
+                                    </tr>
+                                ) : null}
+                                {stationData.expiresAt ? (
+                                    <tr key="expires">
+                                        <td>{t('times.expires')}</td>
+                                        <td>{formatEpoch(stationData.expiresAt)}</td>
+                                    </tr>
+                                ) : null}
+                            </tbody>
+                        </table>
+                    </>
+                ) : null}
+                <StationNotify ntfyUrl={stationData?.ntfyUrl} />
 
                 <p style={{height: '5rem'}} />
             </>
@@ -321,14 +568,32 @@ export function CoverageDetails({
     }
 
     return (
-        <Trans t={t} i18nKey="help">
-            Hover over somewhere on the map to see details.
-            <br />
-            Click to lock the sidebar display to that location.
-            <br />
-            Click on a station marker to show coverage records only for that station.
-            <br />
-            You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information
-        </Trans>
+        <>
+            <Trans t={t} i18nKey="help">
+                Hover over somewhere on the map to see details.
+                <br />
+                Click to lock the sidebar display to that location.
+                <br />
+                Click on a station marker to show coverage records only for that station.
+                <br />
+                You can resize the sidebar by dragging the edge - if you resize it to zero then you will see tooltips with the information
+            </Trans>
+            {!station && (
+                <>
+                    <hr />
+                    <div style={{display: 'flex', gap: '8px', marginBottom: '4px'}}>
+                        <button style={{fontWeight: statsView === 'protocol' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'protocol' ? '2px solid #4488cc' : 'none'}} onClick={() => setStatsView('protocol')}>
+                            {tStats('tab_protocol')}
+                        </button>
+                        <button style={{fontWeight: statsView === 'stations' ? 'bold' : 'normal', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 6px', borderBottom: statsView === 'stations' ? '2px solid #4488cc' : 'none'}} onClick={() => setStatsView('stations')}>
+                            {tStats('tab_stations')}
+                        </button>
+                    </div>
+                    {statsView === 'protocol' && <ProtocolStatsDashboard layers={layers ?? ['combined']} setLayers={setLayers ?? (() => {})} dateRange={dateRange} />}
+                    {statsView === 'stations' && <StationStatsDashboard dateRange={dateRange} />}
+                    <GlobalUptimeCard dateRange={dateRange} />
+                </>
+            )}
+        </>
     );
 }

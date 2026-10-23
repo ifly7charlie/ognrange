@@ -3,7 +3,7 @@ import {MapboxOverlay, MapboxOverlayProps} from '@deck.gl/mapbox';
 
 import Map, {Source, Layer, useControl, NavigationControl, ScaleControl, AttributionControl} from 'react-map-gl/mapbox';
 
-import {IconLayer, ColumnLayer} from '@deck.gl/layers';
+import {IconLayer, ColumnLayer, LineLayer, ScatterplotLayer} from '@deck.gl/layers';
 import {H3HexagonLayer} from '@deck.gl/geo-layers';
 
 import ReactDOMServer from 'react-dom/server';
@@ -12,7 +12,7 @@ import {useSearchParams} from 'next/navigation';
 import {getObjectFromIndex, PickableDetails} from './pickabledetails';
 
 import {useRouter} from 'next/router';
-import {useTranslation} from 'next-i18next';
+import {useTranslation} from 'next-i18next/pages';
 import {I18nextProvider} from 'react-i18next';
 
 import {
@@ -24,7 +24,6 @@ import {
     zip as _zip,
     keyBy as _keyby,
     filter as _filter,
-    indexOf as _indexOf,
     debounce as _debounce,
     isEqual as _isEqual
 } from 'lodash';
@@ -40,8 +39,36 @@ const altitudeFunctions = {
     minAgl: (f) => f.g
 };
 
-import {useStationMeta, StationMeta} from './stationmeta';
+import {useStationListMeta, useStationListMetaUnfiltered, useStationMeta, StationMeta} from './stationmeta';
+import {destinationPoint, BP_KEYS, HorizonHover} from './coveragedetails/horizondata';
+import graphcolours from './graphcolours';
+
+// Breakpoint-step colours matching the horizon chart series
+// (hex '#rrggbb' → deck.gl rgba)
+const horizonStepColours: [number, number, number, number][] = BP_KEYS.map((_k, i) => {
+    const hex = graphcolours[i];
+    return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 224];
+});
 import {useDisplayedH3s} from './displayedh3s';
+import {ALL_LAYERS, LAYER_BIT, LAYER_COLOR} from '../common/layers';
+import {useFloorData} from './usefloordata';
+import type {FloorDisc} from './floordata';
+import {FLOOR_UNKNOWN, FLOOR_DISPLAY_MAX_M, FLOOR_VISUALISATION_SET, floorFrequencyFor} from '../common/floor';
+import {capabilityMaxRangeKm, CAPABILITY_MAX_RANGE_KM} from '../common/capability';
+import {NEXT_PUBLIC_DATA_URL} from '../common/config';
+
+// Precomputed colour for every possible layerMask bitmask value (0–255)
+const layerMaskColors: [number, number, number, number][] = Array.from({length: 256}, (_, mask) => {
+    if (!mask) return [128, 128, 128, 200];
+    let r = 0, g = 0, b = 0, n = 0;
+    for (const layer of ALL_LAYERS) {
+        if (mask & (1 << LAYER_BIT[layer])) {
+            const [lr, lg, lb] = LAYER_COLOR[layer];
+            r += lr; g += lg; b += lb; n++;
+        }
+    }
+    return n > 0 ? [Math.round(r / n), Math.round(g / n), Math.round(b / n), 200] : [128, 128, 128, 200];
+});
 
 function DeckGLOverlay(
     props: MapboxOverlayProps & {
@@ -65,6 +92,7 @@ function makeLayers(
     file: string,
     highlightStations: HighlightStationIndicies,
     visualisation: string,
+    floorData: FloorDisc | null,
     map2d: boolean,
     onClick: (a: any) => void,
     lockedH3: string,
@@ -98,7 +126,7 @@ function makeLayers(
         maxSig: (f, i) => colourise(Math.min(f.maxSig[i] * 1.3, 254)),
         minAlt: (f, i) => colourise(Math.min(f.minAlt[i] / 20, 254)),
         minAgl: (f, i) => colourise(Math.min(f.minAgl[i] / 20, 254)),
-        minAltSig: (f, i) => colourise(f.minAltSig[i]),
+        minAltSig: (f, i) => colourise(Math.min(f.minAltSig[i], 254)),
         avgCrc: (f, i) => colourise(255 - Math.min(f.avgCrc[i] * 5, 254)),
         avgGap: (f, i) => colourise(Math.log2(Math.max(f.avgGap[i], 4) - 3) * 31.75), // it shouldn't be less than 3 seconds so offset but no log2(0) => inf
         expectedGap: (f, i) => colourise(Math.log2((f.expectedGap?.[i] ?? f.avgGap?.[i]) || 1) * 31.75),
@@ -106,7 +134,8 @@ function makeLayers(
         primaryStation: (f, i) => {
             const s = f.stations?.[i];
             return s ? [parseInt(s.slice(0, 1), 36) * 7, parseInt(s.slice(1, 2), 36) * 7, parseInt(s.slice(2, 3), 36) * 7, 128] : [255, 0, 255, 128];
-        }
+        },
+        layerCoverage: (f, i) => layerMaskColors[f.layerMask?.[i] ?? 0]
     };
 
     // How do we choose what to show in the hexagon layer
@@ -156,25 +185,61 @@ function makeLayers(
           })
         : undefined;
 
+    // Floor visualisations render the computed floor disc instead of the
+    // coverage cells; floors above the display ceiling (or unknown) draw nothing
+    const isFloorVis = FLOOR_VISUALISATION_SET.has(visualisation);
+    const floorValues = isFloorVis && floorData ? (visualisation === 'terrainFloor' ? floorData.terrainFloor : floorData.coverageFloor) : null;
+
     // So we can check loading status
-    const hexLayer = new H3HexagonLayer<typeof displayedh3s>({
-        id: (station || 'global') + (file || 'year'),
-        data: displayedh3s,
-        pickable: true,
-        wireframe: false,
-        filled: true,
-        stroked: false,
-        extruded: false,
-        elevationScale: 0,
-        getHexagon: ((_d, {index}) => [displayedh3s.d!.h3lo[index], displayedh3s.d!.h3hi[index]]) as any,
-        getFillColor: (_d, {index}) => visualisationFunction(displayedh3s.d!, index),
-        getElevation: map2d ? (d) => 0 : (d) => altitudeFunction(d),
-        updateTriggers: {
-            getFillColor: [visualisation, colours],
-            getElevation: [map2d ? false : visualisation]
-        },
-        onClick: onClick
-    });
+    const hexLayer = isFloorVis
+        ? floorValues
+            ? new H3HexagonLayer({
+                  id: 'floor' + (station || ''),
+                  data: floorData as any,
+                  pickable: true,
+                  wireframe: false,
+                  filled: true,
+                  stroked: false,
+                  extruded: false,
+                  elevationScale: 0,
+                  // Instanced hexagons overlap where H3 cells distort (high
+                  // latitudes, icosahedron seams) and the picking buffer
+                  // doesn't blend - hovering a coloured cell could pick an
+                  // invisible clipped neighbour drawn on top. True per-cell
+                  // polygons keep picked == visible (~100ms for the disc)
+                  highPrecision: true,
+                  getHexagon: ((_d, {index}) => [floorData!.h3lo[index], floorData!.h3hi[index]]) as any,
+                  getFillColor: ((_d, {index}): [number, number, number, number] => {
+                      const v = floorValues[index];
+                      // Ceiling and ramp measured from the station's own
+                      // ground, not sea level: 0-2400m above the station over
+                      // the full ramp, ~10m per step. Downhill cells (floor
+                      // below station ground) clamp to the ramp bottom
+                      return v === FLOOR_UNKNOWN || v > floorData!.stationGround + FLOOR_DISPLAY_MAX_M ? [0, 0, 0, 0] : colourise(Math.max(v - floorData!.stationGround, 0) / 10);
+                  }) as any,
+                  updateTriggers: {
+                      getFillColor: [visualisation, colours]
+                  }
+              })
+            : null
+        : new H3HexagonLayer<typeof displayedh3s>({
+              id: (station || 'global') + (file || 'year'),
+              data: displayedh3s,
+              pickable: true,
+              wireframe: false,
+              filled: true,
+              stroked: false,
+              extruded: false,
+              elevationScale: 0,
+              getHexagon: ((_d, {index}) => [displayedh3s.d!.h3lo[index], displayedh3s.d!.h3hi[index]]) as any,
+              getFillColor: (_d, {index}) => visualisationFunction(displayedh3s.d!, index),
+              getElevation: map2d ? (d) => 0 : (d) => altitudeFunction(d),
+              updateTriggers: {
+                  getFillColor: [visualisation, colours],
+                  getElevation: [map2d ? false : visualisation]
+              },
+              onClick: onClick
+          });
 
     // Add a layer for the recent points for each pilot
     let layers = [
@@ -225,14 +290,17 @@ export function CoverageMap(props: {
     station: string;
     setStation: (s: any) => void;
     flyToStation: string;
+    horizonHover?: HorizonHover;
     visualisation: string;
     file?: string;
     tooltips: boolean;
     viewport: any;
     setViewport: Function;
-    dockSplit: number;
+    dockSplit: number | string;
 }) {
-    const stationMeta = useStationMeta();
+    const stationMeta = useStationListMeta();
+    const flyToStationMeta = useStationMeta(props.flyToStation ?? '');
+    const selectedStationMeta = useStationMeta(props.station ?? '');
     const displayedh3s = useDisplayedH3s();
     const router = useRouter();
     const params = useSearchParams();
@@ -242,6 +310,18 @@ export function CoverageMap(props: {
     const details = props.selectedDetails.type === 'none' ? props.hoverDetails : props.selectedDetails;
 
     const airspaceKey = props.env.NEXT_PUBLIC_AIRSPACE_API_KEY || process.env.NEXT_PUBLIC_AIRSPACE_API_KEY;
+
+    // Coverage-floor disc, only computed while a floor visualisation is
+    // selected for a station. The disc radius is capped by the receiver's
+    // RF capability on 868; the ADS-B (1090) receive chain is separate
+    // hardware the capability figure says nothing about, so it keeps the
+    // full range. Gated on station meta having loaded so the disc isn't
+    // computed once at the default range and again when capability arrives
+    const isFloorVis = FLOOR_VISUALISATION_SET.has(props.visualisation);
+    const floorFrequency = floorFrequencyFor(params.get('layers'));
+    const floorMaxKm = floorFrequency === 868 ? capabilityMaxRangeKm(selectedStationMeta?.rfCapabilityDb) : CAPABILITY_MAX_RANGE_KM;
+    const stationMetaLoaded = useStationListMetaUnfiltered() != null;
+    const {disc: floorData, loadingLayer: floorLoadingLayer} = useFloorData(isFloorVis && !!props.station && stationMetaLoaded, props.station, props.file, floorFrequency, floorMaxKm, props.env.NEXT_PUBLIC_DATA_URL || NEXT_PUBLIC_DATA_URL);
 
     const toColour = router.query.toColour || defaultToColour;
     const fromColour = router.query.fromColour || defaultFromColour;
@@ -287,14 +367,13 @@ export function CoverageMap(props: {
     // Focus any selected station, but only if it's not a fresh page load
     // flyToStation is a useState and props.station is from the URL
     useEffect(() => {
-        if (stationMeta && props.station === props.flyToStation) {
-            const metaIndex = _indexOf(stationMeta.name, props.flyToStation);
-            if (mapRef?.current && metaIndex != -1) {
-                mapRef.current.getMap().flyTo({center: [stationMeta.lng[metaIndex], stationMeta.lat[metaIndex]]});
-                props.setViewport({latitude: stationMeta.lat[metaIndex], longitude: stationMeta.lng[metaIndex]});
+        if (props.station === props.flyToStation && flyToStationMeta) {
+            if (mapRef?.current) {
+                mapRef.current.getMap().flyTo({center: [flyToStationMeta.lng, flyToStationMeta.lat]});
+                props.setViewport({latitude: flyToStationMeta.lat, longitude: flyToStationMeta.lng});
             }
         }
-    }, [props.station, props.flyToStation, stationMeta, mapRef.current]);
+    }, [props.station, props.flyToStation, flyToStationMeta, mapRef.current]);
 
     const colourMaps = useMemo(() => {
         const f = router.query.fromColour || defaultFromColour;
@@ -325,7 +404,7 @@ export function CoverageMap(props: {
             }
 
             // Add highlight to all stations that are referenced by the point
-            if (object.type === 'hexagon' && (props.hoverDetails.type !== 'hexagon' || object.i != props.hoverDetails.i)) {
+            if ((object.type === 'hexagon' || object.type === 'floor') && (props.hoverDetails.type !== object.type || object.i != (props.hoverDetails as any).i)) {
                 props.setHoverDetails(object);
             }
 
@@ -335,6 +414,7 @@ export function CoverageMap(props: {
                         <CoverageDetailsToolTip
                             details={object} //
                             station={props.station}
+                            visualisation={props.visualisation}
                         />
                     </I18nextProvider>
                 );
@@ -367,6 +447,7 @@ export function CoverageMap(props: {
                 props.file,
                 highlightStations,
                 props.visualisation,
+                floorData,
                 map2d,
                 onClick,
                 props.selectedDetails.type === 'hexagon' ? props.selectedDetails.h3 : null,
@@ -377,6 +458,7 @@ export function CoverageMap(props: {
             props.station,
             props.file,
             displayedh3s,
+            floorData,
             map2d,
             props.visualisation,
             highlightStations, //
@@ -386,6 +468,73 @@ export function CoverageMap(props: {
             toColour
         ]
     );
+
+    // Bearing line from the station when hovering the horizon chart in the sidebar:
+    // one segment per envelope breakpoint span, coloured to match the chart
+    // series, with tick dots at the breakpoint distances. Kept out of
+    // makeLayers so per-hover updates don't recreate all the layers
+    const horizonHoverLayers = useMemo(() => {
+        if (!props.horizonHover || !selectedStationMeta || isNaN(selectedStationMeta.lat)) {
+            return [];
+        }
+        const {source, bearing, distanceKm, breakpoints} = props.horizonHover;
+        const {lat, lng} = selectedStationMeta;
+        const at = (d: number) => destinationPoint(lat, lng, bearing, d);
+
+        type Segment = {from: [number, number]; to: [number, number]; color: [number, number, number, number]};
+        const segments: Segment[] = [];
+        const boundaries: number[] = [];
+        if (source === 'ground') {
+            // Hover came from the ground (terrain) chart - a plain line in the
+            // chart's terrain brown, with a tick at the terrain ridge
+            segments.push({from: [lng, lat], to: at(distanceKm ?? 30), color: [122, 92, 68, 224]});
+            if (distanceKm != null) {
+                boundaries.push(distanceKm);
+            }
+        } else {
+            // Each breakpoint governs from the previous one out to its own
+            // distance; the first span starts at the writer's 5km minimum
+            let from = 5;
+            breakpoints?.forEach((b, i) => {
+                if (b.km > from) {
+                    segments.push({from: at(from), to: at(b.km), color: horizonStepColours[i % horizonStepColours.length]});
+                    boundaries.push(from, b.km);
+                    from = b.km;
+                }
+            });
+            if (!segments.length) {
+                // Nothing received at this bearing - just show the direction
+                segments.push({from: [lng, lat], to: at(distanceKm ?? 30), color: [255, 16, 240, 192]});
+            }
+        }
+        return [
+            new LineLayer({
+                id: 'horizonBearing',
+                data: segments,
+                pickable: false,
+                getSourcePosition: (d: Segment) => d.from,
+                getTargetPosition: (d: Segment) => d.to,
+                getColor: (d: Segment) => d.color,
+                getWidth: 3,
+                widthUnits: 'pixels'
+            }),
+            boundaries.length
+                ? new ScatterplotLayer({
+                      id: 'horizonBearingTicks',
+                      data: [...new Set(boundaries)].map((d) => ({position: at(d)})),
+                      pickable: false,
+                      getPosition: (d: {position: [number, number]}) => d.position,
+                      radiusUnits: 'pixels',
+                      getRadius: 3,
+                      filled: true,
+                      getFillColor: [255, 255, 255, 224],
+                      stroked: true,
+                      getLineColor: [51, 51, 51, 224],
+                      lineWidthMinPixels: 1
+                  })
+                : null
+        ].filter(Boolean);
+    }, [props.horizonHover, selectedStationMeta]);
 
     let attribution = `<a href="//www.glidernet.org/">${t('source')}</a> | `;
     if (props.station) {
@@ -420,7 +569,7 @@ export function CoverageMap(props: {
                 <DeckGLOverlay
                     getTooltip={useToolTipSelection}
                     onClick={onClick}
-                    layers={layers} //
+                    layers={horizonHoverLayers.length ? [...layers, ...horizonHoverLayers] : layers} //
                     interleaved={true}
                 />
                 {router.query?.airspace == '1' && airspaceKey ? (
@@ -433,7 +582,7 @@ export function CoverageMap(props: {
                 <ScaleControl position="bottom-left" />
                 <NavigationControl showCompass showZoom position="bottom-left" />
             </Map>
-            {displayedh3s.loadingLayer ?? null}
+            {floorLoadingLayer ?? displayedh3s.loadingLayer ?? null}
         </>
     );
 }

@@ -21,7 +21,7 @@ services:
             context: .
             dockerfile: ./conf/Dockerfile
             target: aprs
-        command: node dist/bin/aprs.js
+        command: ./aprs-server
         deploy:
             resources:
                 limits:
