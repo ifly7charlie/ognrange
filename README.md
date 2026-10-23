@@ -10,7 +10,7 @@ You can see this project running at https://ognrange.glidernet.org or https://og
 
 ### Using docker
 
-Images are published to `ghcr.io/ifly7charlie/ogr-{next,aprs,apache}` on every push to `main`.
+Images are published to `ghcr.io/ifly7charlie/ognrange/{next,aprs,apache}` on every push to `main`.
 They contain no site configuration - everything, including the `NEXT_PUBLIC_*` values, is read
 from the container environment at runtime, so changing a value only needs a restart, not a rebuild.
 

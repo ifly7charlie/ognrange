@@ -37,7 +37,8 @@ jobs:
             matrix:
                 target: [next, aprs, apache]
         env:
-            IMAGE: ghcr.io/${{ github.repository_owner }}/ogr-${{ matrix.target }}
+            # namespaced under the repo so the packages are created by, and linked to, this repo
+            IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.target }}
             PUSH: ${{ github.event_name != 'pull_request' }}
         steps:
             - name: Checkout

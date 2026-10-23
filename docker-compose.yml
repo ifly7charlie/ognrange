@@ -1,6 +1,6 @@
 services:
     next:
-        image: ghcr.io/ifly7charlie/ogr-next:latest
+        image: ghcr.io/ifly7charlie/ognrange/next:latest
         platform: linux/amd64
         build:
             context: .
@@ -22,7 +22,7 @@ services:
             - arrow:/ognrange/data/arrow:ro
         restart: always
     aprs:
-        image: ghcr.io/ifly7charlie/ogr-aprs:latest
+        image: ghcr.io/ifly7charlie/ognrange/aprs:latest
         platform: linux/amd64
         build:
             context: .
@@ -50,7 +50,7 @@ services:
             - db:/ognrange/data/db
             - arrow:/ognrange/data/arrow
     apache:
-        image: ghcr.io/ifly7charlie/ogr-apache:latest
+        image: ghcr.io/ifly7charlie/ognrange/apache:latest
         platform: linux/amd64
         build:
             context: .
