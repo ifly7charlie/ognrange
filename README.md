@@ -26,6 +26,17 @@ docker compose up -d
 
 If you want to store the data files locally you should change the volume config in `docker-compose.yml`
 
+The maintenance scripts in `bin/` (`cleanuparrow`, `dumparrow`, `migrate_station_stats`, `purgeuptime`)
+are published as `ghcr.io/ifly7charlie/ognrange/tools`. Run them on demand with the data volumes and
+config mounted, as the same user that owns the data:
+
+```
+docker run --rm --user <uid>:<gid> \
+    -v <arrow volume>:/ognrange/data/arrow \
+    -v <path to>/.env.local:/ognrange/.env.local:ro \
+    ghcr.io/ifly7charlie/ognrange/tools dist/bin/purgeuptime.js --help
+```
+
 ### Locally without docker, perhaps testing etc.
 
 Copy the .env.local file from ./conf/.env.local to the current directory and update to suit

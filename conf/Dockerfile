@@ -35,6 +35,12 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && r
 COPY ./aprs-server/src ./src
 RUN touch src/main.rs && cargo build --release
 
+FROM build-image AS tools-build-image
+COPY ./tsconfig-bin.json ./tsconfig-bin.json
+COPY ./lib ./lib
+COPY ./bin ./bin
+RUN npm run bin:build
+
 # production dependencies only
 FROM build-image AS base-image
 WORKDIR /ognrange
@@ -61,6 +67,19 @@ COPY --from=next-build-image /ognrange/.next/ ./.next/
 EXPOSE 3000
 # entrypoint is node
 CMD ["node_modules/next/dist/bin/next", "start"]
+
+# maintenance scripts from bin/, run on demand with the data volumes and
+# .env.local mounted, e.g.
+#   docker run --rm --user 995:1006 -v /srv/ognrange/arrow:/ognrange/data/arrow \
+#     -v /srv/ognrange/.env.local:/ognrange/.env.local:ro <image> dist/bin/purgeuptime.js --help
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:3a6f4e6fd37efe00042667d06fd52240f2589ed09b0694fbb3b1bf860030a839 AS tools
+WORKDIR /ognrange
+COPY --from=base-image /ognrange/node_modules ./node_modules
+COPY ./LICENSE ./LICENSE
+COPY ./package.json ./
+COPY --from=tools-build-image /ognrange/dist ./dist
+ENTRYPOINT ["/nodejs/bin/node", "--enable-source-maps"]
+CMD ["dist/bin/dumparrow.js", "--help"]
 
 # static musl binary, rustls with webpki-roots: no libc or CA bundle needed.
 # Runs as root so existing db volume ownership keeps working.

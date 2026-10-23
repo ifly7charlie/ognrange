@@ -35,7 +35,7 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                target: [next, aprs, apache]
+                target: [next, aprs, apache, tools]
         env:
             # namespaced under the repo so the packages are created by, and linked to, this repo
             IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.target }}
