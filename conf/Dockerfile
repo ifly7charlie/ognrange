@@ -9,8 +9,8 @@
 FROM node:26-trixie@sha256:a98e6fda54fdbb22d4238054cca9a2a113bcd1191c09193a535aae22f400aa8e AS build-image
 WORKDIR /ognrange
 COPY ./package.json ./
-COPY ./yarn.lock ./
-RUN npm_config_build_from_source=true yarn install --frozen-lockfile
+COPY ./package-lock.json ./
+RUN npm_config_build_from_source=true npm ci
 
 FROM build-image AS next-build-image
 ARG GIT_REF=unknown
@@ -24,7 +24,7 @@ COPY ./lib/api ./lib/api
 COPY ./pages ./pages
 COPY ./lib/react ./lib/react
 # build cache isn't needed at runtime
-RUN yarn next build && rm -rf .next/cache
+RUN npx --no-install next build && rm -rf .next/cache
 
 FROM rust:1-alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS aprs-build-image
 RUN apk add --no-cache musl-dev
@@ -38,7 +38,9 @@ RUN touch src/main.rs && cargo build --release
 # production dependencies only
 FROM build-image AS base-image
 WORKDIR /ognrange
-RUN yarn install --production --frozen-lockfile
+# sharp (next's optional image optimiser, ~30MB of libvips) is unused as
+# images.unoptimized is set in next.config.js
+RUN npm prune --omit=dev && rm -rf node_modules/sharp node_modules/@img
 
 
 ########### production images

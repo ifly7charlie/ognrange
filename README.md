@@ -30,12 +30,12 @@ If you want to store the data files locally you should change the volume config 
 
 Copy the .env.local file from ./conf/.env.local to the current directory and update to suit
 
-For development you need to install the packages `yarn install`
+For development you need to install the packages `npm ci`
 
-Then in different windows you'll want: `yarn next dev` and the collector, `cargo run` in `./aprs-server`
+Then in different windows you'll want: `npm run dev` and the collector, `cargo run` in `./aprs-server`
 
 There are some complexities - in particular the .arrow files need to be served to the browser
-somehow. Easiest for development is to use `yarn next dev` and output the arrow files into `./public/data`
+somehow. Easiest for development is to use `npm run dev` and output the arrow files into `./public/data`
 You will need to configure `.env.local` to point to this in `NEXT_PUBLIC_DATA_URL` and `OUTPUT_PATH`. For serving
 in production see `conf/docker-httpd.conf` for the sections you need to handle this encoding. It's much quicker
 and uses less disk space saving and serving as .gz, otherwise your webserver will always be compressing
@@ -65,9 +65,9 @@ UNCOMPRESSED_ARROW_FILES=1
 To build & run - note that this is a summary not a set of command lines ;)
 
 ```
-yarn install
-yarn next build
-yarn next start
+npm ci
+npx next build
+npx next start
 cd aprs-server && cargo build --release
 ./aprs-server/target/release/aprs-server
 ```

@@ -3,7 +3,7 @@
     "private": true,
     "scripts": {
         "dev": "NODE_OPTIONS='--inspect --enable-source-maps ' next dev",
-        "build": "yarn bin:build && yarn next build",
+        "build": "npm run bin:build && next build",
         "bin:build": "tsc --project tsconfig-bin.json",
         "dumparrow": "node --enable-source-maps dist/bin/dumparrow.js",
         "purgeuptime": "node --enable-source-maps dist/bin/purgeuptime.js",
@@ -15,17 +15,20 @@
         "test:coverage": "vitest run --coverage"
     },
     "dependencies": {
-        "@loaders.gl/arrow": "^4.3.4",
-        "@loaders.gl/json": "^4.3.4",
+        "@deck.gl/core": "^9.4.0",
+        "@deck.gl/geo-layers": "^9.4.0",
+        "@deck.gl/layers": "^9.4.0",
+        "@deck.gl/mapbox": "^9.4.0",
+        "@loaders.gl/arrow": "^4.5.4",
+        "@loaders.gl/json": "^4.5.4",
         "apache-arrow": "^18.0.0",
-        "deck.gl": "^9.3.10",
         "dotenv": "^16.0.0",
         "h3-js": "^4.1.0",
         "i18next": "^26.3.6",
         "lodash": "^4.18.1",
         "lru-cache": "^7.17.0",
         "mapbox-gl": "^3",
-        "next": "15",
+        "next": "^15.5.28",
         "next-i18next": "^16.0.10",
         "qrcode.react": "^4.2.0",
         "react": "^18.0.0",
@@ -44,7 +47,7 @@
     },
     "devDependencies": {
         "@types/lodash": "^4.17.24",
-        "@types/node": "^18.11.9",
+        "@types/node": "^24.0.0",
         "@types/yargs": "^17.0.0",
         "@vitest/coverage-v8": "^4.0.18",
         "prettier": "^2.7.1",
@@ -52,11 +55,7 @@
         "typescript": "^5.1.0",
         "vitest": "^4.1.11"
     },
-    "resolutions": {
-        "lodash": "^4.18.1",
-        "fast-xml-parser": "^4.5.5",
-        "postcss": "^8.5.18",
-        "diff": "^4.0.4",
-        "@types/mapbox-gl": "3.4.1"
+    "overrides": {
+        "postcss": "^8.5.18"
     }
 }

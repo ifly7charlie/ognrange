@@ -29,6 +29,12 @@ module.exports = {
 
     i18n,
 
+    // no images are served through next, so the /_next/image optimiser (and sharp)
+    // are not needed - sharp is removed from the docker image
+    images: {
+        unoptimized: true
+    },
+
     eslint: {
         // Warning: This allows production builds to successfully complete even if
         // your project has ESLint errors.
