@@ -172,6 +172,46 @@ fn clamp_i16(elevation_m: f64) -> i16 {
     elevation_m.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
+/// Hilbert grid side for queue ordering: 2^16 cells per axis (~600m at the
+/// equator), comfortably finer than a z11 tile
+const QUEUE_ORDER_BITS: u32 = 16;
+
+/// Generation-queue sort key: Hilbert-curve distance of the station's
+/// web-mercator position. Consecutive keys are adjacent on the map, so a
+/// backfill sorted by this walks the fleet geographically and neighbouring
+/// stations reuse each other's DEM tiles from the RAM LRU instead of
+/// evicting them. Mercator maths copied from elevation.rs::
+/// point_to_tile_fraction (kept local for the bin tool's include set)
+pub fn queue_order_key(lat: f64, lng: f64) -> u64 {
+    let n = 1u32 << QUEUE_ORDER_BITS;
+    let lat_rad = lat.clamp(-85.0511, 85.0511).to_radians();
+    let fx = (lng + 180.0) / 360.0;
+    let fy = (1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0;
+    let cell = |f: f64| ((f * n as f64) as u32).min(n - 1);
+    hilbert_d(n, cell(fx), cell(fy))
+}
+
+/// Hilbert distance of cell (x, y) on an n x n grid (n a power of two)
+fn hilbert_d(n: u32, mut x: u32, mut y: u32) -> u64 {
+    let mut d = 0u64;
+    let mut s = n / 2;
+    while s > 0 {
+        let rx = (x & s != 0) as u32;
+        let ry = (y & s != 0) as u32;
+        d += s as u64 * s as u64 * ((3 * rx) ^ ry) as u64;
+        // Rotate the quadrant so the sub-curve joins up with its neighbours
+        if ry == 0 {
+            if rx == 1 {
+                x = n - 1 - x;
+                y = n - 1 - y;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        s /= 2;
+    }
+    d
+}
+
 pub struct GroundHorizon {
     pub lat: f64,
     pub lng: f64,
@@ -587,6 +627,38 @@ mod tests {
         assert_eq!(clamp_i16(-430.6), -431);
         assert_eq!(clamp_i16(40000.0), i16::MAX);
         assert_eq!(clamp_i16(-40000.0), i16::MIN);
+    }
+
+    #[test]
+    fn hilbert_walk_is_contiguous() {
+        // Every cell gets a unique distance and each step along the curve
+        // moves to an edge-adjacent cell - the locality the queue relies on
+        let n = 16u32;
+        let mut cells = vec![None; (n * n) as usize];
+        for x in 0..n {
+            for y in 0..n {
+                let d = hilbert_d(n, x, y) as usize;
+                assert!(cells[d].is_none(), "distance {} assigned twice", d);
+                cells[d] = Some((x as i64, y as i64));
+            }
+        }
+        for pair in cells.windows(2) {
+            let ((x0, y0), (x1, y1)) = (pair[0].unwrap(), pair[1].unwrap());
+            assert_eq!((x0 - x1).abs() + (y0 - y1).abs(), 1, "jump {:?} -> {:?}", pair[0], pair[1]);
+        }
+    }
+
+    #[test]
+    fn queue_order_groups_neighbours() {
+        // Two stations a few km apart sort far closer together than either
+        // does to a station on another continent
+        let a = queue_order_key(47.00, 8.00) as i128;
+        let b = queue_order_key(47.03, 8.04) as i128;
+        let far = queue_order_key(-33.9, 151.2) as i128;
+        assert!((a - b).abs() < (a - far).abs() / 1000);
+        // Poles and the antimeridian stay in range
+        queue_order_key(90.0, 180.0);
+        queue_order_key(-90.0, -180.0);
     }
 
     #[test]

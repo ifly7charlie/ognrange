@@ -1480,17 +1480,21 @@ async fn ground_horizon_task(state: Arc<AppState>) {
         }
 
         // Rescan for candidates; newcomers join the back of the queue.
-        // Sorted so a fleet backfill proceeds in a predictable order
-        let mut discovered: Vec<StationName> = state
+        // Sorted along a Hilbert curve so a fleet backfill walks the map and
+        // neighbouring stations share DEM tiles in the RAM cache (name breaks
+        // ties so the order stays predictable)
+        let mut discovered: Vec<(u64, StationName)> = state
             .station_manager
             .all_stations()
             .iter()
-            .filter(|d| ground_horizon_candidate(d).is_some())
-            .map(|d| d.station.clone())
-            .filter(|name| !queued.contains(name))
+            .filter(|d| !queued.contains(&d.station))
+            .filter_map(|d| {
+                ground_horizon_candidate(d)
+                    .map(|(lat, lng)| (ground_horizon::queue_order_key(lat, lng), d.station.clone()))
+            })
             .collect();
-        discovered.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        for name in discovered {
+        discovered.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.as_str().cmp(b.1.as_str())));
+        for (_, name) in discovered {
             queued.insert(name.clone());
             queue.push_back(name);
         }
