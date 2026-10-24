@@ -1073,6 +1073,7 @@ async fn periodic_tasks(state: Arc<AppState>) {
         let net_d = tile.net_fetches.saturating_sub(last_tile.net_fetches);
         let fail_d = tile.net_failures.saturating_sub(last_tile.net_failures);
         let net_secs = tile.net_time_ms.saturating_sub(last_tile.net_time_ms) as f64 / 1000.0;
+        let evict_d = tile.evictions.saturating_sub(last_tile.evictions);
         let lookups = ram_d + disk_d + net_d + fail_d;
         let per_zoom = tile
             .per_zoom
@@ -1089,13 +1090,14 @@ async fn periodic_tasks(state: Arc<AppState>) {
             state.station_manager.next_station_id() - 1
         );
         info!(
-            "tile lookups: {} ({:.1}% ram, {} disk, {} net, {} failed, {:.1}s fetching)",
+            "tile lookups: {} ({:.1}% ram, {} disk, {} net, {} failed, {:.1}s fetching), {} evicted",
             lookups,
             if lookups > 0 { ram_d as f64 * 100.0 / lookups as f64 } else { 0.0 },
             disk_d,
             net_d,
             fail_d,
-            net_secs
+            net_secs,
+            evict_d
         );
         last_tile = tile;
         info!(
@@ -1465,6 +1467,10 @@ async fn ground_horizon_task(state: Arc<AppState>) {
     let mut queued: HashSet<StationName> = HashSet::new();
     let mut written = 0usize;
     let mut failed = 0usize;
+    // Tile churn is reported per backfill line, independent of the flush
+    // period (which can outlast the process during a crash loop)
+    let mut last_tile = state.elevation.stats().await;
+    let mut last_written = 0usize;
 
     loop {
         // Strictly between rollups: wait out any in-progress rollup
@@ -1548,12 +1554,30 @@ async fn ground_horizon_task(state: Arc<AppState>) {
                 queue.len()
             );
             if written % 25 == 0 || queue.is_empty() {
+                // Shared cache, so packet-path lookups are mixed in - they
+                // are almost all RAM hits and barely move the churn figures
+                let tile = state.elevation.stats().await;
+                let disk_d = tile.disk_hits.saturating_sub(last_tile.disk_hits);
+                let net_d = tile.net_fetches.saturating_sub(last_tile.net_fetches);
+                let evict_d = tile.evictions.saturating_sub(last_tile.evictions);
+                let per = (written - last_written).max(1) as f64;
                 info!(
-                    "ground-horizon backfill: {} written, {} failed attempts, {} queued",
+                    "ground-horizon backfill: {} written, {} failed attempts, {} queued; \
+                     tiles {:.0} loaded/station ({} disk, {} net), {:.0} evicted/station, \
+                     cache {}/{} {:.0}MB",
                     written,
                     failed,
-                    queue.len()
+                    queue.len(),
+                    (disk_d + net_d) as f64 / per,
+                    disk_d,
+                    net_d,
+                    evict_d as f64 / per,
+                    tile.tiles,
+                    tile.max_tiles,
+                    tile.bytes as f64 / (1024.0 * 1024.0)
                 );
+                last_tile = tile;
+                last_written = written;
             }
         } else {
             failed += 1;
