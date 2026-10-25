@@ -509,6 +509,15 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                             process_packet(&state, &packet, &raw, flarm_num).await;
                         } else {
                             // Station beacon or status
+                            // Receivers without a position fix beacon 0,0 - drop
+                            // before it can set or move the station location
+                            if packet.packet_type == PacketType::Location
+                                && packet.latitude == Some(0.0)
+                                && packet.longitude == Some(0.0)
+                            {
+                                reject_log::log_reject("station_null_island", &raw);
+                                continue;
+                            }
                             let station_name =
                                 state.normalise_case(&packet.source_callsign);
                             let sn = StationName(station_name);

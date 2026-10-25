@@ -14,8 +14,8 @@ Images are published to `ghcr.io/ifly7charlie/ognrange/{next,aprs,apache}` on ev
 They contain no site configuration - everything, including the `NEXT_PUBLIC_*` values, is read
 from the container environment at runtime, so changing a value only needs a restart, not a rebuild.
 
-Put your configuration in `./conf/.env.local`, which compose loads into the `next` and `aprs`
-containers at runtime. `DB_PATH` and `OUTPUT_PATH` are set in `docker-compose.yml` to match the
+Put your configuration in `./conf/.env.local`, which compose mounts into the `aprs` container
+and loads into `next` at runtime. `DB_PATH` and `OUTPUT_PATH` are set in `docker-compose.yml` to match the
 volume mounts and override any values in that file. Apache serves the arrow volume at `/arrow/`, so set
 `NEXT_PUBLIC_DATA_URL=/arrow/`.
 
@@ -374,115 +374,112 @@ Output destination is controlled by `LOG_STDOUT` (default 1) and
 
 ## Configuration
 
-Config file is .env.local for aprs collector, for the front end it
-follows nextjs naming convention NEXT_PUBLIC_XX goes to browser!
+Configuration is read from `.env.local` in the working directory, by both the
+aprs collector and the front end. For the front end it follows the nextjs naming
+convention, NEXT_PUBLIC_XX goes to the browser!
 
-See `lib/common/config.ts` for the latest values and documentation of
-configuration variables
+`conf/.env.local` lists every option, commented out and showing the default. Copy
+it to `./.env.local` when running locally; docker compose uses it directly.
+
+See `aprs-server/src/config.rs` and `lib/common/config.ts` for the code.
 
 ```
-# url of website
-NEXT_PUBLIC_SITEURL=
+#
+# ognrange configuration - read by aprs-server and the next front end
+#
+# Everything is commented out and shows the default. Uncomment and change
+# what you need. NEXT_PUBLIC_XX values are sent to the browser!
+#
+# Docker: compose mounts this file into aprs and loads it into next.
+# DB_PATH and OUTPUT_PATH are set in docker-compose.yml to match the volume
+# mounts and override anything set here.
+#
+# See aprs-server/src/config.rs and lib/common/config.ts for the code.
+#
+
+### Site
+
+# url of website, this is also reported to the aprs servers
+#NEXT_PUBLIC_SITEURL=unknown
 
 # mapbox token, used for the map on the client
-NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=
+#NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=
 
-# terrarium-encoded DEM tiles used for server elevation lookups, defaults to the
-# free AWS Open Data bucket; override to front it through your own CDN
-#NEXT_PUBLIC_DEM_TILE_URL=https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png
+# api key for the airspace overlay, the airspace setting is hidden if unset
+#NEXT_PUBLIC_AIRSPACE_API_KEY=
+
+# where the browser fetches the arrow files from, either relative to the site
+# or a full URL (https). With docker apache serves the arrow volume at /arrow/
+#NEXT_PUBLIC_DATA_URL=/data/
+
+### Paths
 
 # where to store the accumulator databases
-DB_PATH=/Users/melissa/ognrange/db/
+#DB_PATH=./db/
 
-# where to output the files used to render the map, this directory should be served
-# as /data/ on the webserver, or set NEXT_PUBLIC_DATA_URL to point to the correct
-# location if it's a different one from the server. It's not recommended to use
-# the NEXT public directory for this because NEXTJS doesn't refresh the directory
-# listing until you rebuild the app. I use a directory served directly by the webserver
-OUTPUT_PATH=/Users/melissa/ognrange/output/
-NEXT_PUBLIC_DATA_URL=
+# where to output the files used to render the map, this directory should be
+# served at NEXT_PUBLIC_DATA_URL. It's not recommended to use the NEXT public
+# directory for this because NEXTJS doesn't refresh the directory listing
+# until you rebuild the app. I use a directory served directly by the webserver
+#OUTPUT_PATH=./data/
 
-# control the elevation tile cache, note tiles are not evicted on expiry
-# so it will fill to MAX before anything happens. These tiles don't change so
-# if this is too low you'll just be re-fetching the same tiles (though fetches
-# usually hit the on-disk cache in DB_PATH/dem-tiles rather than the network).
-# Flip side is the data will occupy ram or swap, 0 means no expiry
-MAX_ELEVATION_TILES=32000
-ELEVATION_TILE_EXPIRY_HOURS=0
+# aprs-server always writes .gz files, this also writes uncompressed twins.
+# next reads the uncompressed files when set to 1 and the .gz ones otherwise.
+# For serving locally without a webserver that handles 'content-encoding gzip'
+# you need the uncompressed files
+#UNCOMPRESSED_ARROW_FILES=1
 
-# control how precise the ground altitude is, difficult balance for mountains..
-# (this is a web-mercator tile zoom level)
-# resolution 11 gives ~30m per pixel at 40 degrees which should be good enough
-# if you are memory constrained then increase this number before you drop the
-# number of tiles!
-ELEVATION_TILE_RESOLUTION=11
+### Layers
 
-# control the database handle caching for the accumulators
-# by default we will keep a few hundred open at a time, unlike tile cache
-# dbs will be flushed if they expire. (theory being that flying windows
-# might be short and less open is less risk of problems)
-# note that each DB uses 4 or 5 file handles MINIMUM so ulimit must be
-# large enough! You want to set the number to be at least 20% larger
-# than the maximum number of stations that are likely to be receiving
-# simultaneously on a busy day
-MAX_STATION_DBS=1200
-STATION_DB_EXPIRY_HOURS=4
+# which coverage layers to capture, comma-separated. Defaults to all of them:
+# combined,flarm,adsb,adsl,fanet,ogntrk,paw,safesky
+#ENABLED_LAYERS=
 
-# Cache control - we cache the datablocks by station and h3 to save us needing
-# to read/write them from/to the DB constantly. Note that this can use quite a lot
-# of memory, but is a lot easier on the computer (in MINUTES)
-# - flush period is how long they need to have been unused to be written
-#   it is also the period of time between checks for flushing. Increasing this
-#   will reduce the number of DB writes when there are lots of points being
-#   tracked
-# - MAXIMUM_DIRTY_PERIOD ensures that they will be written at least this often
-# - expirytime is how long they can remain in memory without being purged. If it
-#   is in memory then it will be used rather than reading from the db.
-#   purges happen normally at flush period intervals (so 5 and 16 really it will
-#   be flushed at the flush run at 20min)
-H3_CACHE_FLUSH_PERIOD_MINUTES=1
-H3_CACHE_MAXIMUM_DIRTY_PERIOD_MINUTES=30
-H3_CACHE_EXPIRY_TIME_MINUTES=4
+### APRS
 
-# how much detail to collect, bigger numbers = more cells! goes up fast see
-# https://h3geo.org/docs/core-library/restable for what the sizes mean
-# 8 is 0.7sqkm/cell, 7 is 5.2sqkm/cell
-# Although you can change this without breaking the database no old values
-# will be updated after the change (as cell changed) you will also end
-# up with a map with two sized cells and overlaps... I'd recommend NOT
-# doing that.
-H3_STATION_CELL_LEVEL=8
-H3_GLOBAL_CELL_LEVEL=7
+# APRS-IS login callsign, max 8 characters
+#APRS_CALLSIGN=OGNRANGE
 
+# Server and port to connect to
+#APRS_SERVER=aprs.glidernet.org:14580
 
-# We keep maps of when we last saw aircraft and where so we can determine the
-# timegap prior to the packet, this is sort of a proxy for the 'edge' of coverage
-# however we don't need to know this forever so we should forget them after
-# a while. The signfigence of forgetting is we will assume no gap before the
-# first packet for the first aircraft/station pair. Doesn't start running
-# until approximately this many hours have passed
-FORGET_AIRCRAFT_AFTER_HOURS=12
+# Filter what packets are being received - eg to set up regional range tool
+# uses standard APRS filters, this one basically means send me everything
+#APRS_TRAFFIC_FILTER=t/spuoimnwt
+
+# how often do we need to report to the APRS server, also how often
+# we check for lost connection to the server
+#APRS_KEEPALIVE_PERIOD_SECONDS=45
+
+### Packet filtering
 
 # Packets claiming a position further than this (in km) from the station's
 # known location are rejected as corrupt - well beyond real reception range
 # even for mountain/ducting records (~450km)
-MAX_PACKET_DISTANCE_KM=500
+#MAX_PACKET_DISTANCE_KM=500
 
-# How far a station is allowed to move (in km) without triggering move detection
-STATION_MOVE_THRESHOLD_KM=0.2
+# Count (but still process) packets with timestamps this far in the future
+# or this old
+#FUTURE_PACKET_CUTOFF_SECS=300
+#STALE_PACKET_CUTOFF_SECS=3600
 
-# How many days a station must remain at a new location (with no packets from
-# the original location) before the move is confirmed and old data is purged
-STATION_MOVE_CONFIRM_DAYS=7
+# Optional reject log for debugging filtered packets. Set to a file path
+# to enable. Each line is: reason<TAB>raw_packet
+# The log rotates when it exceeds REJECT_LOG_MAX_MB, renaming to .1
+#REJECT_LOG=
+#REJECT_LOG_MAX_MB=50
 
-# If we haven't had traffic in this long then we expire the station and
-# delete all the history
-STATION_EXPIRY_TIME_DAYS=31
+### Coverage resolution
 
-# Stations with "test" as a word in their callsign (TEST1, LFLE-test, MyTestRx
-# - not Contest or Testwood) expire after this much silence instead
-TEST_STATION_EXPIRY_TIME_DAYS=2
+# how much detail to collect, bigger numbers = more cells! goes up fast see
+# https://h3geo.org/docs/core-library/restable for what the sizes mean
+# 8 is 0.7sqkm/cell, 7 is 5.2sqkm/cell
+# *** DO NOT CHANGE WITHOUT DELETING ALL DATA - old values are never updated
+# and you will end up with a map with two sized cells and overlaps
+#H3_STATION_CELL_LEVEL=8
+#H3_GLOBAL_CELL_LEVEL=7
 
+### Rollup
 
 # ROLLUP is when the current accumulators are merged with the daily/monthly/annual
 # accumulators. All are done at the same time and the accumulators are 'rolled'
@@ -492,38 +489,137 @@ TEST_STATION_EXPIRY_TIME_DAYS=2
 #
 # This ALSO controls how often to write output files. Updated display files
 # are produced during rollups - so at startup, at rollup period, and at exit
-ROLLUP_PERIOD_HOURS=3
+#
+# ROLLUP_PERIOD_MINUTES wins if both are set, it must be more than 12 minutes
+#ROLLUP_PERIOD_HOURS=3
+#ROLLUP_PERIOD_MINUTES=
 
 # how many databases we can process at once when doing a rollup, if
 # your system drops the APRS connection when it is busy then you should
-# set this number lower... I blame Node for having one thread and webworkers
-# for not allowing you to share DB handles even if underlying C++ code is
-# threadsafe
-MAX_SIMULTANEOUS_ROLLUPS=100
+# set this number lower. Capped at MAX_STATION_DBS / 2
+#MAX_SIMULTANEOUS_ROLLUPS=100
 
-# How often to check for change of accumulators - this is basically how long
-# it can take to notice the day has changed, could be solved better but this
-# helps with testing
-ACCUMULATOR_CHANGEOVER_CHECK_PERIOD_SECONDS=60
+# how often to write the server/station status files for the front end,
+# independent of rollup
+#STATUS_WRITE_PERIOD_MINUTES=60
 
-# APRS-IS login callsign, max 8 characters (default: OGNRANGE)
-APRS_CALLSIGN=OGNRANGE
+### Databases
 
-# how often do we need to report to the APRS server, also how often
-# we check for lost connection to the server
-APRS_KEEPALIVE_PERIOD_SECONDS=45
+# how many station databases to keep open at once. You want this to be at
+# least 20% larger than the maximum number of stations that are likely to be
+# receiving simultaneously on a busy day. Each DB can hold up to
+# STATION_MAX_OPEN_FILES file handles plus a few for its logs, so ulimit
+# must be large enough for MAX_STATION_DBS of them
+#MAX_STATION_DBS=800
 
-# Filter what packets are being received - eg to set up regional range tool
-# uses standard APRS filters, this one basically means send me everything
-APRS_TRAFFIC_FILTER=t/spuoimnwt
+# open file and block cache budget per station DB, multiplied by up to
+# MAX_STATION_DBS so keep them modest
+#STATION_MAX_OPEN_FILES=40
+#STATION_BLOCK_CACHE_MB=16
 
-# Server and port to connect to
-APRS_SERVER=aprs.glidernet.org:14580
+# the global DB is a single large DB so it gets a much bigger budget
+#GLOBAL_MAX_OPEN_FILES=2000
+#GLOBAL_BLOCK_CACHE_MB=256
 
-# Optional reject log for debugging filtered packets. Set to a file path
-# to enable. Each line is: reason<TAB>raw_packet
-# The log rotates when it exceeds REJECT_LOG_MAX_MB, renaming to .1
-#REJECT_LOG=/tmp/ognrange-rejects.log
-REJECT_LOG_MAX_MB=50
+# target SST file size for every DB
+#DB_MAX_FILE_SIZE_MB=16
 
+# after this many records written + deleted to a DB the next rollup does a
+# full compaction to reclaim space in the bottom level, 0 disables
+#FULL_COMPACT_WRITE_THRESHOLD=5000000
+
+### H3 cache
+
+# Cache control - we cache the datablocks by station and h3 to save us needing
+# to read/write them from/to the DB constantly. Note that this can use quite a lot
+# of memory, but is a lot easier on the computer (in MINUTES)
+# - flush period is how long they need to have been unused to be written
+#   it is also the period of time between checks for flushing. Increasing this
+#   will reduce the number of DB writes when there are lots of points being
+#   tracked
+# - MAXIMUM_DIRTY_PERIOD ensures that they will be written at least this often
+#H3_CACHE_FLUSH_PERIOD_MINUTES=5
+#H3_CACHE_MAXIMUM_DIRTY_PERIOD_MINUTES=30
+
+### Elevation
+
+# terrarium-encoded DEM tiles used for server elevation lookups, defaults to the
+# free AWS Open Data bucket; override to front it through your own CDN
+#NEXT_PUBLIC_DEM_TILE_URL=https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png
+
+# maximum elevation tiles held in memory. These tiles don't change so if this
+# is too low you'll just be re-fetching the same tiles (though fetches usually
+# hit the on-disk cache in DB_PATH/dem-tiles rather than the network).
+# Flip side is the data will occupy ram or swap
+#MAX_ELEVATION_TILES=32000
+
+# control how precise the ground altitude is, difficult balance for mountains..
+# (this is a web-mercator tile zoom level)
+# resolution 11 gives ~30m per pixel at 40 degrees which should be good enough
+# if you are memory constrained then increase this number before you drop the
+# number of tiles!
+#ELEVATION_TILE_RESOLUTION=11
+
+# antenna height above ground (m) used when a station's beaconed altitude is
+# missing or implausible
+#GROUND_STATION_AGL_M=3
+
+# set to 1 to stop the background ground-horizon generation
+#GROUND_HORIZON_PAUSED=0
+
+### Stations and aircraft
+
+# We keep maps of when we last saw aircraft and where so we can determine the
+# timegap prior to the packet, this is sort of a proxy for the 'edge' of coverage
+# however we don't need to know this forever so we should forget them after
+# a while. The signfigence of forgetting is we will assume no gap before the
+# first packet for the first aircraft/station pair. Doesn't start running
+# until approximately this many hours have passed
+#FORGET_AIRCRAFT_AFTER_HOURS=12
+
+# How far a station is allowed to move (in km) without triggering move detection
+#STATION_MOVE_THRESHOLD_KM=0.2
+
+# How many days a station must remain at a new location (with no packets from
+# the original location) before the move is confirmed and old data is purged
+#STATION_MOVE_CONFIRM_DAYS=7
+
+# If we haven't had traffic in this long then we expire the station and
+# delete all the history
+#STATION_EXPIRY_TIME_DAYS=31
+
+# Stations with "test" as a word in their callsign (TEST1, LFLE-test, MyTestRx
+# - not Contest or Testwood) expire after this much silence instead
+#TEST_STATION_EXPIRY_TIME_DAYS=2
+
+### Outage notifications (ntfy)
+
+# set to 0 to stop sending, topic urls are still generated for the front end
+#NTFY_ENABLED=1
+#NTFY_BASE_URL=https://ntfy.sh
+# topics are {prefix}-{station}-{random suffix}
+#NTFY_TOPIC_PREFIX=onglide-status
+# max notifications per check, keeps inside the ntfy.sh rate limit
+#NTFY_SENDS_PER_CYCLE=50
+#OUTAGE_CHECK_PERIOD_MINUTES=30
+# no beacons for this long is an outage (receiver down)
+#OUTAGE_BEACON_DAYS=1
+# no aircraft traffic for this long is an outage (hearing nothing)
+#OUTAGE_TRAFFIC_DAYS=7
+
+### Front end
+
+# how far back the scans go for year when generating graphs
+#MAXIMUM_GRAPH_AGE_DAYS=60
+
+# nextjs caches arrow files for the api requests, they can be quite big so
+# control the maximum number here. LRU cache
+#MAX_ARROW_FILES=5000
+
+### Logging
+
+# aprs-server log level, see the Logging section of the README
+#RUST_LOG=info
+#LOG_STDOUT=1
+#LOG_SYSLOG=0
 ```
