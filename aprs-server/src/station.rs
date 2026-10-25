@@ -353,18 +353,30 @@ impl StationManager {
     /// Get or create station details.
     /// Returns None if the station ID limit has been reached.
     pub fn get_or_create(&self, name: &StationName) -> Option<StationDetails> {
+        self.get_or_create_with(name, |d| d.clone())
+    }
+
+    /// Get or create a station, returning only what `f` extracts from it -
+    /// avoids cloning the whole record on the per-packet path.
+    /// Returns None if the station ID limit has been reached.
+    /// `f` runs under the stations lock: no I/O, no StationManager calls.
+    pub fn get_or_create_with<R>(
+        &self,
+        name: &StationName,
+        f: impl FnOnce(&StationDetails) -> R,
+    ) -> Option<R> {
         // Fast path: read lock
         {
             let stations = self.stations.read().unwrap();
             if let Some(details) = stations.get(name) {
-                return Some(details.clone());
+                return Some(f(details));
             }
         }
 
         // Slow path: write lock, re-check to avoid duplicate ID allocation
         let mut stations = self.stations.write().unwrap();
         if let Some(details) = stations.get(name) {
-            return Some(details.clone());
+            return Some(f(details));
         }
 
         // Hard cap: prevent u16 wrap-around
@@ -440,6 +452,7 @@ impl StationManager {
             new_id.0, name, stations.len() + 1
         );
 
+        let result = f(&details);
         stations.insert(name.clone(), details.clone());
         self.station_ids
             .write()
@@ -448,12 +461,28 @@ impl StationManager {
 
         self.persist(&details);
 
-        Some(details)
+        Some(result)
     }
 
     /// Get station details without creating
     pub fn get(&self, name: &StationName) -> Option<StationDetails> {
         self.stations.read().unwrap().get(name).cloned()
+    }
+
+    /// Mutate a station in place, in memory only (flush_all() persists).
+    /// Returns false if the station doesn't exist (e.g. expired meanwhile).
+    /// Changes only the fields `f` touches, so it can't clobber concurrent
+    /// updates the way a get()/update() round trip across an await can.
+    /// `f` runs under the stations write lock: no I/O, no StationManager calls
+    /// (the lock isn't reentrant).
+    pub fn modify(&self, name: &StationName, f: impl FnOnce(&mut StationDetails)) -> bool {
+        match self.stations.write().unwrap().get_mut(name) {
+            Some(details) => {
+                f(details);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Update station details in memory only. Call flush_all() to persist to the DB.
@@ -684,19 +713,15 @@ impl StationManager {
 
     /// Update station beacon status
     pub fn update_station_beacon(&self, name: &StationName, body: &str, timestamp: Epoch) {
-        let mut details = match self.get(name) {
-            Some(d) => d,
-            None => return,
-        };
-        details.last_beacon = Some(timestamp);
-        details.status = Some(body.to_string());
-        if let Some((db, n)) = parse_rf_capability(body) {
-            if n >= RF_CAPABILITY_MIN_SAMPLES {
+        let rf = parse_rf_capability(body).filter(|&(_, n)| n >= RF_CAPABILITY_MIN_SAMPLES);
+        self.modify(name, |details| {
+            details.last_beacon = Some(timestamp);
+            details.status = Some(body.to_string());
+            if let Some((db, n)) = rf {
                 details.rf_capability_db = Some(db);
                 details.rf_capability_n = Some(n);
             }
-        }
-        self.update(&details);
+        });
     }
 
     /// Record a station beacon in the daily beacon activity bitvector.
@@ -712,11 +737,6 @@ impl StationManager {
 
         let slot = slot_from_timestamp(timestamp);
 
-        let mut details = match self.get(name) {
-            Some(d) => d,
-            None => return,
-        };
-
         let set_bit = |hex: &Option<String>| {
             let mut bits = hex
                 .as_deref()
@@ -726,7 +746,7 @@ impl StationManager {
             bitvec_to_hex(&bits)
         };
 
-        match details.beacon_activity_date.as_deref() {
+        self.modify(name, |details| match details.beacon_activity_date.as_deref() {
             Some(date) if date == utc_date => {
                 details.beacon_activity = Some(set_bit(&details.beacon_activity));
             }
@@ -742,16 +762,13 @@ impl StationManager {
                 // stash if it covers that date, otherwise drop it
                 if details.beacon_activity_prev_date.as_deref() == Some(utc_date.as_str()) {
                     details.beacon_activity_prev = Some(set_bit(&details.beacon_activity_prev));
-                } else {
-                    return;
                 }
             }
             None => {
                 details.beacon_activity = Some(set_bit(&None));
                 details.beacon_activity_date = Some(utc_date);
             }
-        }
-        self.update(&details);
+        });
     }
 
     /// Close the database, persisting final state via the writer thread
@@ -1121,6 +1138,26 @@ mod tests {
 
     fn get_station(mgr: &StationManager, name: &str) -> StationDetails {
         mgr.get_or_create(&StationName(name.to_string())).expect("test station allocation failed")
+    }
+
+    #[test]
+    fn test_modify_in_place() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("MODTEST".to_string());
+        assert!(!mgr.modify(&name, |d| d.stats.record_raw()), "missing station");
+        assert!(mgr.get(&name).is_none(), "modify must not create");
+
+        let (id, pos) = mgr.get_or_create_with(&name, |d| (d.id, d.lat.zip(d.lng))).unwrap();
+        assert_eq!(pos, None);
+        assert_eq!(mgr.get_or_create_with(&name, |d| d.id), Some(id), "same station");
+
+        assert!(mgr.modify(&name, |d| d.stats.record_raw()));
+        // A change made by another path is kept by a later modify
+        mgr.modify(&name, |d| d.notice = Some("n".to_string()));
+        assert!(mgr.modify(&name, |d| d.stats.record_raw()));
+        let d = mgr.get(&name).unwrap();
+        assert_eq!(d.stats.count, 2);
+        assert_eq!(d.notice.as_deref(), Some("n"));
     }
 
     #[test]

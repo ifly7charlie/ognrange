@@ -41,6 +41,7 @@ use layers::{
     get_write_layers, is_presence_only, layer_from_dest_callsign, layer_mask_from_set, Layer,
     PRESENCE_SIGNAL,
 };
+use packet_stats::AprsPacketStats;
 use station::{StationDetails, StationManager};
 use db::Storage;
 use types::{Epoch, H3Index, StationId, StationName};
@@ -598,6 +599,12 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
     }
 }
 
+/// Apply a stats change to both the station's and the global counters
+fn record_stat(state: &AppState, name: &StationName, f: impl Fn(&mut AprsPacketStats)) {
+    state.station_manager.modify(name, |d| f(&mut d.stats));
+    state.global_stats.with_data(|d| f(d));
+}
+
 /// Process a single aircraft position packet
 async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_num: u32) {
     // Extract station from last digipeater
@@ -643,20 +650,21 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
     }
 
-    // Allocate (or retrieve) the station entry and count this packet once
-    let mut station_details = match state.station_manager.get_or_create(&station_name) {
-        Some(d) => d,
+    // Allocate (or retrieve) the station entry, keeping only what the
+    // filters below read, and count this packet once
+    let (station_id, station_pos) = match state
+        .station_manager
+        .get_or_create_with(&station_name, |d| (d.id, d.lat.zip(d.lng)))
+    {
+        Some(v) => v,
         None => return,
     };
-    station_details.stats.record_raw();
-    state.global_stats.with_data(|d| d.record_raw());
+    record_stat(state, &station_name, AprsPacketStats::record_raw);
 
     let timestamp = match packet.timestamp {
         Some(ts) => ts,
         None => {
-            station_details.stats.record_invalid_timestamp();
-            state.global_stats.with_data(|d| d.record_invalid_timestamp());
-            state.station_manager.update(&station_details);
+            record_stat(state, &station_name, AprsPacketStats::record_invalid_timestamp);
             reject_log::log_reject("invalid_timestamp", raw);
             return;
         }
@@ -670,16 +678,14 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     // Count packets with timestamps far in the future - logged for diagnostics,
     // but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp > now_secs + *FUTURE_PACKET_CUTOFF_SECS {
-        station_details.stats.record_ignored_future_timestamp();
-        state.global_stats.with_data(|d| d.record_ignored_future_timestamp());
+        record_stat(state, &station_name, AprsPacketStats::record_ignored_future_timestamp);
         reject_log::log_reject("future_timestamp", raw);
     }
 
     // Count packets with timestamps older than STALE_PACKET_CUTOFF_SECS - logged for
     // diagnostics, but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp < now_secs.saturating_sub(*STALE_PACKET_CUTOFF_SECS) {
-        station_details.stats.record_ignored_stale_timestamp();
-        state.global_stats.with_data(|d| d.record_ignored_stale_timestamp());
+        record_stat(state, &station_name, AprsPacketStats::record_ignored_stale_timestamp);
         reject_log::log_reject("stale_timestamp", raw);
     }
 
@@ -687,9 +693,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     if layer == Layer::Ogntrk {
         if let Some(first_digi) = packet.digipeaters.first() {
             if !first_digi.callsign.starts_with("qA") {
-                station_details.stats.record_ignored_tracker();
-                state.global_stats.with_data(|d| d.record_ignored_tracker());
-                state.station_manager.update(&station_details);
+                record_stat(state, &station_name, AprsPacketStats::record_ignored_tracker);
                 reject_log::log_reject("ogntrk_relay", raw);
                 return;
             }
@@ -706,13 +710,11 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     // map and, via min-angle selection, wrecks the horizon chart. Checked before
     // the elevation lookups so garbage positions don't pull in far-away DEM
     // tiles. Skipped until the station's own position is known.
-    if let (Some(slat), Some(slng)) = (station_details.lat, station_details.lng) {
+    if let Some((slat, slng)) = station_pos {
         if (slat != 0.0 || slng != 0.0)
             && station::great_circle_distance(slat, slng, lat, lng) > *MAX_PACKET_DISTANCE_KM
         {
-            station_details.stats.record_ignored_distance();
-            state.global_stats.with_data(|d| d.record_ignored_distance());
-            state.station_manager.update(&station_details);
+            record_stat(state, &station_name, AprsPacketStats::record_ignored_distance);
             reject_log::log_reject("distance_too_far", raw);
             return;
         }
@@ -735,9 +737,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         let raw_rot = extract_rotation(comment);
         let raw_vc = extract_vertical_speed(comment);
         if raw_rot == 0.0 && raw_vc < 30.0 {
-            station_details.stats.record_ignored_stationary();
-            state.global_stats.with_data(|d| d.record_ignored_stationary());
-            state.station_manager.update(&station_details);
+            record_stat(state, &station_name, AprsPacketStats::record_ignored_stationary);
             // Update aircraft seen time (always succeeds - entry created above)
             let mut all_aircraft = state.all_aircraft.lock().await;
             if let Some(aircraft) = all_aircraft.get_mut(&(layer, flarm_num)) {
@@ -765,9 +765,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
 
         if signal == 0 {
-            station_details.stats.record_ignored_signal0();
-            state.global_stats.with_data(|d| d.record_ignored_signal0());
-            state.station_manager.update(&station_details);
+            record_stat(state, &station_name, AprsPacketStats::record_ignored_signal0);
             reject_log::log_reject("signal_zero", raw);
             return;
         }
@@ -777,7 +775,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     let gap: u8;
     let first: bool;
     {
-        let gs_key = (layer, station_details.id.0, flarm_num);
+        let gs_key = (layer, station_id.0, flarm_num);
         let mut aircraft_station = state.aircraft_station.lock().await;
         let mut all_aircraft = state.all_aircraft.lock().await;
 
@@ -820,9 +818,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
             let s = aircraft.h3s.len() as u32;
             if s > 0 && aircraft.packets / s > 90 {
-                station_details.stats.record_ignored_h3stationary();
-                state.global_stats.with_data(|d| d.record_ignored_h3stationary());
-                state.station_manager.update(&station_details);
+                record_stat(state, &station_name, AprsPacketStats::record_ignored_h3stationary);
                 return;
             }
         }
@@ -832,34 +828,32 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     let write_layers = get_write_layers(layer);
     let hour = ((now_secs / 3600) % 24) as usize;
 
-    let new_mask = station_details.layer_mask.unwrap_or(0) | layer_mask_from_set(&write_layers);
-    station_details.layer_mask = Some(new_mask);
-    station_details.layers = layers::layer_names_from_mask(new_mask);
+    let packet_mask = layer_mask_from_set(&write_layers);
+    state.station_manager.modify(&station_name, |d| {
+        let old_mask = d.layer_mask.unwrap_or(0);
+        let new_mask = old_mask | packet_mask;
+        if d.layer_mask != Some(new_mask) {
+            d.layer_mask = Some(new_mask);
+            d.layers = layers::layer_names_from_mask(new_mask);
+        }
 
-    // Update last packet time — use receive time (wall clock) not packet timestamp,
-    // because rollup's "no traffic" skip compares this against accumulator boundaries
-    // which are wall-clock-based. Using the APRS timestamp (which can lag) would cause
-    // stations to be falsely skipped when packets arrive just after a boundary with
-    // timestamps from just before it.
-    station_details.last_packet = Some(Epoch(
-        station_details
-            .last_packet
-            .map(|e| e.0.max(now_secs))
-            .unwrap_or(now_secs),
-    ));
-    // Also track the APRS packet timestamp for display/export purposes
-    station_details.last_packet_packet_time = Some(Epoch(
-        station_details
-            .last_packet_packet_time
-            .map(|e| e.0.max(timestamp))
-            .unwrap_or(timestamp),
-    ));
-    state.station_manager.update(&station_details);
+        // Update last packet time — use receive time (wall clock) not packet timestamp,
+        // because rollup's "no traffic" skip compares this against accumulator boundaries
+        // which are wall-clock-based. Using the APRS timestamp (which can lag) would cause
+        // stations to be falsely skipped when packets arrive just after a boundary with
+        // timestamps from just before it.
+        d.last_packet = Some(Epoch(d.last_packet.map(|e| e.0.max(now_secs)).unwrap_or(now_secs)));
+        // Also track the APRS packet timestamp for display/export purposes
+        d.last_packet_packet_time = Some(Epoch(
+            d.last_packet_packet_time
+                .map(|e| e.0.max(timestamp))
+                .unwrap_or(timestamp),
+        ));
+    });
 
     // Async elevation lookup and H3 update
     let elevation_service = &state.elevation;
     let h3_cache = &state.h3_cache;
-    let station_id = station_details.id;
 
     let gl = elevation_service.get_elevation(lat, lng).await;
     let agl = (altitude as f64 - gl).clamp(0.0, 55000.0).round() as u16;
@@ -870,9 +864,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Filter bogus altitude data
     if (layer == Layer::Adsb && coarse_agl > 4500) || coarse_agl > 10000 {
-        station_details.stats.record_ignored_elevation();
-        state.global_stats.with_data(|d| d.record_ignored_elevation());
-        state.station_manager.update(&station_details);
+        record_stat(state, &station_name, AprsPacketStats::record_ignored_elevation);
         if layer != Layer::Adsb {
             reject_log::log_reject("altitude_too_high", raw);
         }
@@ -881,17 +873,12 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Packet passed all filters - count as accepted
     let delay = now_secs.saturating_sub(timestamp) as u64;
-    station_details.stats.record_delay(delay);
-    for wl in &write_layers {
-        station_details.stats.record_accepted(wl.name(), hour);
-    }
-    state.global_stats.with_data(|d| {
-        d.record_delay(delay);
+    record_stat(state, &station_name, |s| {
+        s.record_delay(delay);
         for wl in &write_layers {
-            d.record_accepted(wl.name(), hour);
+            s.record_accepted(wl.name(), hour);
         }
     });
-    state.station_manager.update(&station_details);
 
     state.protocol_stats.record_accepted(&packet.dest_callsign, coarse_agl);
     for wl in &write_layers {

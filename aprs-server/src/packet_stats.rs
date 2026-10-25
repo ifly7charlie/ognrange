@@ -61,9 +61,16 @@ impl AprsPacketStats {
 
     pub fn record_accepted(&mut self, layer: &str, hour: usize) {
         self.accepted += 1;
-        self.hourly
-            .entry(layer.to_string())
-            .or_insert([0u64; 24])[hour % 24] += 1;
+        // get_mut first: entry() needs an owned key, which would allocate a
+        // String on every accepted packet
+        match self.hourly.get_mut(layer) {
+            Some(counts) => counts[hour % 24] += 1,
+            None => {
+                let mut counts = [0u64; 24];
+                counts[hour % 24] = 1;
+                self.hourly.insert(layer.to_string(), counts);
+            }
+        }
     }
 
     pub fn record_delay(&mut self, secs: u64) {
