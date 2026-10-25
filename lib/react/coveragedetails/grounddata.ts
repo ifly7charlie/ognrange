@@ -19,6 +19,17 @@ export const GROUND_SAMPLES = 241;
 // GROUND_STATION_AGL_M in aprs-server/src/config.rs
 export const DEFAULT_STATION_AGL_M = 3;
 
+// A station's exported beaconAltitude at or above this is not an altitude
+// but the backend's "drifting" sentinel: the beaconed /A= keeps changing
+// (live GPS rather than a configured value), so no horizon files are written
+// and the altitude must not be displayed. Keep in sync with
+// DRIFT_SENTINEL_BASE in aprs-server/src/ground_horizon.rs
+export const BEACON_ALTITUDE_DRIFTING_MIN = 1_000_000;
+
+export function isBeaconAltitudeDrifting(beaconAltitude: number | null | undefined): boolean {
+    return typeof beaconAltitude === 'number' && beaconAltitude >= BEACON_ALTITUDE_DRIFTING_MIN;
+}
+
 // How many foreground crest lines the bearing chart draws in front of the skyline
 export const RIDGE_SERIES_MAX = 5;
 // Foreground crests closer than this are the station's own ground rolling

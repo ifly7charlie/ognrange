@@ -16,6 +16,7 @@ use crate::config::{
     TEST_STATION_EXPIRY_TIME_SECS,
 };
 use crate::db::TrackedDb;
+use crate::ground_horizon::{beacon_altitude_drifting, track_beacon_altitude};
 use crate::types::{Epoch, StationId, StationName};
 
 pub use crate::packet_stats::AprsPacketStats;
@@ -55,7 +56,10 @@ pub struct StationDetails {
     /// Antenna altitude (m MSL) from the station's location beacon (/A=);
     /// cleared on move. Antenna height above ground for the horizon viewpoint
     /// is derived from this against the DEM ground, sanity-window checked
-    /// (see ground_horizon::antenna_agl_m)
+    /// (see ground_horizon::antenna_agl_m). Values >= 1,000,000 are the
+    /// drifting sentinel - the beaconed altitude keeps changing (live GPS), so
+    /// it is not an altitude: read it only through ground_horizon::
+    /// real_beacon_altitude / beacon_agl_m / beacon_altitude_drifting
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beacon_altitude: Option<f64>,
     /// Position the ground-horizon terrain file was generated for; cleared on
@@ -562,9 +566,20 @@ impl StationManager {
         if dist_primary <= threshold {
             // Beaconed antenna altitude (m MSL) belongs to the primary site -
             // sanity-checked against the DEM ground only when the horizon
-            // viewpoint is derived from it
-            if altitude.is_some() {
-                details.beacon_altitude = altitude;
+            // viewpoint is derived from it. A value that keeps changing (a
+            // live GPS fix rather than a configured altitude) is replaced by
+            // the drifting sentinel until it settles again (see
+            // ground_horizon::track_beacon_altitude)
+            if let Some(raw) = altitude {
+                let before = details.beacon_altitude;
+                details.beacon_altitude = track_beacon_altitude(before, raw);
+                if beacon_altitude_drifting(details.beacon_altitude) != beacon_altitude_drifting(before) {
+                    if beacon_altitude_drifting(details.beacon_altitude) {
+                        info!("{} beacon altitude is drifting ({:?} -> {:.1}m), horizons suppressed", name, before, raw);
+                    } else {
+                        info!("{} beacon altitude has settled at {:.1}m", name, raw);
+                    }
+                }
             }
             details.last_seen_at_primary = Some(timestamp);
             details.new_location_count = 0;
@@ -619,7 +634,7 @@ impl StationManager {
                 details.elevation = None;
                 details.ground_horizon_pos = None;
                 details.ground_horizon_beacon = None;
-                details.beacon_altitude = altitude;
+                details.beacon_altitude = altitude.and_then(|a| track_beacon_altitude(None, a));
             }
         }
         // 3. Neither location - new location
@@ -653,11 +668,12 @@ impl StationManager {
             // location - re-resolve/regenerate at next rollup. Likewise the
             // beaconed altitude: this packet's value is the new primary's,
             // and without one the old-location altitude must not linger
-            // against the new ground.
+            // against the new ground. A drifting flag is site data too: the
+            // new site is evaluated from scratch.
             details.elevation = None;
             details.ground_horizon_pos = None;
             details.ground_horizon_beacon = None;
-            details.beacon_altitude = altitude;
+            details.beacon_altitude = altitude.and_then(|a| track_beacon_altitude(None, a));
         }
 
         details.lat = Some(lat);
@@ -1181,16 +1197,104 @@ mod tests {
         assert!(s.bouncing);
         assert_eq!(s.beacon_altitude, Some(15.0));
 
-        // At the primary: a fresh value updates, an altitude-less location
-        // packet leaves it alone
-        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(17.0), Epoch(4000), "raw");
-        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(17.0));
+        // At the primary: feet-rounding wobble is absorbed, an altitude-less
+        // location packet leaves it alone
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(15.3), Epoch(4000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(15.0));
         mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, None, Epoch(5000), "raw");
-        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(17.0));
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(15.0));
 
         // A rotation without an altitude clears the old site's beacon
         mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(6000), "raw");
         assert_eq!(get_station(&mgr, "TEST").beacon_altitude, None);
+    }
+
+    /// Beacon `alts` at LOC_A one location packet at a time (5min apart)
+    fn beacon_at_a(mgr: &StationManager, alts: &[f64], start: u32) {
+        let name = StationName("TEST".to_string());
+        for (i, &alt) in alts.iter().enumerate() {
+            mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(alt), Epoch(start + i as u32 * 300), "raw");
+        }
+    }
+
+    #[test]
+    fn test_stable_beacon_altitude_never_drifts() {
+        let mgr = StationManager::new_for_test();
+        get_station(&mgr, "TEST");
+        // A configured altitude repeats exactly on every beacon
+        beacon_at_a(&mgr, &[240.18; 30], 1000);
+        let s = get_station(&mgr, "TEST");
+        assert_eq!(s.beacon_altitude, Some(240.18));
+        assert!(!crate::ground_horizon::beacon_altitude_drifting(s.beacon_altitude));
+    }
+
+    #[test]
+    fn test_jittering_beacon_altitude_drifts() {
+        let mgr = StationManager::new_for_test();
+        get_station(&mgr, "TEST");
+        // GPS-derived /A= (Avionix-style): metres of change every beacon
+        beacon_at_a(&mgr, &[240.0, 252.4, 236.0, 271.9, 244.2, 259.0, 238.7, 266.1], 1000);
+        let s = get_station(&mgr, "TEST");
+        assert!(crate::ground_horizon::beacon_altitude_drifting(s.beacon_altitude));
+        assert_eq!(crate::ground_horizon::real_beacon_altitude(s.beacon_altitude), None);
+        assert_eq!(crate::ground_horizon::beacon_agl_m(s.beacon_altitude, 230.0), None);
+    }
+
+    #[test]
+    fn test_drifting_beacon_altitude_recovers() {
+        let mgr = StationManager::new_for_test();
+        get_station(&mgr, "TEST");
+        beacon_at_a(&mgr, &[240.0, 252.4, 236.0], 1000);
+        assert!(crate::ground_horizon::beacon_altitude_drifting(get_station(&mgr, "TEST").beacon_altitude));
+
+        // Operator configures a fixed 255m: the first beacon starts a stable
+        // run and five matching ones are not yet enough; the sixth (~30min
+        // of stable beacons) restores the real value
+        beacon_at_a(&mgr, &[255.0, 255.3, 255.0, 255.0, 255.3, 255.0], 2000);
+        assert!(crate::ground_horizon::beacon_altitude_drifting(get_station(&mgr, "TEST").beacon_altitude));
+        beacon_at_a(&mgr, &[255.0], 4000);
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(255.0));
+        // ...and stays put
+        beacon_at_a(&mgr, &[255.0, 255.3, 255.0], 5000);
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(255.0));
+    }
+
+    #[test]
+    fn test_drifting_beacon_altitude_reset_by_rotation() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+        beacon_at_a(&mgr, &[240.0, 252.4, 236.0], 1000);
+        assert!(crate::ground_horizon::beacon_altitude_drifting(get_station(&mgr, "TEST").beacon_altitude));
+
+        // New site: its beacon is taken from scratch, the old flag is gone
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(15.0), Epoch(5000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, Some(15.0));
+
+        // Drifting again at LOC_B, then a rotation without an altitude
+        // clears it rather than carrying the sentinel to the new site
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(40.0), Epoch(6000), "raw");
+        assert!(crate::ground_horizon::beacon_altitude_drifting(get_station(&mgr, "TEST").beacon_altitude));
+        mgr.check_station_moved(&name, LOC_C.0, LOC_C.1, None, Epoch(7000), "raw");
+        assert_eq!(get_station(&mgr, "TEST").beacon_altitude, None);
+    }
+
+    #[test]
+    fn test_bouncing_partner_altitude_never_drifts_primary() {
+        let mgr = StationManager::new_for_test();
+        let name = StationName("TEST".to_string());
+        get_station(&mgr, "TEST");
+        mgr.check_station_moved(&name, LOC_A.0, LOC_A.1, Some(240.0), Epoch(1000), "raw");
+        mgr.check_station_moved(&name, LOC_B.0, LOC_B.1, Some(15.0), Epoch(2000), "raw");
+        // Alternating sites: each primary packet carries the same value and
+        // the partner's (case 2) is ignored, so nothing drifts
+        for i in 0..10u32 {
+            let (loc, alt) = if i % 2 == 0 { (LOC_A, 240.0) } else { (LOC_B, 15.0) };
+            mgr.check_station_moved(&name, loc.0, loc.1, Some(alt), Epoch(3000 + i * 100), "raw");
+        }
+        let s = get_station(&mgr, "TEST");
+        assert!(s.bouncing);
+        assert_eq!(s.beacon_altitude, Some(15.0));
     }
 
     #[test]

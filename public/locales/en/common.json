@@ -195,6 +195,7 @@
             "antenna_warning": "⚠️ Receiver position is registered at {{beacon}}m AMSL — less than 2m above the ground here ({{ground}}m AMSL)",
             "antenna_info": "Antenna is {{agl}}m above the ground, which is {{ground}}m AMSL",
             "antenna_info_default": "Antenna height is unknown — charts assume {{agl}}m above the ground ({{ground}}m AMSL)",
+            "altitude_unstable": "This station's reported altitude is not stable (it appears to come from a live GPS fix), so its altitude and horizon charts are not shown. To display them, configure a fixed, correct antenna altitude in the receiver's configuration.",
             "capability": "Estimated 868 MHz max range {{km}} km — based on the station's reported {{db}} dB average signal strength at 10 km",
             "capability_max": "868 MHz range model {{model}} km — based on the station's reported {{db}} dB average signal strength at 10 km, capped at the {{max}} km visualisation limit",
             "capability_min": "868 MHz range model {{model}} km — based on the station's reported {{db}} dB average signal strength at 10 km, raised to the {{min}} km minimum",

@@ -866,7 +866,8 @@ fn rollup_station_all_layers(
 
     // Horizon bins accumulate across all layers (merged by frequency group)
     // and are written once after the layer loop. None (no position / no
-    // resolved elevation / global) skips horizon output entirely. The
+    // resolved elevation / drifting beacon altitude / global) skips horizon
+    // output entirely. The
     // station's terrain file (when present and generated for this position)
     // provides the below-skyline cell filter; reading it synchronously is
     // fine - we are inside spawn_blocking

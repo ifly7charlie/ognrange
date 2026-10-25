@@ -16,6 +16,8 @@ interface StationJson {
     notice?: string;
     rfCapabilityDb?: number | null;
     rfCapabilityN?: number | null;
+    // m MSL, or >= BEACON_ALTITUDE_DRIFTING_MIN when drifting (grounddata.ts)
+    beaconAltitude?: number | null;
     ntfyUrl?: string;
     moved?: boolean;
     bouncing?: boolean;
@@ -96,6 +98,7 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
         notice: latest.notice,
         rfCapabilityDb: latest.rfCapabilityDb,
         rfCapabilityN: latest.rfCapabilityN,
+        beaconAltitude: latest.beaconAltitude,
         ntfyUrl: latest.ntfyUrl,
         primary_location: latest.primary_location,
         previous_location: latest.previous_location,

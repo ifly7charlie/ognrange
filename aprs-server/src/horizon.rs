@@ -259,11 +259,17 @@ pub struct HorizonCollector {
 
 impl HorizonCollector {
     /// None when the station has no usable position or no resolved ground
-    /// elevation - the horizon is skipped entirely for this cycle
+    /// elevation, or its beaconed altitude is drifting (no stable viewpoint -
+    /// the frontend hides the chart and the next rollup after recovery
+    /// rebuilds it from the full cell set) - the horizon is skipped entirely
+    /// for this cycle
     pub fn from_station(meta: &StationDetails) -> Option<Self> {
         let (lat, lng) = (meta.lat?, meta.lng?);
         let ground_m = meta.elevation?;
         if !lat.is_finite() || !lng.is_finite() || (lat == 0.0 && lng == 0.0) {
+            return None;
+        }
+        if crate::ground_horizon::beacon_altitude_drifting(meta.beacon_altitude) {
             return None;
         }
         // The viewpoint is the antenna, not the ground - same reference as
@@ -590,6 +596,12 @@ mod tests {
         assert!(HorizonCollector::from_station(&s).is_none());
         let mut s = test_station();
         s.lat = Some(f64::NAN);
+        assert!(HorizonCollector::from_station(&s).is_none());
+        // Drifting (GPS-derived) beacon altitude: no stable viewpoint
+        let mut s = test_station();
+        s.beacon_altitude =
+            crate::ground_horizon::track_beacon_altitude(s.beacon_altitude, STATION_ELEVATION + 30.0);
+        assert!(crate::ground_horizon::beacon_altitude_drifting(s.beacon_altitude));
         assert!(HorizonCollector::from_station(&s).is_none());
     }
 

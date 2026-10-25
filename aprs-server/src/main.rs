@@ -1422,8 +1422,9 @@ async fn outage_monitor(state: Arc<AppState>) {
 }
 
 /// A station the ground-horizon queue should generate a terrain file for:
-/// real, non-mobile, valid, positioned, and missing/stale file (moved, or
-/// the beaconed antenna altitude changed since generation). Returns the
+/// real, non-mobile, valid, positioned, beaconed altitude not drifting, and
+/// missing/stale file (moved, or the beaconed antenna altitude changed since
+/// generation). Returns the
 /// position to generate at: the primary location, not the live fix - a
 /// bouncing station (two receivers sharing a callsign) toggles lat/lng
 /// between sites on every packet, but the primary only changes on a
@@ -1445,6 +1446,8 @@ fn ground_horizon_candidate(details: &StationDetails) -> Option<(f64, f64)> {
     if !lat.is_finite() || !lng.is_finite() || (lat == 0.0 && lng == 0.0) {
         return None;
     }
+    // needs_regeneration also refuses a drifting beacon altitude (no stable
+    // viewpoint); its stale file is dropped by remove_drifting_ground_horizon
     let output_dir = config::output_dir(details.station.as_str());
     ground_horizon::needs_regeneration(
         &output_dir,
@@ -1456,6 +1459,22 @@ fn ground_horizon_candidate(details: &StationDetails) -> Option<(f64, f64)> {
         details.beacon_altitude,
     )
     .then_some((lat, lng))
+}
+
+/// Drop the terrain file of a station whose beaconed altitude is drifting -
+/// it was generated from one sample of a jittery viewpoint. A no-op once
+/// gone; after recovery the missing file makes the station a candidate
+/// again, so it is regenerated exactly once. Returns the files removed
+fn remove_drifting_ground_horizon(details: &StationDetails) -> usize {
+    if !ground_horizon::beacon_altitude_drifting(details.beacon_altitude) {
+        return 0;
+    }
+    let name = details.station.as_str();
+    let removed = ground_horizon::remove_files(&config::output_dir(name), name);
+    if removed > 0 {
+        info!("{}: removed {} ground-horizon file(s) (beacon altitude drifting)", name, removed);
+    }
+    removed
 }
 
 /// Background ground-horizon generation: a serial FIFO of stations needing a
@@ -1492,9 +1511,11 @@ async fn ground_horizon_task(state: Arc<AppState>) {
         // Sorted along a Hilbert curve so a fleet backfill walks the map and
         // neighbouring stations share DEM tiles in the RAM cache (name breaks
         // ties so the order stays predictable)
-        let mut discovered: Vec<(u64, StationName)> = state
-            .station_manager
-            .all_stations()
+        let stations = state.station_manager.all_stations();
+        for d in &stations {
+            remove_drifting_ground_horizon(d);
+        }
+        let mut discovered: Vec<(u64, StationName)> = stations
             .iter()
             .filter(|d| !queued.contains(&d.station))
             .filter_map(|d| {
@@ -1736,6 +1757,28 @@ mod tests {
         assert_eq!(ground_horizon_candidate(&d), None);
         d.mobile = false;
         d.valid = false;
+        assert_eq!(ground_horizon_candidate(&d), None);
+    }
+
+    #[test]
+    fn ground_horizon_candidate_skips_drifting_beacon_altitude() {
+        let mgr = station::StationManager::new_for_test();
+        let name = StationName("TEST-GH-DRIFT".to_string());
+        mgr.get_or_create(&name).unwrap();
+        let mut d = mgr.get(&name).unwrap();
+        d.valid = true;
+        mgr.update(&d);
+        // A stable configured altitude: a candidate (no file yet)
+        for ts in [1000, 1300, 1600] {
+            mgr.check_station_moved(&name, 46.0, 7.0, Some(612.0), Epoch(ts), "raw");
+        }
+        assert_eq!(ground_horizon_candidate(&mgr.get(&name).unwrap()), Some((46.0, 7.0)));
+        // A jittering GPS-derived altitude: suppressed
+        for (ts, alt) in [(1900, 640.2), (2200, 618.9), (2500, 655.0)] {
+            mgr.check_station_moved(&name, 46.0, 7.0, Some(alt), Epoch(ts), "raw");
+        }
+        let d = mgr.get(&name).unwrap();
+        assert!(ground_horizon::beacon_altitude_drifting(d.beacon_altitude));
         assert_eq!(ground_horizon_candidate(&d), None);
     }
 }
