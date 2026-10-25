@@ -146,19 +146,23 @@ impl<T: DailyStatsData> DailyAccumulator<T> {
 
     /// Persist state for crash recovery.
     pub fn save_state(&self, state_path: &str) {
-        let inner = self.inner.lock().unwrap();
-        let data_val = match serde_json::to_value(&inner.data) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Failed to serialize DailyAccumulator state: {}", e);
-                return;
-            }
+        // Build under the lock, write after releasing it (with_data takes
+        // this lock on every packet)
+        let state = {
+            let inner = self.inner.lock().unwrap();
+            let data_val = match serde_json::to_value(&inner.data) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to serialize DailyAccumulator state: {}", e);
+                    return;
+                }
+            };
+            serde_json::json!({
+                "startTime": inner.start_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "dayBucket": inner.day_bucket.0,
+                "data": data_val,
+            })
         };
-        let state = serde_json::json!({
-            "startTime": inner.start_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "dayBucket": inner.day_bucket.0,
-            "data": data_val,
-        });
         let json = serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string());
         crate::json_io::write_atomic_path(state_path, &json);
     }

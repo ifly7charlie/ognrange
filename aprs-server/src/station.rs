@@ -791,13 +791,21 @@ impl StationManager {
         let now_epoch = now.timestamp() as u64;
         let output_path = &**OUTPUT_PATH;
 
-        let stations = self.stations.read().unwrap();
+        // Copy out under a brief read lock - the per-station file I/O below
+        // takes seconds across thousands of stations, and holding the lock
+        // through it stalls every update() (i.e. the packet processor)
+        let stations: Vec<StationDetails> = self
+            .stations
+            .read()
+            .unwrap()
+            .values()
+            .filter(|m| m.last_packet.is_some() && m.station.as_str() != "global")
+            .cloned()
+            .collect();
         let mut count = 0usize;
 
-        for (name, meta) in stations.iter() {
-            if meta.last_packet.is_none() || name.as_str() == "global" {
-                continue;
-            }
+        for meta in &stations {
+            let name = &meta.station;
 
             let uptime = crate::bitvec::compute_uptime(
                 &meta.beacon_activity,

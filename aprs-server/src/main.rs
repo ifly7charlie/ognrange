@@ -1149,15 +1149,21 @@ async fn status_writer(state: Arc<AppState>) {
 
         let acc = state.accumulators.read().await.clone();
 
-        // Write server-level stats. Passing acc for both old and new means
-        // bucket == new_bucket everywhere, so no accumulator resets fire -
-        // this is a pure snapshot write.
-        state.protocol_stats.write_stats(&acc, &acc);
-        state.global_stats.write_and_maybe_reset(&acc, &acc);
-        state.global_uptime.write_snapshot(&acc.day.file);
+        // Synchronous file I/O (thousands of station files) - on the blocking
+        // pool so it can't occupy a runtime worker and starve the APRS reader
+        let stats_state = state.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            // Write server-level stats. Passing acc for both old and new means
+            // bucket == new_bucket everywhere, so no accumulator resets fire -
+            // this is a pure snapshot write.
+            stats_state.protocol_stats.write_stats(&acc, &acc);
+            stats_state.global_stats.write_and_maybe_reset(&acc, &acc);
+            stats_state.global_uptime.write_snapshot(&acc.day.file);
 
-        // Write per-station status JSONs from live in-memory data
-        state.station_manager.write_status_snapshots(&acc);
+            // Write per-station status JSONs from live in-memory data
+            stats_state.station_manager.write_status_snapshots(&acc);
+        })
+        .await;
     }
 }
 
@@ -1717,12 +1723,17 @@ async fn rollup_timer(state: Arc<AppState>) {
             });
         }
 
-        // Write protocol and station stats after rollup completes (hourly)
-        state.protocol_stats.write_stats(&old_acc, &new_acc);
-        if write_outputs {
-            state.global_stats.write_and_maybe_reset(&old_acc, &new_acc);
-            state.global_uptime.write_snapshot(&old_acc.day.file);
-        }
+        // Write protocol and station stats after rollup completes (hourly);
+        // file I/O, so on the blocking pool like status_writer
+        let stats_state = state.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            stats_state.protocol_stats.write_stats(&old_acc, &new_acc);
+            if write_outputs {
+                stats_state.global_stats.write_and_maybe_reset(&old_acc, &new_acc);
+                stats_state.global_uptime.write_snapshot(&old_acc.day.file);
+            }
+        })
+        .await;
     }
 }
 
