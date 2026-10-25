@@ -2416,6 +2416,17 @@ struct StationDbScan {
     dest_metas: Vec<(AccumulatorType, AccumulatorBucket, Layer, String)>,
 }
 
+impl StationDbScan {
+    /// Bitmask of every layer with an accumulator meta in the DB - the
+    /// station has coverage data for those layers even if no packet for
+    /// them has been seen since the server started.
+    fn layer_mask(&self) -> u8 {
+        let current = self.current_metas.iter().map(|(_, layer, _)| *layer);
+        let dest = self.dest_metas.iter().map(|(_, _, layer, _)| *layer);
+        current.chain(dest).fold(0u8, |mask, layer| mask | layer.bit_mask())
+    }
+}
+
 /// Scan a station DB for accumulator metas using a seeking iterator (like the
 /// TypeScript implementation) - reads only meta keys, seeking past each
 /// accumulator's data range. Current metas for layers not in `layers` are
@@ -2565,7 +2576,7 @@ pub async fn rollup_startup(
                 Err(e) => {
                     error!("Startup rollup: failed to open DB {}: {}", station_path, e);
                     log_progress(&completed);
-                    return (0, 0, 0, 0);
+                    return (0, 0, 0, 0, 0);
                 }
             };
 
@@ -2577,8 +2588,11 @@ pub async fn rollup_startup(
             let Some(scan) = scan_station_db(&mut db, &layers) else {
                 warn!("{}: accumulator meta scan failed - startup mop-up skipped for this station", station_name);
                 log_progress(&completed);
-                return (0, 0, 0, 0);
+                return (0, 0, 0, 0, 0);
             };
+            // Taken before the purge so stale-bucket metas still count: the
+            // data they point to was exported and the station had that layer
+            let db_layer_mask = scan.layer_mask();
             let mut to_purge = scan.to_purge;
             let all_accumulators = scan.dest_metas;
 
@@ -2663,7 +2677,7 @@ pub async fn rollup_startup(
 
             if hanging_buckets.is_empty() {
                 log_progress(&completed);
-                return (migrated, 0usize, 0usize, 0usize);
+                return (migrated, 0usize, 0usize, 0usize, db_layer_mask);
             }
 
             let mut rolled_up = 0usize;
@@ -2739,7 +2753,7 @@ pub async fn rollup_startup(
 
             log_progress(&completed);
 
-            (migrated, rolled_up, arrow, deleted)
+            (migrated, rolled_up, arrow, deleted, db_layer_mask)
         });
 
         tasks.push((task_station_name, progress, spawned_at, handle));
@@ -2749,6 +2763,7 @@ pub async fn rollup_startup(
     let mut total_rolled_up = 0usize;
     let mut total_arrow = 0usize;
     let mut total_deleted = 0usize;
+    let mut masks_repaired = 0usize;
 
     // No timeout: every task is awaited to completion so normal operation
     // never starts while a startup task is still writing (spawn_blocking
@@ -2757,11 +2772,14 @@ pub async fn rollup_startup(
     let warn_interval = std::time::Duration::from_secs(STARTUP_TASK_WARN_SECS);
     for (station_name, progress, spawned_at, handle) in tasks {
         match await_with_warnings(handle, &station_name, &progress, spawned_at, warn_interval, warn_interval).await {
-            Ok((migrated, rolled_up, arrow, deleted)) => {
+            Ok((migrated, rolled_up, arrow, deleted, db_layer_mask)) => {
                 total_migrated += migrated;
                 total_rolled_up += rolled_up;
                 total_arrow += arrow;
                 total_deleted += deleted;
+                if merge_db_layer_mask(station_manager, &station_name, db_layer_mask) {
+                    masks_repaired += 1;
+                }
             }
             Err(e) => {
                 error!("Startup rollup task panicked for {}: {}", station_name, e);
@@ -2776,6 +2794,32 @@ pub async fn rollup_startup(
         total_stations, total_stations, elapsed, speed,
         total_rolled_up, total_arrow, total_deleted, total_migrated
     );
+    if masks_repaired > 0 {
+        info!("startup: added coverage DB layers to the layer mask of {} stations", masks_repaired);
+    }
+}
+
+/// OR the layers found in a station's coverage DB into its layer mask.
+/// The mask otherwise only grows from packets seen by this process, so it
+/// misses layers whose data predates it (e.g. legacy combined coverage from
+/// the TypeScript server, which never recorded a mask). Bits are only ever
+/// added. Returns true if the mask changed.
+fn merge_db_layer_mask(station_manager: &StationManager, station_name: &str, db_layer_mask: u8) -> bool {
+    if db_layer_mask == 0 || station_name == "global" {
+        return false;
+    }
+    let Some(mut details) = station_manager.get(&StationName(station_name.to_string())) else {
+        return false;
+    };
+    let old_mask = details.layer_mask.unwrap_or(0);
+    let new_mask = old_mask | db_layer_mask;
+    if new_mask == old_mask {
+        return false;
+    }
+    details.layer_mask = Some(new_mask);
+    details.layers = crate::layers::layer_names_from_mask(new_mask);
+    station_manager.update_and_persist(&details);
+    true
 }
 
 /// Parse accumulators from a stored meta JSON value.
@@ -3138,6 +3182,44 @@ mod tests {
         let day_data = db.get(day_key.as_bytes()).expect("day record should exist");
         let day_rec = CoverageRecord::from_bytes(&day_data).unwrap();
         assert_eq!(day_rec.count(), 2);
+    }
+
+    #[test]
+    fn test_startup_layer_mask_from_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let station_path = tmp.path().join("station_db").to_string_lossy().to_string();
+        let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
+        let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
+
+        // Combined coverage rolled up into destinations (e.g. legacy TS data)
+        let mut rec = CoverageRecord::new(BufferType::Station);
+        rec.update(1000, 500, 2, 28, 5);
+        let _ = db.put("c/0042/8828308283fffff".as_bytes(), &rec.to_bytes());
+        rollup_station_layer(
+            &mut db, &station_path, "test_mask_station", &test_accumulators(),
+            Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
+            &std::sync::Mutex::new(RollupProgress::default()), None,
+        ).unwrap();
+
+        let scan = scan_station_db(&mut db, &[Layer::Combined, Layer::Adsb]).unwrap();
+        assert_eq!(scan.layer_mask(), Layer::Combined.bit_mask());
+
+        // Since restart the station has only seen ADS-B, so its mask lost combined
+        let mgr = StationManager::new_for_test();
+        let mut d = mgr.get_or_create(&StationName("SALANDA".to_string())).unwrap();
+        d.layer_mask = Some(Layer::Adsb.bit_mask());
+        mgr.update(&d);
+
+        assert!(merge_db_layer_mask(&mgr, "SALANDA", scan.layer_mask()));
+        let s = get_station(&mgr, "SALANDA");
+        let both = Layer::Combined.bit_mask() | Layer::Adsb.bit_mask();
+        assert_eq!(s.layer_mask, Some(both));
+        assert_eq!(s.layers, crate::layers::layer_names_from_mask(both));
+
+        // Already covered: no change, and bits are never removed
+        assert!(!merge_db_layer_mask(&mgr, "SALANDA", Layer::Combined.bit_mask()));
+        assert!(!merge_db_layer_mask(&mgr, "SALANDA", 0));
+        assert_eq!(get_station(&mgr, "SALANDA").layer_mask, Some(both));
     }
 
     fn test_accumulators() -> Accumulators {
