@@ -445,6 +445,9 @@ export function CoverageDetails({
     }
 
     if (stationData) {
+        // an expiry at or before the purge is the one that caused it - report it
+        // as history in the purge block rather than as a pending deletion
+        const expiryPurged = !!stationData.purgedAt && !!stationData.expiresAt && stationData.expiresAt <= stationData.purgedAt;
         return (
             <>
                 <b>{station}</b>
@@ -461,11 +464,17 @@ export function CoverageDetails({
                         <br />
                         {t(`purge.reason_${stationData.purgeReason || 'unknown'}`)}
                         <br />
+                        {expiryPurged ? (
+                            <>
+                                {t('purge.expiredAt', {when: formatEpoch(stationData.expiresAt)})}
+                                <br />
+                            </>
+                        ) : null}
                         {t('purge.when', {when: formatEpoch(stationData.purgedAt)})}
                         <hr />
                     </>
                 ) : null}
-                {stationData?.expiresAt && stationData.expiresAt - Date.now() / 1000 < EXPIRY_WARNING_SECS ? (
+                {stationData?.expiresAt && !expiryPurged && stationData.expiresAt - Date.now() / 1000 < EXPIRY_WARNING_SECS ? (
                     <>
                         <hr />
                         <b>{'⏳ '}{t('expiry.title')}</b>

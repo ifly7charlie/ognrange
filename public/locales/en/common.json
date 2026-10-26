@@ -231,7 +231,8 @@
             "reason_moved": "Coverage data was reset because this station moved to a new location.",
             "reason_expired": "Coverage data was reset because this station was inactive for too long.",
             "reason_unknown": "Coverage data was reset.",
-            "when": "Purged at {{when}}"
+            "when": "Purged at {{when}}",
+            "expiredAt": "Expired at {{when}}"
         },
         "expiry": {
             "title": "Expiring Soon",
