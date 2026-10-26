@@ -91,7 +91,7 @@
             "title": "Coverage floor",
             "bearing": "Bearing from station: {{bearing}}°",
             "ground": "Terrain elevation: {{ground}}m",
-            "terrain": "Terrain visible above: {{msl}}m ({{agl}}m agl)",
+            "terrain": "Receiver visible from above:{{msl}}m ({{agl}}m agl)",
             "angles": "Skyline: {{terrain}}°, receive horizon: {{receive}}°",
             "anglesNoReceive": "Skyline: {{terrain}}°, nothing received this way yet",
             "coverage": "Likely coverage above: {{msl}}m ({{agl}}m agl)",
