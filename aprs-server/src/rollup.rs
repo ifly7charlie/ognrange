@@ -833,6 +833,10 @@ struct RollupAccumulator {
     activity: RollupActivity,
     /// Number of destination records seen during merge (for logging)
     dest_record_count: usize,
+    /// Destination records deleted this cycle because every contributing
+    /// station became invalid (global only). These cells legitimately vanish
+    /// from the output, so the shrink guard allows for them.
+    dropped_rows: usize,
 }
 
 /// Per-station rollup: open the DB once, roll up all layers, flush and close.
@@ -1559,6 +1563,7 @@ fn rollup_layer_core(
             arrow_global_rows: Vec::new(),
             activity,
             dest_record_count: 0,
+            dropped_rows: 0,
         });
     }
 
@@ -1715,6 +1720,7 @@ fn rollup_layer_core(
                 &dest.file,
                 layer_suffix,
                 &dest.arrow_global_rows,
+                dest.dropped_rows,
             )?
         } else {
             write_arrow_station(
@@ -1890,6 +1896,7 @@ fn emit_dest_record(
             None => {
                 // All stations removed - delete from DB
                 deletes.push(key.to_string());
+                dest.dropped_rows += 1;
             }
         }
     } else {
@@ -2006,9 +2013,11 @@ fn write_arrow_station(
 
     // Returns the row count actually on disk (existing count if the shrink guard
     // kept a larger file), not necessarily rows.len().
-    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], true)
+    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], Some(0))
 }
 
+/// `dropped_rows`: cells deleted this cycle by the invalid-station filter,
+/// allowed for by the shrink guard.
 fn write_arrow_global(
     output_dir: &str,
     station_name: &str,
@@ -2016,6 +2025,7 @@ fn write_arrow_global(
     file_id: &str,
     layer_suffix: &str,
     rows: &[ArrowGlobal],
+    dropped_rows: usize,
 ) -> Result<usize, String> {
     if rows.is_empty() {
         return Ok(0);
@@ -2043,7 +2053,7 @@ fn write_arrow_global(
 
     // Returns the row count actually on disk (existing count if the shrink guard
     // kept a larger file), not necessarily rows.len().
-    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], true)
+    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], Some(dropped_rows))
 }
 
 /// Envelope-breakpoint schema: bp{j}Km/bp{j}Angle nullable pairs (null in
@@ -2123,7 +2133,7 @@ fn write_arrow_horizon(
 
     // No shrink guard: a horizon file can legitimately shrink (e.g. a layer
     // whose commit failed last cycle is simply absent until the next one).
-    write_arrow_file(output_dir, station_name, acc_type, file_id, ".horizon", &schema, &[batch], false)
+    write_arrow_file(output_dir, station_name, acc_type, file_id, ".horizon", &schema, &[batch], None)
 }
 
 /// Count rows (H3 cells) in an existing Arrow.gz, for the shrink guard.
@@ -2149,7 +2159,7 @@ fn write_arrow_file(
     layer_suffix: &str,
     schema: &std::sync::Arc<Schema>,
     batches: &[RecordBatch],
-    shrink_guard: bool,
+    shrink_allowance: Option<usize>,
 ) -> Result<usize, String> {
     let base_name = format!("{}.{}.{}{}", station_name, acc_type, file_id, layer_suffix);
 
@@ -2173,9 +2183,9 @@ fn write_arrow_file(
     // what is already on disk can only be a partial/orphaned rollup clobbering a
     // complete file (e.g. a hanging current drained into an already-closed
     // period). Refuse the swap, keep the existing file, and skip the
-    // uncompressed twin too so the two stay in sync. (The one legitimate shrink
-    // - global station-validity cleanup - is intentionally blocked by this
-    // invariant. Moved stations never hit it: their active-period outputs are
+    // uncompressed twin too so the two stay in sync. `shrink_allowance` (None =
+    // no guard) is the cells global station-validity cleanup deleted this
+    // cycle - a legitimate shrink. (Moved stations never hit it: their active-period outputs are
     // deleted at purge time (remove_active_period_outputs), so the post-move
     // rebuild starts with no existing file.)
     //
@@ -2184,9 +2194,10 @@ fn write_arrow_file(
     // can encode a few bytes smaller, which made the old byte-size guard reject
     // legitimate same-coverage updates as false positives.
     let new_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    let existing_rows = if shrink_guard { count_arrow_rows(&gz_final) } else { None };
+    let allowance = shrink_allowance.unwrap_or(0);
+    let existing_rows = if shrink_allowance.is_some() { count_arrow_rows(&gz_final) } else { None };
     if let Some(existing_rows) = existing_rows {
-        if new_rows < existing_rows {
+        if new_rows + allowance < existing_rows {
             // Keep the rejected partial on disk for inspection/recovery. Name it
             // {base}.rejected.<epoch>.arrow.gz (NOT .arrow.gz.rejected.<epoch>)
             // so it keeps the .arrow.gz extension and opens directly with
@@ -2199,9 +2210,9 @@ fn write_arrow_file(
             let rejected = format!("{}/{}.rejected.{}.arrow.gz", output_dir, base_name, ts);
             let kept = std::fs::rename(&gz_working, &rejected).is_ok();
             warn!(
-                "{}: REFUSING arrow shrink {}.arrow.gz: new {} rows < existing {} rows \
+                "{}: REFUSING arrow shrink {}.arrow.gz: new {} rows + {} dropped < existing {} rows \
                  (partial/orphaned rollup?) - keeping existing file{}",
-                station_name, base_name, new_rows, existing_rows,
+                station_name, base_name, new_rows, allowance, existing_rows,
                 if kept { ", partial saved as .rejected" } else { "" }
             );
             // Report the count that is actually on disk (the kept file) so stats
@@ -3586,5 +3597,27 @@ mod tests {
         // Verify file exists
         let gz_path = format!("{}/TEST.day.2026-03-12.combined.arrow.gz", output_dir);
         assert!(std::path::Path::new(&gz_path).exists());
+    }
+
+    #[test]
+    fn test_shrink_guard_allows_dropped_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output_dir = tmp.path().to_string_lossy().to_string();
+        let rows = |n: u32| -> Vec<ArrowGlobal> {
+            (0..n).map(|i| ArrowGlobal {
+                h3lo: i, h3hi: 0x88, min_agl: 0, min_alt: 0, min_alt_sig: 0, max_sig: 0,
+                avg_sig: 0, avg_crc: 0, count: 1, avg_gap: 0,
+                stations: String::new(), expected_gap: 0, num_stations: 1,
+            }).collect()
+        };
+        let write = |n: u32, dropped: usize| {
+            write_arrow_global(&output_dir, "global", "year", "2026", "", &rows(n), dropped).unwrap()
+        };
+
+        assert_eq!(write(10, 0), 10);
+        // 2 cells dropped by station-validity cleanup: accepted
+        assert_eq!(write(8, 2), 8);
+        // shrinks by more than was dropped: refused, existing count reported
+        assert_eq!(write(5, 2), 8);
     }
 }
