@@ -106,7 +106,7 @@ use crate::coverage::header::{
 };
 use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
 use crate::horizon::{
-    HorizonCollector, HorizonMeta, HorizonRow, HORIZON_EPSILON_DEG, HORIZON_MAX_BREAKPOINTS,
+    FrontierPoint, HorizonCollector, HorizonMeta, HorizonRow, HORIZON_EPSILON_DEG, HORIZON_MAX_BREAKPOINTS,
     HORIZON_MAX_DISTANCE_KM, HORIZON_MIN_DISTANCE_KM, SKYLINE_TOLERANCE_DEG,
 };
 use crate::layers::{is_layer_prefixed, Layer};
@@ -1029,11 +1029,22 @@ fn rollup_station_all_layers(
     // Write per-station JSON for every active-station rollup (not gated by write_json so that
     // beaconActivity, stats, and arrowRecords are always current, not just on hourly writes).
     if !is_global && !cancelled() {
-        if let Some(h) = &horizon {
+        if let Some(h) = &mut horizon {
             if let Ok(mut p) = progress.lock() {
                 p.phase = "horizon".to_string();
             }
             let output_dir = crate::config::output_dir(station_name);
+            // Keep horizons of layers with no traffic this cycle
+            let layer_mask = station_meta.and_then(|m| m.layer_mask).unwrap_or(0);
+            let mut existing: HashMap<(AccumulatorType, String), Option<Vec<HorizonRow>>> = HashMap::new();
+            for (acc_type, file_id, freq) in h.incomplete_horizons(layer_mask) {
+                let rows = existing
+                    .entry((acc_type, file_id.clone()))
+                    .or_insert_with(|| read_arrow_horizon(&output_dir, station_name, acc_type.name(), &file_id));
+                if let Some(rows) = rows {
+                    h.preserve_horizon(acc_type, &file_id, freq, rows);
+                }
+            }
             let meta = h.meta();
             for hf in h.build_files() {
                 match write_arrow_horizon(
@@ -2131,9 +2142,47 @@ fn write_arrow_horizon(
     let batch = RecordBatch::try_new(schema.clone(), columns)
         .map_err(|e| format!("RecordBatch error: {}", e))?;
 
-    // No shrink guard: a horizon file can legitimately shrink (e.g. a layer
-    // whose commit failed last cycle is simply absent until the next one).
+    // No shrink guard: a horizon file can legitimately shrink (a viewpoint
+    // change, or the skyline filter appearing, re-filters the cells)
     write_arrow_file(output_dir, station_name, acc_type, file_id, ".horizon", &schema, &[batch], None)
+}
+
+/// Existing horizon rows; None when absent or unreadable. A move deletes
+/// these files (remove_active_period_outputs), so no position check
+fn read_arrow_horizon(output_dir: &str, station_name: &str, acc_type: &str, file_id: &str) -> Option<Vec<HorizonRow>> {
+    use arrow::array::Array;
+    let path = format!("{}/{}.{}.{}.horizon.arrow.gz", output_dir, station_name, acc_type, file_id);
+    let file = std::fs::File::open(path).ok()?;
+    let reader = StreamReader::try_new(GzDecoder::new(std::io::BufReader::new(file)), None).ok()?;
+
+    let mut rows = Vec::new();
+    for batch in reader {
+        let batch = batch.ok()?;
+        let column = |name: &str| batch.column_by_name(name);
+        let frequency = column("frequency")?.as_any().downcast_ref::<UInt16Array>()?;
+        let bearing = column("bearing")?.as_any().downcast_ref::<Float32Array>()?;
+        let count = column("count")?.as_any().downcast_ref::<UInt32Array>()?;
+        let mut bps: Vec<(&Float32Array, &Float32Array)> = Vec::new();
+        for j in 0..HORIZON_MAX_BREAKPOINTS {
+            let (Some(km), Some(angle)) = (column(&format!("bp{}Km", j)), column(&format!("bp{}Angle", j))) else {
+                break;
+            };
+            bps.push((km.as_any().downcast_ref()?, angle.as_any().downcast_ref()?));
+        }
+        for i in 0..batch.num_rows() {
+            rows.push(HorizonRow {
+                frequency: frequency.value(i),
+                bearing: bearing.value(i),
+                breakpoints: bps
+                    .iter()
+                    .take_while(|(km, angle)| km.is_valid(i) && angle.is_valid(i))
+                    .map(|(km, angle)| FrontierPoint { distance_km: km.value(i), angle: angle.value(i) })
+                    .collect(),
+                count: count.value(i),
+            });
+        }
+    }
+    Some(rows)
 }
 
 /// Count rows (H3 cells) in an existing Arrow.gz, for the shrink guard.
@@ -3372,6 +3421,15 @@ mod tests {
         assert_eq!(schema.metadata().get("skylineFilter").unwrap(), "0");
         assert!(schema.field_with_name("bp0Km").unwrap().is_nullable());
         assert!(schema.field_with_name("bp4Angle").is_ok());
+
+        // Read back for preservation: identical rows, nulls end the breakpoints
+        let read = read_arrow_horizon(&out_dir, "TESTHZSTATION", hf.acc_type.name(), &hf.file_id).unwrap();
+        assert_eq!(read.len(), hf.rows.len());
+        for (a, b) in read.iter().zip(&hf.rows) {
+            assert_eq!((a.frequency, a.bearing, a.count), (b.frequency, b.bearing, b.count));
+            assert_eq!(a.breakpoints, b.breakpoints);
+        }
+        assert!(read_arrow_horizon(&out_dir, "TESTHZSTATION", "month", "1999-01").is_none());
 
         // No shrink guard: a smaller replacement must overwrite
         let fewer = &hf.rows[..1];

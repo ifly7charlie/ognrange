@@ -21,13 +21,16 @@
 //! the horizon is an antenna/frequency property, not a protocol one. Merging
 //! is pure frontier insertion so feeding the same rows twice never changes
 //! the envelope.
+//!
+//! Layers without traffic this cycle keep their previous horizon from the
+//! existing file (`incomplete_horizons` / `preserve_horizon`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::coverage::header::AccumulatorType;
 use crate::coverage::record::ArrowStation;
 use crate::ground_horizon::TerrainSkyline;
-use crate::layers::{FrequencyGroup, Layer};
+use crate::layers::{FrequencyGroup, Layer, ALL_LAYERS};
 use crate::station::{great_circle_distance, StationDetails};
 
 /// Bearing bins per full circle (0.5 degree)
@@ -253,6 +256,8 @@ pub struct HorizonCollector {
     /// (no ground-horizon file yet, or it was generated elsewhere)
     skyline: Option<TerrainSkyline>,
     bins: HashMap<BinKey, BinArray>,
+    /// (accumulator, file id, layer) horizons computed this cycle
+    layer_horizons: HashSet<(AccumulatorType, String, Layer)>,
     /// Bearing/distance never change for a cell - computed once per rollup
     geom_cache: HashMap<u64, Option<CellGeom>>,
 }
@@ -284,6 +289,7 @@ impl HorizonCollector {
             elevation_m,
             skyline: None,
             bins: HashMap::new(),
+            layer_horizons: HashSet::new(),
             geom_cache: HashMap::new(),
         })
     }
@@ -322,6 +328,7 @@ impl HorizonCollector {
         ) {
             return;
         }
+        self.layer_horizons.insert((acc_type, file_id.to_string(), layer));
 
         let (lat, lng, elevation_m) = (self.lat, self.lng, self.elevation_m);
         let skyline = self.skyline.as_ref();
@@ -373,16 +380,58 @@ impl HorizonCollector {
         }
     }
 
+    /// (accumulator, file id) pairs this cycle will write, sorted
+    fn file_keys(&self) -> Vec<(AccumulatorType, String)> {
+        let mut keys: Vec<(AccumulatorType, String)> =
+            self.bins.keys().map(|(a, f, _)| (*a, f.clone())).collect();
+        keys.sort_by(|a, b| (a.0 as u8, &a.1).cmp(&(b.0 as u8, &b.1)));
+        keys.dedup();
+        keys
+    }
+
+    /// Frequency horizons missing a layer the station has (`layer_mask`)
+    pub fn incomplete_horizons(&self, layer_mask: u8) -> Vec<(AccumulatorType, String, FrequencyGroup)> {
+        let mut out = Vec::new();
+        for (acc_type, file_id) in self.file_keys() {
+            for freq in FrequencyGroup::ALL {
+                let missing = ALL_LAYERS.iter().any(|l| {
+                    l.frequency_group() == Some(*freq)
+                        && layer_mask & l.bit_mask() != 0
+                        && !self.layer_horizons.contains(&(acc_type, file_id.clone(), *l))
+                });
+                if missing {
+                    out.push((acc_type, file_id.clone(), *freq));
+                }
+            }
+        }
+        out
+    }
+
+    /// Merge one frequency's rows from the existing file (frontier insertion,
+    /// so idempotent). Count takes the max - summing would double count
+    pub fn preserve_horizon(&mut self, acc_type: AccumulatorType, file_id: &str, freq: FrequencyGroup, rows: &[HorizonRow]) {
+        let bins = self
+            .bins
+            .entry((acc_type, file_id.to_string(), freq))
+            .or_insert_with(|| vec![None; HORIZON_BINS].into_boxed_slice());
+        for row in rows.iter().filter(|r| r.frequency == freq.mhz()) {
+            let Some((&first, rest)) = row.breakpoints.split_first() else {
+                continue;
+            };
+            let bin_idx = ((row.bearing as f64 / BIN_DEG).round() as i64).rem_euclid(HORIZON_BINS as i64) as usize;
+            let bin = bins[bin_idx].get_or_insert_with(|| HorizonBin { frontier: vec![first], count: 0 });
+            for &p in std::iter::once(&first).chain(rest) {
+                bin.insert(p);
+            }
+            bin.count = bin.count.max(row.count);
+        }
+    }
+
     /// One file per (accumulator, file id) holding both frequency groups,
     /// rows sorted by (frequency, bearing), only non-empty bins
     pub fn build_files(&self) -> Vec<HorizonFile> {
-        let mut file_keys: Vec<(AccumulatorType, &String)> =
-            self.bins.keys().map(|(a, f, _)| (*a, f)).collect();
-        file_keys.sort_by_key(|(a, f)| (*a as u8, f.as_str().to_string()));
-        file_keys.dedup();
-
         let mut out = Vec::new();
-        for (acc_type, file_id) in file_keys {
+        for (acc_type, file_id) in self.file_keys() {
             let mut rows = Vec::new();
             for freq in FrequencyGroup::ALL {
                 let Some(bins) = self.bins.get(&(acc_type, file_id.clone(), *freq)) else {
@@ -401,7 +450,7 @@ impl HorizonCollector {
                 }
             }
             if !rows.is_empty() {
-                out.push(HorizonFile { acc_type, file_id: file_id.clone(), rows });
+                out.push(HorizonFile { acc_type, file_id, rows });
             }
         }
         out
@@ -807,6 +856,77 @@ mod tests {
         assert_eq!(files[0].acc_type, AccumulatorType::Month);
         assert_eq!(files[1].acc_type, AccumulatorType::Year);
         assert_eq!(files[2].acc_type, AccumulatorType::YearNz);
+    }
+
+    #[test]
+    fn incomplete_horizons_follow_layer_mask() {
+        let mask = Layer::Combined.bit_mask() | Layer::Adsb.bit_mask();
+        let mut c = HorizonCollector::from_station(&test_station()).unwrap();
+        // ADS-B only this cycle (the overnight case): 868 must be carried over
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Adsb, &[row_north(20.0, 900, 200)]);
+        assert_eq!(
+            c.incomplete_horizons(mask),
+            vec![(AccumulatorType::Month, "2026-07".to_string(), FrequencyGroup::Mhz868)]
+        );
+        // Without 868 layers in the mask there is nothing to carry over
+        assert!(c.incomplete_horizons(Layer::Adsb.bit_mask()).is_empty());
+        // A layer horizon with no surviving cells still counts as computed
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[]);
+        assert!(c.incomplete_horizons(mask).is_empty());
+        // A second 868 layer in the mask that had no traffic: still incomplete
+        assert_eq!(c.incomplete_horizons(mask | Layer::Fanet.bit_mask()).len(), 1);
+    }
+
+    #[test]
+    fn preserve_horizon_restores_missing_frequency() {
+        let mask = Layer::Combined.bit_mask() | Layer::Adsb.bit_mask();
+        let combined = [row_north(20.0, 800, 100), row_north(60.0, 2000, 1500)];
+        let adsb = [row_north(30.0, 900, 200)];
+
+        // Last cycle both frequencies had traffic
+        let mut full = HorizonCollector::from_station(&test_station()).unwrap();
+        full.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &combined);
+        full.feed(AccumulatorType::Month, "2026-07", Layer::Adsb, &adsb);
+        let previous = full.build_files().remove(0);
+
+        // This cycle only ADS-B: preserving 868 from the previous file
+        // reproduces it exactly
+        let mut c = HorizonCollector::from_station(&test_station()).unwrap();
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Adsb, &adsb);
+        for (acc, file_id, freq) in c.incomplete_horizons(mask) {
+            c.preserve_horizon(acc, &file_id, freq, &previous.rows);
+        }
+        let snapshot = |rows: &[HorizonRow]| -> Vec<(u16, f32, Vec<FrontierPoint>, u32)> {
+            rows.iter().map(|r| (r.frequency, r.bearing, r.breakpoints.clone(), r.count)).collect()
+        };
+        assert_eq!(snapshot(&c.build_files()[0].rows), snapshot(&previous.rows));
+    }
+
+    #[test]
+    fn preserve_horizon_merges_with_incomplete_frequency() {
+        // Previous file: combined only, ~20km at ~0.6 deg
+        let mut prev = HorizonCollector::from_station(&test_station()).unwrap();
+        prev.feed(AccumulatorType::Month, "2026-07", Layer::Combined, &[row_north(20.0, 700, 100)]);
+        let previous = prev.build_files().remove(0);
+
+        // This cycle only fanet has an 868 horizon, farther and lower: the
+        // merge keeps the frontier, the new point dominates the old one
+        let mut c = HorizonCollector::from_station(&test_station()).unwrap();
+        c.feed(AccumulatorType::Month, "2026-07", Layer::Fanet, &[row_north(40.0, 600, 50)]);
+        let mask = Layer::Combined.bit_mask() | Layer::Fanet.bit_mask();
+        assert_eq!(c.incomplete_horizons(mask).len(), 1);
+        c.preserve_horizon(AccumulatorType::Month, "2026-07", FrequencyGroup::Mhz868, &previous.rows);
+        let row = north_row(&c);
+        assert_eq!(row.breakpoints.len(), 1, "breakpoints {:?}", row.breakpoints);
+        assert!((row.breakpoints[0].distance_km - 40.0).abs() < 1.0);
+
+        // Nearer old cells the new point doesn't dominate survive the merge
+        // (bins the near 20km cell spans but the 40km one doesn't)
+        let files = c.build_files();
+        assert!(files[0]
+            .rows
+            .iter()
+            .any(|r| r.breakpoints.iter().any(|p| (p.distance_km - 20.0).abs() < 1.0)));
     }
 
     #[test]
