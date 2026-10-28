@@ -10,11 +10,21 @@ static IGNORED_STATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "ANDROID", "IGCDROID", "APRSPUSH", "TEST", "DLY2APRS",
         "TTN2OGN", "TTN3OGN", "OBS2OGN", "HELIU2OGN", "MICROTRACK", "JETV-OGN",
         "GIGA01", "UNSET", "UNKNOWN", "STATIONS", "GLOBAL", "RELAY", "PWUNSET", "GLIDERNA",
-        "X", "N1",
+        "X", "N1", "LSMD" /* LSMD is producing corrupt packets */,
     ]
     .into_iter()
     .collect()
 });
+
+// Devices whose packets decode with a valid address but a garbage payload
+// (random longitude on a few latitude bands, ±9999fpm, ~213,000ft, id flags
+// changing every packet) - they draw horizontal lines around the receiver
+const IGNORED_DEVICES: [&str; 4] = ["FLR18008D", "FLR1800BB", "FLR190103", "FLR190114"];
+
+/// Source callsign (eg FLR18008D) is on the device blocklist
+pub fn ignore_device(source: &str) -> bool {
+    IGNORED_DEVICES.iter().any(|d| d.eq_ignore_ascii_case(source))
+}
 
 static RE_FULL: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[0-9]*$").unwrap());
 static RE_START: Lazy<Regex> =
@@ -93,6 +103,14 @@ mod tests {
     #[test]
     fn test_not_ignored() {
         assert!(!ignore_station("SAFESKY")); // removed from ignore list
+    }
+
+    #[test]
+    fn test_ignored_devices() {
+        assert!(ignore_device("FLR18008D"));
+        assert!(ignore_device("flr190103"));
+        assert!(!ignore_device("ICA18008D")); // same hex, different address type
+        assert!(!ignore_device("FLRDD0C75"));
     }
 
     #[test]

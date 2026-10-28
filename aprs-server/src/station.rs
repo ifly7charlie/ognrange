@@ -194,7 +194,7 @@ impl StationDetails {
     /// yet, which never expires
     pub fn expires_at(&self) -> Option<Epoch> {
         let mut period = *STATION_EXPIRY_TIME_SECS;
-        if crate::ignore_station::is_test_station(self.station.as_str()) {
+        if crate::ignore_list::is_test_station(self.station.as_str()) {
             period = period.min(*TEST_STATION_EXPIRY_TIME_SECS);
         }
         self.last_activity()

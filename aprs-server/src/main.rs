@@ -9,7 +9,7 @@ mod ground_horizon;
 mod h3cache;
 mod horizon;
 mod json_io;
-mod ignore_station;
+mod ignore_list;
 mod ntfy;
 mod layers;
 mod protocol_stats;
@@ -526,7 +526,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                             let is_station = packet.dest_callsign == "OGNSDR"
                                 || raw.contains("qAC");
 
-                            if is_station && !ignore_station::ignore_station(sn.as_str()) {
+                            if is_station && !ignore_list::ignore_station(sn.as_str()) {
                                 if state.station_manager.get(&sn).is_none() {
                                     reject_log::log_reject("beacon_no_traffic", &raw);
                                 } else {
@@ -616,7 +616,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     let station_name = StationName(state.normalise_case(station_str));
 
     // Check ignore list
-    if ignore_station::ignore_station(station_name.as_str()) {
+    if ignore_list::ignore_station(station_name.as_str()) {
         state
             .global_stats
             .ignored_station
@@ -660,6 +660,12 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         None => return,
     };
     record_stat(state, &station_name, AprsPacketStats::record_raw);
+
+    if ignore_list::ignore_device(&packet.source_callsign) {
+        record_stat(state, &station_name, AprsPacketStats::record_ignored_device);
+        reject_log::log_reject("ignored_device", raw);
+        return;
+    }
 
     let timestamp = match packet.timestamp {
         Some(ts) => ts,

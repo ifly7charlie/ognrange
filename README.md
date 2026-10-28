@@ -200,8 +200,9 @@ APRS packets are NOT recorded in the following situations:
 6. Are stationary or nearly stationary (more specifically bouncing between a small number of locations)
 7. Have no signal strength
 8. Have invalid coordinates
+9. Come from a device on the blocklist in `aprs-server/src/ignore_list.rs` (devices that send corrupt positions)
 
-If you wish to update the list of stations that are excluded please raise a pull request to change the file `aprs-server/src/ignore_station.rs` (and its frontend copy `lib/common/ignorestation.ts`). For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in the `aprs-server`
+If you wish to update the list of stations that are excluded please raise a pull request to change the file `aprs-server/src/ignore_list.rs` (and its frontend copy `lib/common/ignorestation.ts`). For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in the `aprs-server`
 
 In the user interface the stats are:
 
@@ -213,6 +214,7 @@ ignoredSignal0: means there is no signal strength in the received packet
 ignoredStationary: means that a device isn't moving, repeated packets are ignored
 ignoredH3stationary: means that a device is moving but only between a very small number of locations (eg due to poor GPS reception - indoors etc)
 ignoredElevation: Unable to do elevation lookup of packet - probably means lat/lng is not valid
+ignoredDevice: the device is on the blocklist in aprs-server/src/ignore_list.rs (sends corrupt positions)
 count: total number of packets
 ```
 

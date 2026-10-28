@@ -244,8 +244,11 @@ fn evaluate_station_validity(
             .last_activity()
             .map(|e| e.0)
             .unwrap_or(now_epoch); // no timestamp yet → assume valid
-        // Same rule the exported expiresAt shows the frontend
-        let expired = station.expires_at().is_some_and(|e| e.0 <= now_epoch);
+        // Same rule the exported expiresAt shows the frontend. Ignored
+        // stations are expired immediately so adding one to the ignore list
+        // purges its database and strips it from global next rollup
+        let ignored = crate::ignore_list::ignore_station(station.station.as_str());
+        let expired = ignored || station.expires_at().is_some_and(|e| e.0 <= now_epoch);
 
         // Confirm moves: station is bouncing and the previous (original) location
         // hasn't been seen for STATION_MOVE_CONFIRM_DAYS
@@ -285,7 +288,8 @@ fn evaluate_station_validity(
         } else if !expired {
             valid.insert(station.id);
         } else if was_valid {
-            // Only expired by the shorter test-station period
+            // Only expired by the shorter test-station period, or ignored
+            // while still active - deliberate, so kept out of the valve ratio
             if validity_ts > expiry_epoch {
                 test_invalid_count += 1;
             } else {
@@ -293,8 +297,9 @@ fn evaluate_station_validity(
             }
             newly_invalid.insert(station.id);
             info!(
-                "station {} now invalid: expired, last activity {}",
+                "station {} now invalid: {}, last activity {}",
                 station.station,
+                if ignored { "ignored" } else { "expired" },
                 chrono::DateTime::from_timestamp(validity_ts as i64, 0)
                     .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
                     .unwrap_or_else(|| validity_ts.to_string())
@@ -346,7 +351,14 @@ fn evaluate_station_validity(
                 updated.purge_reason = Some("moved".into());
             } else if !is_valid && station.valid && newly_invalid.contains(&station.id) {
                 updated.purged_at = Some(crate::types::Epoch(now_epoch));
-                updated.purge_reason = Some("expired".into());
+                updated.purge_reason = Some(
+                    if crate::ignore_list::ignore_station(station.station.as_str()) {
+                        "ignored"
+                    } else {
+                        "expired"
+                    }
+                    .into(),
+                );
             }
             station_manager.update(&updated);
         }
@@ -590,6 +602,8 @@ pub async fn rollup_all(
             if is_newly_invalid || was_moved {
                 let reason = if was_moved {
                     "moved".to_string()
+                } else if crate::ignore_list::ignore_station(&station_name) {
+                    "ignored".to_string()
                 } else {
                     let last = station_meta
                         .as_ref()

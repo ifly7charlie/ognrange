@@ -113,7 +113,7 @@ Per-station packet filtering counters. These accumulate over the lifetime of the
 
 | Field | Description |
 |-------|-------------|
-| `ignoredTracker` | Packets ignored because the tracker is on the ignore list |
+| `ignoredTracker` | OGN tracker packets ignored because they were relayed (first digipeater is not `qA*`) |
 | `invalidTracker` | Packets with invalid tracker data |
 | `invalidTimestamp` | Packets with invalid or out-of-range timestamps |
 | `ignoredStationary` | Packets ignored because the aircraft was stationary |
@@ -121,6 +121,7 @@ Per-station packet filtering counters. These accumulate over the lifetime of the
 | `ignoredH3stationary` | Packets ignored because the H3 cell hasn't changed |
 | `ignoredElevation` | Packets ignored due to elevation filter (bad altitude data) |
 | `ignoredDistance` | Packets ignored because the claimed position was further than `MAX_PACKET_DISTANCE_KM` (default 500 km) from the station — corrupted positions |
+| `ignoredDevice` | Packets ignored because the device is on the blocklist in `aprs-server/src/ignore_list.rs` — devices that send corrupt positions |
 | `count` | Total packets accepted for coverage recording |
 
 ### Layer mask

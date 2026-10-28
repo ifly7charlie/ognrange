@@ -159,6 +159,7 @@
             "ignoredH3stationary": "Ignored (Mostly Stationary)",
             "ignoredElevation": "Ignored (Corrupt elevation)",
             "ignoredDistance": "Ignored (Too far away)",
+            "ignoredDevice": "Ignored (Faulty device)",
             "ignoredFutureTimestamp": "Ignored (Future timestamp)",
             "ignoredStaleTimestamp": "Ignored (Stale timestamp)",
             "avgDelaySecs": "Avg Packet Delay (s)"
@@ -230,6 +231,7 @@
             "title": "Data Purged",
             "reason_moved": "Coverage data was reset because this station moved to a new location.",
             "reason_expired": "Coverage data was reset because this station was inactive for too long.",
+            "reason_ignored": "Coverage data was removed because this station has been excluded from coverage.",
             "reason_unknown": "Coverage data was reset.",
             "when": "Purged at {{when}}",
             "expiredAt": "Expired at {{when}}"
