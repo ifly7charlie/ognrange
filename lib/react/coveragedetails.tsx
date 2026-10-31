@@ -579,7 +579,7 @@ export function CoverageDetails({
                         </table>
                     </>
                 ) : null}
-                <StationNotify ntfyUrl={stationData?.ntfyUrl} />
+                <StationNotify ntfyUrl={stationData?.ntfyUrl} outage={isRange ? null : stationData} />
 
                 <p style={{height: '5rem'}} />
             </>

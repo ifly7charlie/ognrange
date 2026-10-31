@@ -86,6 +86,9 @@ pub struct Outage {
     /// the threshold) - lets the caller tell a live transition from one
     /// that predates our current stretch of feed coverage
     pub started: u32,
+    /// Epoch the station was last heard (the beacon or packet the gap is
+    /// measured from) - the start of the outage as the operator sees it
+    pub last_heard: u32,
 }
 
 /// Decide whether a station is currently in outage.
@@ -101,12 +104,20 @@ pub fn evaluate_outage(
 ) -> Option<Outage> {
     if let Some(last_beacon) = details.last_beacon {
         if now.saturating_sub(last_beacon.0) > beacon_secs {
-            return Some(Outage { reason: OutageReason::Beacons, started: last_beacon.0 + beacon_secs });
+            return Some(Outage {
+                reason: OutageReason::Beacons,
+                started: last_beacon.0 + beacon_secs,
+                last_heard: last_beacon.0,
+            });
         }
     }
     if let Some(last_packet) = details.last_packet {
         if now.saturating_sub(last_packet.0) > traffic_secs {
-            return Some(Outage { reason: OutageReason::Traffic, started: last_packet.0 + traffic_secs });
+            return Some(Outage {
+                reason: OutageReason::Traffic,
+                started: last_packet.0 + traffic_secs,
+                last_heard: last_packet.0,
+            });
         }
     }
     None
@@ -214,23 +225,23 @@ mod tests {
         // The outage started when the beacon gap crossed the threshold.
         assert_eq!(
             evaluate_outage(&details(Some(now - 2 * DAY), Some(now - 600)), now, DAY, WEEK),
-            Some(Outage { reason: OutageReason::Beacons, started: now - DAY })
+            Some(Outage { reason: OutageReason::Beacons, started: now - DAY, last_heard: now - 2 * DAY })
         );
         // Beaconing but silent for over a week
         assert_eq!(
             evaluate_outage(&details(Some(now - 600), Some(now - WEEK - 1)), now, DAY, WEEK),
-            Some(Outage { reason: OutageReason::Traffic, started: now - 1 })
+            Some(Outage { reason: OutageReason::Traffic, started: now - 1, last_heard: now - WEEK - 1 })
         );
         // Fully dead: beacons reason wins
         assert_eq!(
             evaluate_outage(&details(Some(now - 2 * WEEK), Some(now - 2 * WEEK)), now, DAY, WEEK),
-            Some(Outage { reason: OutageReason::Beacons, started: now - 2 * WEEK + DAY })
+            Some(Outage { reason: OutageReason::Beacons, started: now - 2 * WEEK + DAY, last_heard: now - 2 * WEEK })
         );
         // Never beaconed: judged on traffic only
         assert_eq!(evaluate_outage(&details(None, Some(now - 2 * DAY)), now, DAY, WEEK), None);
         assert_eq!(
             evaluate_outage(&details(None, Some(now - WEEK - 1)), now, DAY, WEEK),
-            Some(Outage { reason: OutageReason::Traffic, started: now - 1 })
+            Some(Outage { reason: OutageReason::Traffic, started: now - 1, last_heard: now - WEEK - 1 })
         );
         // Exactly at the threshold is not yet an outage (spec says "> 1 day")
         assert_eq!(evaluate_outage(&details(Some(now - DAY), Some(now - 600)), now, DAY, WEEK), None);

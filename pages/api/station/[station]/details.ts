@@ -19,6 +19,12 @@ interface StationJson {
     // m MSL, or >= BEACON_ALTITUDE_DRIFTING_MIN when drifting (grounddata.ts)
     beaconAltitude?: number | null;
     ntfyUrl?: string;
+    // Outage-notification state (aprs-server ntfy.rs); absent on healthy
+    // stations and on files written before each field existed
+    outageNotifiedAt?: number | null;
+    outageReason?: string | null;
+    outageLastHeard?: number | null;
+    outageEndedAt?: number | null;
     moved?: boolean;
     bouncing?: boolean;
     mobile?: boolean;
@@ -255,8 +261,14 @@ export default async function handler(req, res) {
         if (fileParam && !isLatestFile(stationDir, stationName, fileParam)) {
             // Historical period — return only the dated file data (no station metadata)
             const datedData = readStationFile(join(stationDir, `${stationName}.${fileParam}.json`));
-            // Expiry as of that period is meaningless now
-            if (datedData) delete datedData.expiresAt;
+            // Expiry and outage state as of that period are meaningless now
+            if (datedData) {
+                delete datedData.expiresAt;
+                delete datedData.outageNotifiedAt;
+                delete datedData.outageReason;
+                delete datedData.outageLastHeard;
+                delete datedData.outageEndedAt;
+            }
             res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
             res.status(200).json(datedData ?? {});
             return;

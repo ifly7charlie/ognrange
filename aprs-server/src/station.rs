@@ -115,6 +115,16 @@ pub struct StationDetails {
     /// Why: "beacons" (no status beacons) or "traffic" (no aircraft heard)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outage_reason: Option<String>,
+    /// When the station was last heard before the current outage (last
+    /// beacon or packet) - last_beacon/last_packet have moved on by the time
+    /// the back-online message goes out, so the start is kept here
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outage_last_heard: Option<Epoch>,
+    /// First check that saw the flagged station healthy again. Recorded even
+    /// while the back-online send is held (notify window, send budget), so
+    /// the message reports when it recovered, not when it was sent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outage_ended_at: Option<Epoch>,
     #[serde(default)]
     pub moved: bool,
     #[serde(default)]
@@ -423,6 +433,8 @@ impl StationManager {
             ntfy_url: None,
             outage_notified_at: None,
             outage_reason: None,
+            outage_last_heard: None,
+            outage_ended_at: None,
             moved: false,
             bouncing: false,
             mobile: false,
@@ -907,6 +919,8 @@ impl StationManager {
             ntfy_url: None,
             outage_notified_at: None,
             outage_reason: None,
+            outage_last_heard: None,
+            outage_ended_at: None,
             moved: false,
             bouncing: false,
             mobile: false,
@@ -1001,6 +1015,8 @@ mod tests {
             ntfy_url: None,
             outage_notified_at: None,
             outage_reason: None,
+            outage_last_heard: None,
+            outage_ended_at: None,
             moved: false,
             bouncing: false,
             mobile: false,
@@ -1047,7 +1063,39 @@ mod tests {
         assert_eq!(restored.last_seen_at_previous, Some(Epoch(900000)));
     }
 
-    const RF_STATUS: &str = "v0.3.2.RPI-GPU CPU:1.4 RAM:463.6/970.3MB NTP:0.5ms/-8.6ppm 2/2Acfts[1h] RF:+38+2.5ppm/-0.3dB/+10.7dB@10km[23481]/+12.3dB@10km[7/13]";
+    #[test]
+    fn test_outage_fields_serde() {
+        let mut details = make_test_details();
+
+        // Healthy: none of the outage fields are written
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(!json.contains("outage"));
+
+        // A record persisted before outageLastHeard/outageEndedAt existed
+        // still loads, with the new fields absent
+        let mut legacy: serde_json::Value = serde_json::from_str(&json).unwrap();
+        legacy["outageNotifiedAt"] = serde_json::json!(1000000);
+        legacy["outageReason"] = serde_json::json!("beacons");
+        let restored: StationDetails = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.outage_notified_at, Some(Epoch(1000000)));
+        assert_eq!(restored.outage_reason.as_deref(), Some("beacons"));
+        assert_eq!(restored.outage_last_heard, None);
+        assert_eq!(restored.outage_ended_at, None);
+
+        // Round trip, under the camelCase names the frontend reads
+        details.outage_notified_at = Some(Epoch(1000000));
+        details.outage_reason = Some("traffic".to_string());
+        details.outage_last_heard = Some(Epoch(900000));
+        details.outage_ended_at = Some(Epoch(1100000));
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(json.contains("\"outageLastHeard\":900000"));
+        assert!(json.contains("\"outageEndedAt\":1100000"));
+        let restored: StationDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.outage_last_heard, Some(Epoch(900000)));
+        assert_eq!(restored.outage_ended_at, Some(Epoch(1100000)));
+    }
+
+    const RF_STATUS: &str ="v0.3.2.RPI-GPU CPU:1.4 RAM:463.6/970.3MB NTP:0.5ms/-8.6ppm 2/2Acfts[1h] RF:+38+2.5ppm/-0.3dB/+10.7dB@10km[23481]/+12.3dB@10km[7/13]";
     const WEATHER_STATUS: &str = "82:0 2.562s/0ms 35dB/-2kHz 131/9/14kt 82.6F 26.2% UVI:20.4 0.0mm/h";
 
     #[test]

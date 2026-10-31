@@ -85,6 +85,8 @@ All fields from `StationDetails` are included (see [STATIONS.md](./STATIONS.md#s
 | `layers` | `string[]` | Array of protocol layer names this station has received data for, derived from `layerMask` (e.g. `["combined", "flarm"]`) |
 | `activity` | `object?` | Combined-layer day `RollupActivity` (see below). Only present if the station had combined-layer traffic |
 
+The outage fields (`outageNotifiedAt`, `outageReason`, `outageLastHeard`, `outageEndedAt`) are only present while an outage is flagged, and files written before a field existed simply lack it. `/api/station/{name}/details` passes them through for the latest file only: like `expiresAt` they are stripped from historical dated files, and range aggregation omits them. The station details panel shows them above the notification QR code.
+
 ### RollupActivity
 
 The `activity` object describes the station's coverage rollup history for the combined layer's day accumulator:

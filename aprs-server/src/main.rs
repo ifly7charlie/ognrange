@@ -1262,6 +1262,8 @@ async fn outage_monitor(state: Arc<AppState>) {
                     fresh.ntfy_url = Some(ntfy::generate_url(fresh.station.as_str()));
                     fresh.outage_notified_at = outage.map(|_| Epoch(now_epoch));
                     fresh.outage_reason = outage.map(|o| o.reason.as_str().to_string());
+                    fresh.outage_last_heard = outage.map(|o| Epoch(o.last_heard));
+                    fresh.outage_ended_at = None;
                     state.station_manager.update_and_persist(&fresh);
                     generated += 1;
                 }
@@ -1279,10 +1281,24 @@ async fn outage_monitor(state: Arc<AppState>) {
                     if let Some(mut fresh) = state.station_manager.get(&details.station) {
                         fresh.outage_notified_at = Some(Epoch(now_epoch));
                         fresh.outage_reason = Some(o.reason.as_str().to_string());
+                        fresh.outage_last_heard = Some(Epoch(o.last_heard));
+                        fresh.outage_ended_at = None;
                         state.station_manager.update_and_persist(&fresh);
                         suppressed += 1;
                     }
                     continue;
+                }
+            }
+
+            // Note when a flagged station first comes back, so a back-online
+            // message held for the notify window still reports the real
+            // recovery time; forget it again if the station relapses first
+            let mut ended_at = details.outage_ended_at;
+            if notified && (outage.is_none() != ended_at.is_some()) {
+                ended_at = outage.is_none().then_some(Epoch(now_epoch));
+                if let Some(mut fresh) = state.station_manager.get(&details.station) {
+                    fresh.outage_ended_at = ended_at;
+                    state.station_manager.update_and_persist(&fresh);
                 }
             }
 
@@ -1337,25 +1353,28 @@ async fn outage_monitor(state: Arc<AppState>) {
                     .await
                 }
                 None => {
-                    let was = match details.outage_reason.as_deref() {
-                        Some("beacons") => "no beacons",
-                        Some("traffic") => "no traffic",
-                        _ => "outage",
+                    // Outages flagged before outage_last_heard existed only
+                    // know when they were notified
+                    let from = match details.outage_last_heard {
+                        Some(_) => epoch_str(details.outage_last_heard),
+                        None => format!("before {}", epoch_str(details.outage_notified_at)),
                     };
-                    ntfy::send(
-                        &client,
-                        &url,
-                        &format!("{} back online", name),
-                        &format!(
-                            "{} restarted and is reporting again ({} since {}).",
-                            name,
-                            was,
-                            epoch_str(details.outage_notified_at)
+                    let until = epoch_str(ended_at.or(Some(Epoch(now_epoch))));
+                    let (title, message) = match details.outage_reason.as_deref() {
+                        Some("traffic") => (
+                            format!("{} receiving again", name),
+                            format!("{} is hearing aircraft again. No traffic was received from {} until {}.", name, from, until),
                         ),
-                        ntfy::Priority::Low,
-                        "white_check_mark",
-                    )
-                    .await
+                        Some("beacons") => (
+                            format!("{} back online", name),
+                            format!("{} is back online. No status beacons were received from {} until {}.", name, from, until),
+                        ),
+                        _ => (
+                            format!("{} back online", name),
+                            format!("{} is back online. Outage from {} until {}.", name, from, until),
+                        ),
+                    };
+                    ntfy::send(&client, &url, &title, &message, ntfy::Priority::Low, "white_check_mark").await
                 }
             };
 
@@ -1364,10 +1383,14 @@ async fn outage_monitor(state: Arc<AppState>) {
                     if let Some(o) = outage {
                         fresh.outage_notified_at = Some(Epoch(now_epoch));
                         fresh.outage_reason = Some(o.reason.as_str().to_string());
+                        fresh.outage_last_heard = Some(Epoch(o.last_heard));
+                        fresh.outage_ended_at = None;
                         offline_sent.push(name.to_string());
                     } else {
                         fresh.outage_notified_at = None;
                         fresh.outage_reason = None;
+                        fresh.outage_last_heard = None;
+                        fresh.outage_ended_at = None;
                         online_sent.push(name.to_string());
                     }
                     state.station_manager.update_and_persist(&fresh);

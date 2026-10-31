@@ -83,6 +83,8 @@ Additional symlinks are created for month, year, and yearnz (New Zealand year) A
 | `ntfyUrl` | `string?` | Persistent ntfy.sh topic URL for outage notifications (`{NTFY_BASE_URL}/{NTFY_TOPIC_PREFIX}-{station}-{random base64url suffix}`). Minted once per station by the outage monitor and never regenerated (that would strand subscribers). The frontend renders it as a subscribe QR code using the `ntfy://` scheme |
 | `outageNotifiedAt` | `u32?` | Unix timestamp when the current outage was notified (or suppressed, for stations already in outage when their topic URL was first minted). Cleared when the back-online notification is sent |
 | `outageReason` | `string?` | Why the station is in outage: `"beacons"` (no Status beacons for `OUTAGE_BEACON_DAYS`, default 1) or `"traffic"` (no aircraft traffic for `OUTAGE_TRAFFIC_DAYS`, default 7) |
+| `outageLastHeard` | `u32?` | Unix timestamp the station was last heard (last beacon, or last packet for a `"traffic"` outage) before the current outage — the "from" time in the back-online message. Cleared with `outageNotifiedAt` |
+| `outageEndedAt` | `u32?` | Unix timestamp of the first outage check that saw the flagged station healthy again — the "until" time in the back-online message, recorded even while that message is held for the notify window. Cleared if the station relapses first, and with `outageNotifiedAt` |
 | `moved` | `bool` | Station move confirmed after `STATION_MOVE_CONFIRM_DAYS` at new location (triggers data purge) |
 | `bouncing` | `bool` | Station is oscillating between two locations, or a move is pending confirmation |
 | `mobile` | `bool` | Station appears to be on a moving vehicle (3+ consecutive new locations) |
