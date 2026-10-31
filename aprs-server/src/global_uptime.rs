@@ -161,6 +161,73 @@ impl GlobalUptime {
 
         write_dated(now, &snap, elapsed_override, day_file, is_live);
     }
+
+    /// Start of the current stretch of continuous feed coverage: the end of
+    /// the most recent run of at least `max_gap_slots` empty slots within
+    /// the last OBSERVED_LOOKBACK_SLOTS. Days with no state (in memory or a
+    /// dated archive) count as empty. Returns a time after `now` while the
+    /// feed is currently in such a gap.
+    pub fn observed_since(&self, now: u32, max_gap_slots: u32) -> u32 {
+        let (live, prev) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.snapshot(), inner.prev.clone())
+        };
+        let stats_dir = format!("{}stats", *OUTPUT_PATH);
+        let bits_for_day = |day: u32| -> Option<[u64; 3]> {
+            let date = chrono::DateTime::from_timestamp(day as i64 * 86400, 0)?
+                .format("%Y-%m-%d")
+                .to_string();
+            if live.date == date {
+                return Some(live.bits);
+            }
+            if let Some(p) = prev.as_ref().filter(|p| p.date == date) {
+                return Some(p.bits);
+            }
+            let parsed = read_json_or_gz(&format!("{}/global-uptime.{}.json", stats_dir, date))?;
+            hex_to_bitvec(parsed["activity"].as_str()?)
+        };
+        observed_since_from(now, max_gap_slots, OBSERVED_LOOKBACK_SLOTS, bits_for_day)
+    }
+}
+
+/// How far back observed_since() scans for a downtime gap (48h)
+const OBSERVED_LOOKBACK_SLOTS: u32 = 288;
+
+/// Walk back slot by slot from `now`'s slot looking for the most recent run
+/// of at least `max_gap_slots` empty slots; returns the start of the first
+/// covered slot after it. With no such gap the whole lookback was covered
+/// and its start is returned. `bits_for_day` takes a day index (epoch / 86400).
+fn observed_since_from(
+    now: u32,
+    max_gap_slots: u32,
+    lookback_slots: u32,
+    bits_for_day: impl Fn(u32) -> Option<[u64; 3]>,
+) -> u32 {
+    let max_gap_slots = max_gap_slots.max(1);
+    let current = now / 600;
+    let lowest = current.saturating_sub(lookback_slots);
+    let mut day_cache: Option<(u32, Option<[u64; 3]>)> = None;
+    let mut run = 0u32;
+    for s in (lowest..=current).rev() {
+        let day = s / 144;
+        if day_cache.map(|(d, _)| d) != Some(day) {
+            day_cache = Some((day, bits_for_day(day)));
+        }
+        let bits = day_cache.unwrap().1.unwrap_or([0u64; 3]);
+        let slot = (s % 144) as usize;
+        if bits[slot / 64] & (1u64 << (slot % 64)) != 0 {
+            if run >= max_gap_slots {
+                return (s + run + 1) * 600;
+            }
+            run = 0;
+        } else {
+            run += 1;
+        }
+    }
+    if run >= max_gap_slots {
+        return (lowest + run) * 600;
+    }
+    lowest * 600
 }
 
 /// Pick which state (if any) covers `day_file`: the live bitvector when its
@@ -482,5 +549,65 @@ mod tests {
         assert_eq!(popcount_144(&inner.bits), 1);
         assert_eq!(inner.bits[slot / 64] & (1u64 << (slot % 64)), 0);
         assert_ne!(inner.bits[other_slot / 64] & (1u64 << (other_slot % 64)), 0);
+    }
+
+    /// Bitvector with the slots in each [from, to) range set
+    fn slots(ranges: &[(usize, usize)]) -> [u64; 3] {
+        let mut bits = [0u64; 3];
+        for &(from, to) in ranges {
+            for s in from..to {
+                bits[s / 64] |= 1u64 << (s % 64);
+            }
+        }
+        bits
+    }
+
+    #[test]
+    fn test_observed_since() {
+        const DAY: u32 = 20_000; // arbitrary day index
+        let day_start = DAY * 86400;
+        let now = day_start + 60 * 600 + 300; // mid slot 60 of DAY
+        let slot_start = now / 600 * 600;
+        // today/yesterday bit ranges, earlier days missing
+        let history = |today: &'static [(usize, usize)], yesterday: Option<&'static [(usize, usize)]>| {
+            move |d: u32| match d {
+                DAY => Some(slots(today)),
+                d if d == DAY - 1 => yesterday.map(slots),
+                _ => None,
+            }
+        };
+
+        // Continuous coverage: the whole lookback is returned
+        assert_eq!(
+            observed_since_from(now, 12, 144, history(&[(0, 61)], Some(&[(0, 144)]))),
+            slot_start - 144 * 600
+        );
+
+        // Restart gap shorter than the limit (slots 30-34) is ignored
+        assert_eq!(
+            observed_since_from(now, 12, 144, history(&[(0, 30), (35, 61)], Some(&[(0, 144)]))),
+            slot_start - 144 * 600
+        );
+
+        // Long gap (slots 10-39): coverage starts at slot 40
+        assert_eq!(
+            observed_since_from(now, 12, 144, history(&[(0, 10), (40, 61)], Some(&[(0, 144)]))),
+            day_start + 40 * 600
+        );
+
+        // Missing yesterday counts as a gap: coverage starts at today's first slot
+        assert_eq!(observed_since_from(now, 12, 288, history(&[(0, 61)], None)), day_start);
+
+        // Gap spanning midnight: yesterday ends at slot 138, today starts at 8
+        assert_eq!(
+            observed_since_from(now, 12, 288, history(&[(8, 61)], Some(&[(0, 138)]))),
+            day_start + 8 * 600
+        );
+
+        // Feed currently down for longer than the limit: returns after now
+        assert!(observed_since_from(now, 12, 288, history(&[(0, 40)], Some(&[(0, 144)]))) > now);
+
+        // No history at all: never covered
+        assert!(observed_since_from(now, 12, 288, |_| None) > now);
     }
 }

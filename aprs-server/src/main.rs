@@ -1175,10 +1175,13 @@ async fn status_writer(state: Arc<AppState>) {
 /// existed, and this stops the first run after deploy from announcing every
 /// long-dead station.
 ///
-/// Only outages that begin while this process is running are announced: one
-/// whose onset (last activity + threshold) predates startup is marked
-/// notified without sending, since the staleness may simply be our own
-/// downtime and old news isn't worth waking anyone for.
+/// Only outages that begin while we're observing the feed are announced: one
+/// whose onset (last activity + threshold) predates the end of the most
+/// recent APRS-IS keepalive gap of OUTAGE_MAX_DOWNTIME_HOURS or more (from
+/// global uptime) is marked notified without sending, since the staleness
+/// may simply be our own downtime and old news isn't worth waking anyone
+/// for. Shorter gaps such as restarts don't count, so pending notifications
+/// survive them.
 ///
 /// Transitions outside the station's 10:00-17:00 approximate local time are
 /// simply held - the pending state is re-evaluated each tick and announced
@@ -1191,10 +1194,8 @@ async fn outage_monitor(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(period);
     interval.tick().await; // skip the immediate tick - let startup settle
 
-    // Outages that began before this process started are old news - the
-    // staleness may even be our own downtime. They get marked notified
-    // without a send; only transitions observed live are announced.
-    let startup_epoch = chrono::Utc::now().timestamp() as u32;
+    // A keepalive gap at least this long is our own downtime (see below)
+    let max_gap_slots = ((*OUTAGE_MAX_DOWNTIME_HOURS * 6.0).round() as u32).max(1);
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -1216,6 +1217,23 @@ async fn outage_monitor(state: Arc<AppState>) {
         let beacon_secs = *OUTAGE_BEACON_SECS;
         let traffic_secs = *OUTAGE_TRAFFIC_SECS;
         let expected_prefix = format!("{}/{}-", &*NTFY_BASE_URL, &*NTFY_TOPIC_PREFIX);
+
+        // Outages that began before the feed's last extended gap ended are
+        // old news - the staleness may even be our own downtime. They get
+        // marked notified without a send; only transitions observed live are
+        // announced. Shorter gaps (restarts) keep pending notifications.
+        // While the feed is down, or back for less than a check period,
+        // stations haven't had a chance to beacon again, so the whole cycle
+        // is skipped rather than marking live stations as in outage.
+        let observed_since = state.global_uptime.observed_since(now_epoch, max_gap_slots);
+        if observed_since.saturating_add(period.as_secs() as u32) > now_epoch {
+            info!(
+                "outage monitor: APRS-IS feed down or back for under {} minutes (covered since {}), skipping cycle",
+                period.as_secs() / 60,
+                if observed_since > now_epoch { "-".to_string() } else { epoch_str(Some(Epoch(observed_since))) }
+            );
+            continue;
+        }
 
         let mut generated = 0usize;
         let mut deferred = 0usize;
@@ -1252,11 +1270,12 @@ async fn outage_monitor(state: Arc<AppState>) {
 
             let notified = details.outage_notified_at.is_some();
 
-            // Pre-existing outage: it tipped over before this process
-            // started, so it isn't news we observed - mark it notified
-            // without sending (mirrors the mark-without-send at mint time)
+            // Pre-existing outage: it tipped over before the feed's current
+            // stretch of coverage began, so it isn't news we observed - mark
+            // it notified without sending (mirrors the mark-without-send at
+            // mint time)
             if let Some(o) = outage {
-                if !notified && o.started < startup_epoch {
+                if !notified && o.started < observed_since {
                     if let Some(mut fresh) = state.station_manager.get(&details.station) {
                         fresh.outage_notified_at = Some(Epoch(now_epoch));
                         fresh.outage_reason = Some(o.reason.as_str().to_string());

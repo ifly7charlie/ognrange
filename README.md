@@ -608,6 +608,10 @@ See `aprs-server/src/config.rs` and `lib/common/config.ts` for the code.
 #OUTAGE_BEACON_DAYS=1
 # no aircraft traffic for this long is an outage (hearing nothing)
 #OUTAGE_TRAFFIC_DAYS=7
+# a feed gap (server down or APRS-IS disconnected) at least this long drops
+# pending notifications for outages that began before it ended; shorter
+# gaps such as restarts keep them
+#OUTAGE_MAX_DOWNTIME_HOURS=2
 
 ### Front end
 

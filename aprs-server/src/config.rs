@@ -144,6 +144,11 @@ pub static OUTAGE_BEACON_SECS: Lazy<u32> =
 /// No aircraft traffic for longer than this is an outage (hearing nothing)
 pub static OUTAGE_TRAFFIC_SECS: Lazy<u32> =
     Lazy::new(|| env_parse::<u32>("OUTAGE_TRAFFIC_DAYS", 7) * 86400);
+/// A gap in APRS-IS keepalives (global uptime) at least this long is our own
+/// downtime: outages that began before it ended are marked without sending.
+/// Shorter gaps (restarts, brief disconnects) keep pending notifications
+pub static OUTAGE_MAX_DOWNTIME_HOURS: Lazy<f64> =
+    Lazy::new(|| env_parse::<f64>("OUTAGE_MAX_DOWNTIME_HOURS", 2.0));
 
 // H3 cell levels - DO NOT CHANGE without resetting all data
 pub static H3_STATION_CELL_LEVEL: Lazy<u8> = Lazy::new(|| env_parse("H3_STATION_CELL_LEVEL", 8));

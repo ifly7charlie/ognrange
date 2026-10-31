@@ -84,7 +84,7 @@ pub struct Outage {
     pub reason: OutageReason,
     /// Epoch at which the station tipped into outage (last activity plus
     /// the threshold) - lets the caller tell a live transition from one
-    /// that predates the current process
+    /// that predates our current stretch of feed coverage
     pub started: u32,
 }
 
