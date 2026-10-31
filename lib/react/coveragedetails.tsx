@@ -34,6 +34,7 @@ import {StationPosition} from './coveragedetails/stationposition';
 import {StationNotify} from './coveragedetails/stationnotify';
 import {HorizonDetails} from './coveragedetails/horizondetails';
 import {GroundDetails, FloorProfileChart} from './coveragedetails/grounddetails';
+import {isBeaconAltitudeDrifting} from './coveragedetails/grounddata';
 import type {HorizonHover} from './coveragedetails/horizondata';
 import {elevationAngleDeg} from './coveragedetails/horizondata';
 import {initialBearingDeg} from './floordata';
@@ -444,6 +445,9 @@ export function CoverageDetails({
     }
 
     if (stationData) {
+        // an expiry at or before the purge is the one that caused it - report it
+        // as history in the purge block rather than as a pending deletion
+        const expiryPurged = !!stationData.purgedAt && !!stationData.expiresAt && stationData.expiresAt <= stationData.purgedAt;
         return (
             <>
                 <b>{station}</b>
@@ -460,11 +464,17 @@ export function CoverageDetails({
                         <br />
                         {t(`purge.reason_${stationData.purgeReason || 'unknown'}`)}
                         <br />
+                        {expiryPurged ? (
+                            <>
+                                {t('purge.expiredAt', {when: formatEpoch(stationData.expiresAt)})}
+                                <br />
+                            </>
+                        ) : null}
                         {t('purge.when', {when: formatEpoch(stationData.purgedAt)})}
                         <hr />
                     </>
                 ) : null}
-                {stationData?.expiresAt && stationData.expiresAt - Date.now() / 1000 < EXPIRY_WARNING_SECS ? (
+                {stationData?.expiresAt && !expiryPurged && stationData.expiresAt - Date.now() / 1000 < EXPIRY_WARNING_SECS ? (
                     <>
                         <hr />
                         <b>{'⏳ '}{t('expiry.title')}</b>
@@ -476,8 +486,17 @@ export function CoverageDetails({
                 <ActivityDetails activity={stationData?.activity} />
                 <UptimeBar uptime={stationData?.uptime} />
                 <BeaconActivity data={stationData?.beaconActivity} date={stationData?.beaconActivityDate} days={stationData?.beaconActivityDays} serverUptime={serverUptime} currentSlot={statsData?.globalUptime?.slot} exportedAt={stationData?.exportedAt} />
-                <HorizonDetails station={station} period={dateRange?.start || file} env={env} setHorizonHover={setHorizonHover} groundHoverBearing={horizonHover?.source === 'ground' ? horizonHover.bearing : null} />
-                <GroundDetails station={station} horizonHover={horizonHover} setHorizonHover={setHorizonHover} beaconAltitude={stationData?.beaconAltitude ?? null} maxRangeKm={maxRangeKm} env={env} />
+                {isBeaconAltitudeDrifting(stationData?.beaconAltitude) ? (
+                    // GPS-derived (drifting) beaconed altitude: no stable antenna
+                    // viewpoint, so the backend writes neither horizon - explain
+                    // instead of showing stale charts or a meaningless altitude
+                    <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>{t('ground.altitude_unstable')}</div>
+                ) : (
+                    <>
+                        <HorizonDetails station={station} period={dateRange?.start || file} env={env} setHorizonHover={setHorizonHover} groundHoverBearing={horizonHover?.source === 'ground' ? horizonHover.bearing : null} />
+                        <GroundDetails station={station} horizonHover={horizonHover} setHorizonHover={setHorizonHover} beaconAltitude={stationData?.beaconAltitude ?? null} maxRangeKm={maxRangeKm} env={env} />
+                    </>
+                )}
                 <div style={{fontSize: '0.75rem', lineHeight: 1.4, marginBottom: '0.75em'}}>{capRange.modelKm == null ? t('ground.capability_none', {max: CAPABILITY_MAX_RANGE_KM}) : capRange.clamped === 'max' ? t('ground.capability_max', {db: capabilityDb!.toFixed(1), model: Math.round(capRange.modelKm), max: CAPABILITY_MAX_RANGE_KM}) : capRange.clamped === 'min' ? t('ground.capability_min', {db: capabilityDb!.toFixed(1), model: Math.max(1, Math.round(capRange.modelKm)), min: CAPABILITY_MIN_RANGE_KM}) : t('ground.capability', {db: capabilityDb!.toFixed(1), km: Math.round(capRange.km)})}</div>
                 {serverUptimePercent != null && serverUptimePercent < 100 && <UptimeBar uptime={serverUptimePercent} label={t('server.uptime_title')} />}
                 <br />

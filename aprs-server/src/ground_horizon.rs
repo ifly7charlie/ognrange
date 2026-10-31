@@ -117,13 +117,105 @@ fn is_candidate(coarse_angle_deg: f64, distance_km: f64, margin_m: f64, skyline_
     coarse_angle_deg + margin_deg >= skyline_deg
 }
 
+// Drifting beacon altitude. Some receivers (Avionix ADS-B/OGN boxes, NEMO
+// relays) beacon a live GPS altitude instead of a configured one, so /A=
+// moves by metres on every beacon - each change would regenerate the terrain
+// file and shift the receive-horizon viewpoint. Such stations are flagged
+// with a sentinel stored IN StationDetails.beacon_altitude (no extra field,
+// and it reaches the frontend as the exported beaconAltitude): values >=
+// DRIFT_SENTINEL_BASE mean "drifting", and also carry the raw altitude that
+// started the current stable run plus how many consecutive beacons have
+// matched it, so a station whose operator configures a fixed altitude
+// recovers on its own. All sentinel arithmetic lives in the helpers below.
+
+/// Lowest value of the sentinel band - far above any /A= the tracker accepts
+/// (see DRIFT_RAW_RANGE_M; six-digit feet top out at ~304,800m)
+const DRIFT_SENTINEL_BASE: f64 = 1_000_000.0;
+/// Raw altitudes are encoded offset by this so negative /A= values fit
+const DRIFT_RAW_OFFSET_M: f64 = 500_000.0;
+/// Sentinel step per stable-beacon count; raw + offset stays below it
+const DRIFT_COUNT_STRIDE: f64 = 1_000_000.0;
+/// Raw /A= altitudes the tracker accepts: everything the encoding can carry,
+/// so a stored real altitude can never land in the sentinel band
+const DRIFT_RAW_RANGE_M: std::ops::Range<f64> =
+    -DRIFT_RAW_OFFSET_M..DRIFT_COUNT_STRIDE - DRIFT_RAW_OFFSET_M;
+/// A beacon this far from the established altitude marks the station
+/// drifting - the same change that would otherwise regenerate the terrain
+/// file. A one-off operator correction also trips it briefly and recovers
+/// with the new value
+const DRIFT_THRESHOLD_M: f64 = BEACON_REGEN_THRESHOLD_M;
+/// Beacons within this of the stable run's first value count as stable
+/// (/A= is whole feet, so a configured value repeats to within 0.3m)
+const DRIFT_STABLE_TOLERANCE_M: f64 = 1.0;
+/// Consecutive beacons matching the stable run's first value that restore a
+/// real altitude (~30min at the usual 5min location beacon interval)
+const DRIFT_RECOVERY_BEACONS: u32 = 6;
+
+/// Whether a stored beacon_altitude is the drifting sentinel
+pub fn beacon_altitude_drifting(beacon_altitude: Option<f64>) -> bool {
+    beacon_altitude.is_some_and(|v| v >= DRIFT_SENTINEL_BASE)
+}
+
+/// The stored beacon_altitude as a real m MSL altitude: None when no beacon
+/// is known or the station is drifting. Every consumer that wants an
+/// altitude goes through this (or beacon_agl_m)
+pub fn real_beacon_altitude(beacon_altitude: Option<f64>) -> Option<f64> {
+    beacon_altitude.filter(|_| !beacon_altitude_drifting(beacon_altitude))
+}
+
+fn encode_drift(run_raw_m: f64, stable_count: u32) -> f64 {
+    DRIFT_SENTINEL_BASE + stable_count as f64 * DRIFT_COUNT_STRIDE + (run_raw_m + DRIFT_RAW_OFFSET_M)
+}
+
+/// (raw altitude that started the stable run, consecutive stable beacons)
+fn decode_drift(sentinel: f64) -> (f64, u32) {
+    let rel = sentinel - DRIFT_SENTINEL_BASE;
+    let count = (rel / DRIFT_COUNT_STRIDE).floor().clamp(0.0, (DRIFT_RECOVERY_BEACONS - 1) as f64);
+    (rel - count * DRIFT_COUNT_STRIDE - DRIFT_RAW_OFFSET_M, count as u32)
+}
+
+/// Next stored beacon_altitude after a beacon at the primary site carrying
+/// `raw_m` (m MSL). `current` None = nothing known yet (or a new site after
+/// a rotation, which re-evaluates from scratch): the raw value is taken as
+/// is. A real value absorbs sub-threshold changes (kept, so slow creep still
+/// accumulates against it) and is replaced by the sentinel on a larger
+/// change. While drifting, DRIFT_RECOVERY_BEACONS beacons in a row within
+/// tolerance of the run's first value restore the real altitude - one
+/// material change, so beacon_changed regenerates the terrain file once.
+/// Unencodable (absurd) raw values are ignored
+pub fn track_beacon_altitude(current: Option<f64>, raw_m: f64) -> Option<f64> {
+    if !DRIFT_RAW_RANGE_M.contains(&raw_m) {
+        return current;
+    }
+    match current {
+        None => Some(raw_m),
+        Some(v) if v < DRIFT_SENTINEL_BASE => {
+            if (raw_m - v).abs() >= DRIFT_THRESHOLD_M {
+                Some(encode_drift(raw_m, 0))
+            } else {
+                Some(v)
+            }
+        }
+        Some(v) => {
+            let (run_raw_m, count) = decode_drift(v);
+            if (raw_m - run_raw_m).abs() > DRIFT_STABLE_TOLERANCE_M {
+                Some(encode_drift(raw_m, 0))
+            } else if count + 1 >= DRIFT_RECOVERY_BEACONS {
+                Some(raw_m)
+            } else {
+                Some(encode_drift(run_raw_m, count + 1))
+            }
+        }
+    }
+}
+
 /// Antenna height above ground from the beaconed MSL altitude against the
 /// DEM ground, when the difference is sane (0..=300m - OGN station altitude
 /// configs are often 0, site ground level, or feet-as-metres). None when the
-/// beacon is missing or implausible - the caller falls back to the
+/// beacon is missing, drifting or implausible - the caller falls back to the
 /// configured default
 pub fn beacon_agl_m(beacon_altitude: Option<f64>, ground_m: f64) -> Option<f64> {
-    beacon_altitude
+    real_beacon_altitude(beacon_altitude)
         .map(|alt| alt - ground_m)
         .filter(|agl| (0.0..=300.0).contains(agl))
 }
@@ -170,6 +262,46 @@ fn great_circle_distance_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
 
 fn clamp_i16(elevation_m: f64) -> i16 {
     elevation_m.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
+}
+
+/// Hilbert grid side for queue ordering: 2^16 cells per axis (~600m at the
+/// equator), comfortably finer than a z11 tile
+const QUEUE_ORDER_BITS: u32 = 16;
+
+/// Generation-queue sort key: Hilbert-curve distance of the station's
+/// web-mercator position. Consecutive keys are adjacent on the map, so a
+/// backfill sorted by this walks the fleet geographically and neighbouring
+/// stations reuse each other's DEM tiles from the RAM LRU instead of
+/// evicting them. Mercator maths copied from elevation.rs::
+/// point_to_tile_fraction (kept local for the bin tool's include set)
+pub fn queue_order_key(lat: f64, lng: f64) -> u64 {
+    let n = 1u32 << QUEUE_ORDER_BITS;
+    let lat_rad = lat.clamp(-85.0511, 85.0511).to_radians();
+    let fx = (lng + 180.0) / 360.0;
+    let fy = (1.0 - lat_rad.tan().asinh() / std::f64::consts::PI) / 2.0;
+    let cell = |f: f64| ((f * n as f64) as u32).min(n - 1);
+    hilbert_d(n, cell(fx), cell(fy))
+}
+
+/// Hilbert distance of cell (x, y) on an n x n grid (n a power of two)
+fn hilbert_d(n: u32, mut x: u32, mut y: u32) -> u64 {
+    let mut d = 0u64;
+    let mut s = n / 2;
+    while s > 0 {
+        let rx = (x & s != 0) as u32;
+        let ry = (y & s != 0) as u32;
+        d += s as u64 * s as u64 * ((3 * rx) ^ ry) as u64;
+        // Rotate the quadrant so the sub-curve joins up with its neighbours
+        if ry == 0 {
+            if rx == 1 {
+                x = n - 1 - x;
+                y = n - 1 - y;
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        s /= 2;
+    }
+    d
 }
 
 pub struct GroundHorizon {
@@ -310,7 +442,9 @@ pub fn beacon_changed(current: Option<f64>, recorded: Option<f64>) -> bool {
 /// generation position, the station has moved beyond the move threshold, or
 /// the beaconed antenna altitude has materially changed since the file was
 /// written (an operator correcting their configured altitude gets a fresh
-/// viewpoint without having to move the station)
+/// viewpoint without having to move the station). Never for a drifting
+/// beacon altitude: there is no stable viewpoint to generate from, and the
+/// sentinel must not reach beacon_changed
 pub fn needs_regeneration(
     output_dir: &str,
     station_name: &str,
@@ -320,6 +454,9 @@ pub fn needs_regeneration(
     lng: f64,
     beacon_altitude: Option<f64>,
 ) -> bool {
+    if beacon_altitude_drifting(beacon_altitude) {
+        return false;
+    }
     if !std::path::Path::new(&gz_path(output_dir, station_name)).exists() {
         return true;
     }
@@ -590,6 +727,38 @@ mod tests {
     }
 
     #[test]
+    fn hilbert_walk_is_contiguous() {
+        // Every cell gets a unique distance and each step along the curve
+        // moves to an edge-adjacent cell - the locality the queue relies on
+        let n = 16u32;
+        let mut cells = vec![None; (n * n) as usize];
+        for x in 0..n {
+            for y in 0..n {
+                let d = hilbert_d(n, x, y) as usize;
+                assert!(cells[d].is_none(), "distance {} assigned twice", d);
+                cells[d] = Some((x as i64, y as i64));
+            }
+        }
+        for pair in cells.windows(2) {
+            let ((x0, y0), (x1, y1)) = (pair[0].unwrap(), pair[1].unwrap());
+            assert_eq!((x0 - x1).abs() + (y0 - y1).abs(), 1, "jump {:?} -> {:?}", pair[0], pair[1]);
+        }
+    }
+
+    #[test]
+    fn queue_order_groups_neighbours() {
+        // Two stations a few km apart sort far closer together than either
+        // does to a station on another continent
+        let a = queue_order_key(47.00, 8.00) as i128;
+        let b = queue_order_key(47.03, 8.04) as i128;
+        let far = queue_order_key(-33.9, 151.2) as i128;
+        assert!((a - b).abs() < (a - far).abs() / 1000);
+        // Poles and the antimeridian stay in range
+        queue_order_key(90.0, 180.0);
+        queue_order_key(-90.0, -180.0);
+    }
+
+    #[test]
     fn substeps_track_pixel_size() {
         // z7 pixels (~900m at 45N) are coarser than the 500m step: no supersampling
         assert_eq!(substeps(7, 45.0), 1);
@@ -812,6 +981,143 @@ mod tests {
         assert!(needs_regeneration(out, "TEST", pos, Some(24.1), 47.0, 8.0, Some(42.1)));
         // Stable beacon: no churn
         assert!(!needs_regeneration(out, "TEST", pos, Some(42.1), 47.0, 8.0, Some(42.1)));
+
+        // Drifting beacon: never generated, whatever else is stale
+        let drifting = track_beacon_altitude(Some(42.1), 60.0);
+        assert!(!needs_regeneration(out, "TEST", pos, Some(42.1), 47.0, 8.0, drifting));
+        assert!(!needs_regeneration(out, "TEST", None, None, 47.009, 8.0, drifting));
+        std::fs::remove_file(gz_path(out, "TEST")).unwrap();
+        assert!(!needs_regeneration(out, "TEST", pos, None, 47.0, 8.0, drifting));
+    }
+
+    #[test]
+    fn stable_beacon_altitude_never_drifts() {
+        let mut alt = None;
+        for _ in 0..20 {
+            alt = track_beacon_altitude(alt, 240.18);
+            assert_eq!(alt, Some(240.18));
+        }
+        // Sub-threshold wobble (feet rounding) is absorbed against the
+        // established value rather than replacing it
+        assert_eq!(track_beacon_altitude(alt, 241.0), Some(240.18));
+        assert_eq!(track_beacon_altitude(alt, 239.0), Some(240.18));
+        // Negative /A= (below-sea-level sites) is a real altitude too
+        assert_eq!(track_beacon_altitude(None, -400.0), Some(-400.0));
+        assert!(!beacon_altitude_drifting(Some(-400.0)));
+    }
+
+    #[test]
+    fn jittering_beacon_altitude_drifts() {
+        let mut alt = track_beacon_altitude(None, 240.0);
+        for raw in [243.0, 251.5, 238.2, 300.0, 262.1, 245.0, 280.4] {
+            alt = track_beacon_altitude(alt, raw);
+            assert!(beacon_altitude_drifting(alt), "{} -> {:?}", raw, alt);
+            assert_eq!(real_beacon_altitude(alt), None);
+        }
+        // Slow creep below the threshold still accumulates against the
+        // established value and trips it
+        let mut alt = Some(100.0);
+        alt = track_beacon_altitude(alt, 101.5);
+        assert!(!beacon_altitude_drifting(alt));
+        alt = track_beacon_altitude(alt, 102.5);
+        assert!(beacon_altitude_drifting(alt));
+    }
+
+    #[test]
+    fn drifting_beacon_recovers_after_stable_run() {
+        // Operator reconfigures 240m -> 255m: briefly drifting, then the new
+        // value is restored after DRIFT_RECOVERY_BEACONS stable beacons
+        let mut alt = track_beacon_altitude(Some(240.0), 255.0);
+        assert!(beacon_altitude_drifting(alt));
+        for i in 1..DRIFT_RECOVERY_BEACONS {
+            // Feet rounding within tolerance still counts as stable
+            alt = track_beacon_altitude(alt, if i % 2 == 0 { 255.0 } else { 255.3 });
+            assert!(beacon_altitude_drifting(alt), "restored early at {}", i);
+        }
+        alt = track_beacon_altitude(alt, 255.0);
+        assert_eq!(alt, Some(255.0));
+        // ...a material change against the file's 240m: exactly one rebuild
+        assert!(beacon_changed(real_beacon_altitude(alt), Some(240.0)));
+        assert!(!beacon_changed(track_beacon_altitude(alt, 255.0), Some(255.0)));
+
+        // A jump mid-run restarts the count from the new value
+        let mut alt = track_beacon_altitude(Some(240.0), 255.0);
+        for _ in 1..DRIFT_RECOVERY_BEACONS {
+            alt = track_beacon_altitude(alt, 255.0);
+        }
+        alt = track_beacon_altitude(alt, 270.0);
+        assert!(beacon_altitude_drifting(alt));
+        for _ in 1..DRIFT_RECOVERY_BEACONS {
+            alt = track_beacon_altitude(alt, 270.0);
+            assert!(beacon_altitude_drifting(alt));
+        }
+        assert_eq!(track_beacon_altitude(alt, 270.0), Some(270.0));
+    }
+
+    #[test]
+    fn drift_lifecycle_regenerates_once() {
+        // Mirrors the generation queue: each beacon, regenerate when needed
+        // (stub file + recorded beacon), and drop the file while drifting
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().to_str().unwrap();
+        let pos = Some([47.0, 8.0]);
+        let mut recorded = Some(240.0);
+        std::fs::write(gz_path(out, "TEST"), b"stub").unwrap();
+
+        let mut alt = Some(240.0);
+        let mut regenerations = 0;
+        let jitter = [252.4, 236.0, 271.9, 244.2, 259.0];
+        let settled = [255.0; 20];
+        for raw in jitter.iter().chain(settled.iter()) {
+            alt = track_beacon_altitude(alt, *raw);
+            if beacon_altitude_drifting(alt) {
+                remove_files(out, "TEST");
+            }
+            if needs_regeneration(out, "TEST", pos, recorded, 47.0, 8.0, alt) {
+                regenerations += 1;
+                std::fs::write(gz_path(out, "TEST"), b"stub").unwrap();
+                recorded = alt;
+            }
+        }
+        assert_eq!(regenerations, 1);
+        assert_eq!(recorded, Some(255.0));
+        assert!(std::path::Path::new(&gz_path(out, "TEST")).exists());
+    }
+
+    #[test]
+    fn drift_sentinel_round_trips() {
+        for raw in [-30_480.0, -400.0, 0.0, 73.152, 304_799.7] {
+            for count in 0..DRIFT_RECOVERY_BEACONS {
+                let v = encode_drift(raw, count);
+                assert!(beacon_altitude_drifting(Some(v)));
+                let (r, c) = decode_drift(v);
+                assert!((r - raw).abs() < 1e-6, "{} -> {}", raw, r);
+                assert_eq!(c, count);
+                // JSON export/import (station DB, per-station JSON) keeps it
+                let back: f64 = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+                assert_eq!(back, v);
+            }
+        }
+        // Absurd /A= values that would land in the band are ignored, so a
+        // stored real altitude can never be mistaken for the sentinel
+        assert_eq!(track_beacon_altitude(None, 2_000_000.0), None);
+        assert_eq!(track_beacon_altitude(Some(240.0), 600_000.0), Some(240.0));
+        assert_eq!(track_beacon_altitude(Some(240.0), f64::NAN), Some(240.0));
+    }
+
+    #[test]
+    fn drifting_sentinel_is_never_agl() {
+        let drifting = track_beacon_altitude(Some(510.0), 530.0);
+        assert!(beacon_altitude_drifting(drifting));
+        // Even against a ground level that would put the encoded value inside
+        // the sane window, the sentinel is not an altitude
+        let raw = drifting.unwrap();
+        assert_eq!(beacon_agl_m(drifting, raw - 10.0), None);
+        assert_eq!(beacon_agl_m(drifting, 500.0), None);
+        assert_eq!(antenna_agl_m(drifting, 500.0), *crate::config::GROUND_STATION_AGL_M);
+        assert_eq!(real_beacon_altitude(drifting), None);
+        assert_eq!(real_beacon_altitude(Some(510.0)), Some(510.0));
+        assert_eq!(real_beacon_altitude(None), None);
     }
 
     #[test]

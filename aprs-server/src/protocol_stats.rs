@@ -392,8 +392,9 @@ impl ProtocolStats {
     }
 
     fn save_state_inner(&self) {
-        let inner = self.inner.lock().unwrap();
-        let state_json = build_state_json(&inner);
+        // Build under the lock, write after releasing it - record_* takes
+        // this lock on every packet
+        let state_json = build_state_json(&self.inner.lock().unwrap());
         let state_path = format!("{}stats/protocol-stats.state.json", *OUTPUT_PATH);
         crate::json_io::write_atomic_path(&state_path, &state_json);
     }

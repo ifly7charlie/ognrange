@@ -36,6 +36,7 @@ pub struct AprsPacketStats {
     pub ignored_h3stationary: u32,
     pub ignored_elevation: u32,
     pub ignored_distance: u32,
+    pub ignored_device: u32,
     pub ignored_future_timestamp: u32,
     pub ignored_stale_timestamp: u32,
     /// Accepted packet counts by layer and hour-of-day (0–23).
@@ -61,9 +62,16 @@ impl AprsPacketStats {
 
     pub fn record_accepted(&mut self, layer: &str, hour: usize) {
         self.accepted += 1;
-        self.hourly
-            .entry(layer.to_string())
-            .or_insert([0u64; 24])[hour % 24] += 1;
+        // get_mut first: entry() needs an owned key, which would allocate a
+        // String on every accepted packet
+        match self.hourly.get_mut(layer) {
+            Some(counts) => counts[hour % 24] += 1,
+            None => {
+                let mut counts = [0u64; 24];
+                counts[hour % 24] = 1;
+                self.hourly.insert(layer.to_string(), counts);
+            }
+        }
     }
 
     pub fn record_delay(&mut self, secs: u64) {
@@ -110,6 +118,10 @@ impl AprsPacketStats {
         self.ignored_distance += 1;
     }
 
+    pub fn record_ignored_device(&mut self) {
+        self.ignored_device += 1;
+    }
+
     /// Record an H3 cell count for a (accumulator_type, layer) pair, keeping the max.
     pub fn record_h3_count(&mut self, acc_type: &str, layer: &str, count: usize) {
         let entry = self
@@ -146,6 +158,9 @@ impl std::fmt::Display for AprsPacketStats {
         }
         if self.ignored_distance > 0 {
             parts.push(format!("distance:{}", self.ignored_distance));
+        }
+        if self.ignored_device > 0 {
+            parts.push(format!("device:{}", self.ignored_device));
         }
         if self.ignored_future_timestamp > 0 {
             parts.push(format!("future_ts:{}", self.ignored_future_timestamp));
@@ -201,6 +216,7 @@ impl DailyStatsData for AprsPacketStats {
             "ignoredH3stationary": self.ignored_h3stationary,
             "ignoredElevation": self.ignored_elevation,
             "ignoredDistance": self.ignored_distance,
+            "ignoredDevice": self.ignored_device,
             "ignoredFutureTimestamp": self.ignored_future_timestamp,
             "ignoredStaleTimestamp": self.ignored_stale_timestamp,
             "hourly": hourly,

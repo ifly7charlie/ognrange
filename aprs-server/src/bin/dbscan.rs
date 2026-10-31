@@ -22,7 +22,7 @@
 #[path = "../horizon.rs"] mod horizon;
 #[path = "../rollup.rs"] mod rollup;
 #[path = "../stationfile.rs"] mod stationfile;
-#[path = "../ignore_station.rs"] mod ignore_station;
+#[path = "../ignore_list.rs"] mod ignore_list;
 #[path = "../elevation.rs"] mod elevation;
 #[path = "../h3cache.rs"] mod h3cache;
 

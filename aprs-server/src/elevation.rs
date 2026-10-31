@@ -150,6 +150,7 @@ pub struct ElevationService {
     net_fetches: AtomicU64,
     net_failures: AtomicU64,
     net_time_ms: AtomicU64,
+    evictions: AtomicU64,
 }
 
 /// Snapshot of the in-RAM tile cache plus cumulative lookup counters.
@@ -169,6 +170,8 @@ pub struct TileCacheStats {
     pub net_failures: u64,
     /// Wall time spent on network fetches (successes and failures)
     pub net_time_ms: u64,
+    /// Tiles pushed out of the full LRU to make room (churn)
+    pub evictions: u64,
 }
 
 /// On-disk tile cache directory. DEM tiles are immutable raw PNG bytes keyed
@@ -215,6 +218,7 @@ impl ElevationService {
             net_fetches: AtomicU64::new(0),
             net_failures: AtomicU64::new(0),
             net_time_ms: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
         }
     }
 
@@ -248,6 +252,7 @@ impl ElevationService {
             net_fetches: self.net_fetches.load(Ordering::Relaxed),
             net_failures: self.net_failures.load(Ordering::Relaxed),
             net_time_ms: self.net_time_ms.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
         }
     }
 
@@ -342,7 +347,13 @@ impl ElevationService {
 
         let tile = Arc::new(tile);
         let mut cache = self.cache.lock().await;
-        cache.put(key, tile.clone());
+        // push hands back the displaced entry: a different key is an LRU
+        // eviction, the same key is a concurrent loader that beat us to it
+        if let Some((evicted, _)) = cache.push(key, tile.clone()) {
+            if evicted != key {
+                self.evictions.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         Some(tile)
     }
 

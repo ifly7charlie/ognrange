@@ -9,7 +9,7 @@ mod ground_horizon;
 mod h3cache;
 mod horizon;
 mod json_io;
-mod ignore_station;
+mod ignore_list;
 mod ntfy;
 mod layers;
 mod protocol_stats;
@@ -41,6 +41,7 @@ use layers::{
     get_write_layers, is_presence_only, layer_from_dest_callsign, layer_mask_from_set, Layer,
     PRESENCE_SIGNAL,
 };
+use packet_stats::AprsPacketStats;
 use station::{StationDetails, StationManager};
 use db::Storage;
 use types::{Epoch, H3Index, StationId, StationName};
@@ -509,6 +510,15 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                             process_packet(&state, &packet, &raw, flarm_num).await;
                         } else {
                             // Station beacon or status
+                            // Receivers without a position fix beacon 0,0 - drop
+                            // before it can set or move the station location
+                            if packet.packet_type == PacketType::Location
+                                && packet.latitude == Some(0.0)
+                                && packet.longitude == Some(0.0)
+                            {
+                                reject_log::log_reject("station_null_island", &raw);
+                                continue;
+                            }
                             let station_name =
                                 state.normalise_case(&packet.source_callsign);
                             let sn = StationName(station_name);
@@ -516,7 +526,7 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
                             let is_station = packet.dest_callsign == "OGNSDR"
                                 || raw.contains("qAC");
 
-                            if is_station && !ignore_station::ignore_station(sn.as_str()) {
+                            if is_station && !ignore_list::ignore_station(sn.as_str()) {
                                 if state.station_manager.get(&sn).is_none() {
                                     reject_log::log_reject("beacon_no_traffic", &raw);
                                 } else {
@@ -589,6 +599,12 @@ async fn packet_processor(state: Arc<AppState>, mut event_rx: mpsc::Receiver<apr
     }
 }
 
+/// Apply a stats change to both the station's and the global counters
+fn record_stat(state: &AppState, name: &StationName, f: impl Fn(&mut AprsPacketStats)) {
+    state.station_manager.modify(name, |d| f(&mut d.stats));
+    state.global_stats.with_data(|d| f(d));
+}
+
 /// Process a single aircraft position packet
 async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_num: u32) {
     // Extract station from last digipeater
@@ -600,7 +616,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     let station_name = StationName(state.normalise_case(station_str));
 
     // Check ignore list
-    if ignore_station::ignore_station(station_name.as_str()) {
+    if ignore_list::ignore_station(station_name.as_str()) {
         state
             .global_stats
             .ignored_station
@@ -634,20 +650,27 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
     }
 
-    // Allocate (or retrieve) the station entry and count this packet once
-    let mut station_details = match state.station_manager.get_or_create(&station_name) {
-        Some(d) => d,
+    // Allocate (or retrieve) the station entry, keeping only what the
+    // filters below read, and count this packet once
+    let (station_id, station_pos) = match state
+        .station_manager
+        .get_or_create_with(&station_name, |d| (d.id, d.lat.zip(d.lng)))
+    {
+        Some(v) => v,
         None => return,
     };
-    station_details.stats.record_raw();
-    state.global_stats.with_data(|d| d.record_raw());
+    record_stat(state, &station_name, AprsPacketStats::record_raw);
+
+    if ignore_list::ignore_device(&packet.source_callsign) {
+        record_stat(state, &station_name, AprsPacketStats::record_ignored_device);
+        reject_log::log_reject("ignored_device", raw);
+        return;
+    }
 
     let timestamp = match packet.timestamp {
         Some(ts) => ts,
         None => {
-            station_details.stats.record_invalid_timestamp();
-            state.global_stats.with_data(|d| d.record_invalid_timestamp());
-            state.station_manager.update(&station_details);
+            record_stat(state, &station_name, AprsPacketStats::record_invalid_timestamp);
             reject_log::log_reject("invalid_timestamp", raw);
             return;
         }
@@ -661,16 +684,14 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     // Count packets with timestamps far in the future - logged for diagnostics,
     // but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp > now_secs + *FUTURE_PACKET_CUTOFF_SECS {
-        station_details.stats.record_ignored_future_timestamp();
-        state.global_stats.with_data(|d| d.record_ignored_future_timestamp());
+        record_stat(state, &station_name, AprsPacketStats::record_ignored_future_timestamp);
         reject_log::log_reject("future_timestamp", raw);
     }
 
     // Count packets with timestamps older than STALE_PACKET_CUTOFF_SECS - logged for
     // diagnostics, but still processed (hourly stats use server receive time so no chart pollution).
     if timestamp < now_secs.saturating_sub(*STALE_PACKET_CUTOFF_SECS) {
-        station_details.stats.record_ignored_stale_timestamp();
-        state.global_stats.with_data(|d| d.record_ignored_stale_timestamp());
+        record_stat(state, &station_name, AprsPacketStats::record_ignored_stale_timestamp);
         reject_log::log_reject("stale_timestamp", raw);
     }
 
@@ -678,9 +699,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     if layer == Layer::Ogntrk {
         if let Some(first_digi) = packet.digipeaters.first() {
             if !first_digi.callsign.starts_with("qA") {
-                station_details.stats.record_ignored_tracker();
-                state.global_stats.with_data(|d| d.record_ignored_tracker());
-                state.station_manager.update(&station_details);
+                record_stat(state, &station_name, AprsPacketStats::record_ignored_tracker);
                 reject_log::log_reject("ogntrk_relay", raw);
                 return;
             }
@@ -697,13 +716,11 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     // map and, via min-angle selection, wrecks the horizon chart. Checked before
     // the elevation lookups so garbage positions don't pull in far-away DEM
     // tiles. Skipped until the station's own position is known.
-    if let (Some(slat), Some(slng)) = (station_details.lat, station_details.lng) {
+    if let Some((slat, slng)) = station_pos {
         if (slat != 0.0 || slng != 0.0)
             && station::great_circle_distance(slat, slng, lat, lng) > *MAX_PACKET_DISTANCE_KM
         {
-            station_details.stats.record_ignored_distance();
-            state.global_stats.with_data(|d| d.record_ignored_distance());
-            state.station_manager.update(&station_details);
+            record_stat(state, &station_name, AprsPacketStats::record_ignored_distance);
             reject_log::log_reject("distance_too_far", raw);
             return;
         }
@@ -726,9 +743,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         let raw_rot = extract_rotation(comment);
         let raw_vc = extract_vertical_speed(comment);
         if raw_rot == 0.0 && raw_vc < 30.0 {
-            station_details.stats.record_ignored_stationary();
-            state.global_stats.with_data(|d| d.record_ignored_stationary());
-            state.station_manager.update(&station_details);
+            record_stat(state, &station_name, AprsPacketStats::record_ignored_stationary);
             // Update aircraft seen time (always succeeds - entry created above)
             let mut all_aircraft = state.all_aircraft.lock().await;
             if let Some(aircraft) = all_aircraft.get_mut(&(layer, flarm_num)) {
@@ -756,9 +771,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
         }
 
         if signal == 0 {
-            station_details.stats.record_ignored_signal0();
-            state.global_stats.with_data(|d| d.record_ignored_signal0());
-            state.station_manager.update(&station_details);
+            record_stat(state, &station_name, AprsPacketStats::record_ignored_signal0);
             reject_log::log_reject("signal_zero", raw);
             return;
         }
@@ -768,7 +781,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     let gap: u8;
     let first: bool;
     {
-        let gs_key = (layer, station_details.id.0, flarm_num);
+        let gs_key = (layer, station_id.0, flarm_num);
         let mut aircraft_station = state.aircraft_station.lock().await;
         let mut all_aircraft = state.all_aircraft.lock().await;
 
@@ -811,9 +824,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
             let s = aircraft.h3s.len() as u32;
             if s > 0 && aircraft.packets / s > 90 {
-                station_details.stats.record_ignored_h3stationary();
-                state.global_stats.with_data(|d| d.record_ignored_h3stationary());
-                state.station_manager.update(&station_details);
+                record_stat(state, &station_name, AprsPacketStats::record_ignored_h3stationary);
                 return;
             }
         }
@@ -823,34 +834,32 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
     let write_layers = get_write_layers(layer);
     let hour = ((now_secs / 3600) % 24) as usize;
 
-    let new_mask = station_details.layer_mask.unwrap_or(0) | layer_mask_from_set(&write_layers);
-    station_details.layer_mask = Some(new_mask);
-    station_details.layers = layers::layer_names_from_mask(new_mask);
+    let packet_mask = layer_mask_from_set(&write_layers);
+    state.station_manager.modify(&station_name, |d| {
+        let old_mask = d.layer_mask.unwrap_or(0);
+        let new_mask = old_mask | packet_mask;
+        if d.layer_mask != Some(new_mask) {
+            d.layer_mask = Some(new_mask);
+            d.layers = layers::layer_names_from_mask(new_mask);
+        }
 
-    // Update last packet time — use receive time (wall clock) not packet timestamp,
-    // because rollup's "no traffic" skip compares this against accumulator boundaries
-    // which are wall-clock-based. Using the APRS timestamp (which can lag) would cause
-    // stations to be falsely skipped when packets arrive just after a boundary with
-    // timestamps from just before it.
-    station_details.last_packet = Some(Epoch(
-        station_details
-            .last_packet
-            .map(|e| e.0.max(now_secs))
-            .unwrap_or(now_secs),
-    ));
-    // Also track the APRS packet timestamp for display/export purposes
-    station_details.last_packet_packet_time = Some(Epoch(
-        station_details
-            .last_packet_packet_time
-            .map(|e| e.0.max(timestamp))
-            .unwrap_or(timestamp),
-    ));
-    state.station_manager.update(&station_details);
+        // Update last packet time — use receive time (wall clock) not packet timestamp,
+        // because rollup's "no traffic" skip compares this against accumulator boundaries
+        // which are wall-clock-based. Using the APRS timestamp (which can lag) would cause
+        // stations to be falsely skipped when packets arrive just after a boundary with
+        // timestamps from just before it.
+        d.last_packet = Some(Epoch(d.last_packet.map(|e| e.0.max(now_secs)).unwrap_or(now_secs)));
+        // Also track the APRS packet timestamp for display/export purposes
+        d.last_packet_packet_time = Some(Epoch(
+            d.last_packet_packet_time
+                .map(|e| e.0.max(timestamp))
+                .unwrap_or(timestamp),
+        ));
+    });
 
     // Async elevation lookup and H3 update
     let elevation_service = &state.elevation;
     let h3_cache = &state.h3_cache;
-    let station_id = station_details.id;
 
     let gl = elevation_service.get_elevation(lat, lng).await;
     let agl = (altitude as f64 - gl).clamp(0.0, 55000.0).round() as u16;
@@ -861,9 +870,7 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Filter bogus altitude data
     if (layer == Layer::Adsb && coarse_agl > 4500) || coarse_agl > 10000 {
-        station_details.stats.record_ignored_elevation();
-        state.global_stats.with_data(|d| d.record_ignored_elevation());
-        state.station_manager.update(&station_details);
+        record_stat(state, &station_name, AprsPacketStats::record_ignored_elevation);
         if layer != Layer::Adsb {
             reject_log::log_reject("altitude_too_high", raw);
         }
@@ -872,17 +879,12 @@ async fn process_packet(state: &AppState, packet: &AprsPacket, raw: &str, flarm_
 
     // Packet passed all filters - count as accepted
     let delay = now_secs.saturating_sub(timestamp) as u64;
-    station_details.stats.record_delay(delay);
-    for wl in &write_layers {
-        station_details.stats.record_accepted(wl.name(), hour);
-    }
-    state.global_stats.with_data(|d| {
-        d.record_delay(delay);
+    record_stat(state, &station_name, |s| {
+        s.record_delay(delay);
         for wl in &write_layers {
-            d.record_accepted(wl.name(), hour);
+            s.record_accepted(wl.name(), hour);
         }
     });
-    state.station_manager.update(&station_details);
 
     state.protocol_stats.record_accepted(&packet.dest_callsign, coarse_agl);
     for wl in &write_layers {
@@ -1073,6 +1075,7 @@ async fn periodic_tasks(state: Arc<AppState>) {
         let net_d = tile.net_fetches.saturating_sub(last_tile.net_fetches);
         let fail_d = tile.net_failures.saturating_sub(last_tile.net_failures);
         let net_secs = tile.net_time_ms.saturating_sub(last_tile.net_time_ms) as f64 / 1000.0;
+        let evict_d = tile.evictions.saturating_sub(last_tile.evictions);
         let lookups = ram_d + disk_d + net_d + fail_d;
         let per_zoom = tile
             .per_zoom
@@ -1089,13 +1092,14 @@ async fn periodic_tasks(state: Arc<AppState>) {
             state.station_manager.next_station_id() - 1
         );
         info!(
-            "tile lookups: {} ({:.1}% ram, {} disk, {} net, {} failed, {:.1}s fetching)",
+            "tile lookups: {} ({:.1}% ram, {} disk, {} net, {} failed, {:.1}s fetching), {} evicted",
             lookups,
             if lookups > 0 { ram_d as f64 * 100.0 / lookups as f64 } else { 0.0 },
             disk_d,
             net_d,
             fail_d,
-            net_secs
+            net_secs,
+            evict_d
         );
         last_tile = tile;
         info!(
@@ -1138,15 +1142,21 @@ async fn status_writer(state: Arc<AppState>) {
 
         let acc = state.accumulators.read().await.clone();
 
-        // Write server-level stats. Passing acc for both old and new means
-        // bucket == new_bucket everywhere, so no accumulator resets fire -
-        // this is a pure snapshot write.
-        state.protocol_stats.write_stats(&acc, &acc);
-        state.global_stats.write_and_maybe_reset(&acc, &acc);
-        state.global_uptime.write_snapshot(&acc.day.file);
+        // Synchronous file I/O (thousands of station files) - on the blocking
+        // pool so it can't occupy a runtime worker and starve the APRS reader
+        let stats_state = state.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            // Write server-level stats. Passing acc for both old and new means
+            // bucket == new_bucket everywhere, so no accumulator resets fire -
+            // this is a pure snapshot write.
+            stats_state.protocol_stats.write_stats(&acc, &acc);
+            stats_state.global_stats.write_and_maybe_reset(&acc, &acc);
+            stats_state.global_uptime.write_snapshot(&acc.day.file);
 
-        // Write per-station status JSONs from live in-memory data
-        state.station_manager.write_status_snapshots(&acc);
+            // Write per-station status JSONs from live in-memory data
+            stats_state.station_manager.write_status_snapshots(&acc);
+        })
+        .await;
     }
 }
 
@@ -1411,8 +1421,9 @@ async fn outage_monitor(state: Arc<AppState>) {
 }
 
 /// A station the ground-horizon queue should generate a terrain file for:
-/// real, non-mobile, valid, positioned, and missing/stale file (moved, or
-/// the beaconed antenna altitude changed since generation). Returns the
+/// real, non-mobile, valid, positioned, beaconed altitude not drifting, and
+/// missing/stale file (moved, or the beaconed antenna altitude changed since
+/// generation). Returns the
 /// position to generate at: the primary location, not the live fix - a
 /// bouncing station (two receivers sharing a callsign) toggles lat/lng
 /// between sites on every packet, but the primary only changes on a
@@ -1434,6 +1445,8 @@ fn ground_horizon_candidate(details: &StationDetails) -> Option<(f64, f64)> {
     if !lat.is_finite() || !lng.is_finite() || (lat == 0.0 && lng == 0.0) {
         return None;
     }
+    // needs_regeneration also refuses a drifting beacon altitude (no stable
+    // viewpoint); its stale file is dropped by remove_drifting_ground_horizon
     let output_dir = config::output_dir(details.station.as_str());
     ground_horizon::needs_regeneration(
         &output_dir,
@@ -1445,6 +1458,22 @@ fn ground_horizon_candidate(details: &StationDetails) -> Option<(f64, f64)> {
         details.beacon_altitude,
     )
     .then_some((lat, lng))
+}
+
+/// Drop the terrain file of a station whose beaconed altitude is drifting -
+/// it was generated from one sample of a jittery viewpoint. A no-op once
+/// gone; after recovery the missing file makes the station a candidate
+/// again, so it is regenerated exactly once. Returns the files removed
+fn remove_drifting_ground_horizon(details: &StationDetails) -> usize {
+    if !ground_horizon::beacon_altitude_drifting(details.beacon_altitude) {
+        return 0;
+    }
+    let name = details.station.as_str();
+    let removed = ground_horizon::remove_files(&config::output_dir(name), name);
+    if removed > 0 {
+        info!("{}: removed {} ground-horizon file(s) (beacon altitude drifting)", name, removed);
+    }
+    removed
 }
 
 /// Background ground-horizon generation: a serial FIFO of stations needing a
@@ -1465,6 +1494,10 @@ async fn ground_horizon_task(state: Arc<AppState>) {
     let mut queued: HashSet<StationName> = HashSet::new();
     let mut written = 0usize;
     let mut failed = 0usize;
+    // Tile churn is reported per backfill line, independent of the flush
+    // period (which can outlast the process during a crash loop)
+    let mut last_tile = state.elevation.stats().await;
+    let mut last_written = 0usize;
 
     loop {
         // Strictly between rollups: wait out any in-progress rollup
@@ -1474,17 +1507,23 @@ async fn ground_horizon_task(state: Arc<AppState>) {
         }
 
         // Rescan for candidates; newcomers join the back of the queue.
-        // Sorted so a fleet backfill proceeds in a predictable order
-        let mut discovered: Vec<StationName> = state
-            .station_manager
-            .all_stations()
+        // Sorted along a Hilbert curve so a fleet backfill walks the map and
+        // neighbouring stations share DEM tiles in the RAM cache (name breaks
+        // ties so the order stays predictable)
+        let stations = state.station_manager.all_stations();
+        for d in &stations {
+            remove_drifting_ground_horizon(d);
+        }
+        let mut discovered: Vec<(u64, StationName)> = stations
             .iter()
-            .filter(|d| ground_horizon_candidate(d).is_some())
-            .map(|d| d.station.clone())
-            .filter(|name| !queued.contains(name))
+            .filter(|d| !queued.contains(&d.station))
+            .filter_map(|d| {
+                ground_horizon_candidate(d)
+                    .map(|(lat, lng)| (ground_horizon::queue_order_key(lat, lng), d.station.clone()))
+            })
             .collect();
-        discovered.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        for name in discovered {
+        discovered.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.as_str().cmp(b.1.as_str())));
+        for (_, name) in discovered {
             queued.insert(name.clone());
             queue.push_back(name);
         }
@@ -1548,12 +1587,30 @@ async fn ground_horizon_task(state: Arc<AppState>) {
                 queue.len()
             );
             if written % 25 == 0 || queue.is_empty() {
+                // Shared cache, so packet-path lookups are mixed in - they
+                // are almost all RAM hits and barely move the churn figures
+                let tile = state.elevation.stats().await;
+                let disk_d = tile.disk_hits.saturating_sub(last_tile.disk_hits);
+                let net_d = tile.net_fetches.saturating_sub(last_tile.net_fetches);
+                let evict_d = tile.evictions.saturating_sub(last_tile.evictions);
+                let per = (written - last_written).max(1) as f64;
                 info!(
-                    "ground-horizon backfill: {} written, {} failed attempts, {} queued",
+                    "ground-horizon backfill: {} written, {} failed attempts, {} queued; \
+                     tiles {:.0} loaded/station ({} disk, {} net), {:.0} evicted/station, \
+                     cache {}/{} {:.0}MB",
                     written,
                     failed,
-                    queue.len()
+                    queue.len(),
+                    (disk_d + net_d) as f64 / per,
+                    disk_d,
+                    net_d,
+                    evict_d as f64 / per,
+                    tile.tiles,
+                    tile.max_tiles,
+                    tile.bytes as f64 / (1024.0 * 1024.0)
                 );
+                last_tile = tile;
+                last_written = written;
             }
         } else {
             failed += 1;
@@ -1659,12 +1716,17 @@ async fn rollup_timer(state: Arc<AppState>) {
             });
         }
 
-        // Write protocol and station stats after rollup completes (hourly)
-        state.protocol_stats.write_stats(&old_acc, &new_acc);
-        if write_outputs {
-            state.global_stats.write_and_maybe_reset(&old_acc, &new_acc);
-            state.global_uptime.write_snapshot(&old_acc.day.file);
-        }
+        // Write protocol and station stats after rollup completes (hourly);
+        // file I/O, so on the blocking pool like status_writer
+        let stats_state = state.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            stats_state.protocol_stats.write_stats(&old_acc, &new_acc);
+            if write_outputs {
+                stats_state.global_stats.write_and_maybe_reset(&old_acc, &new_acc);
+                stats_state.global_uptime.write_snapshot(&old_acc.day.file);
+            }
+        })
+        .await;
     }
 }
 
@@ -1699,6 +1761,28 @@ mod tests {
         assert_eq!(ground_horizon_candidate(&d), None);
         d.mobile = false;
         d.valid = false;
+        assert_eq!(ground_horizon_candidate(&d), None);
+    }
+
+    #[test]
+    fn ground_horizon_candidate_skips_drifting_beacon_altitude() {
+        let mgr = station::StationManager::new_for_test();
+        let name = StationName("TEST-GH-DRIFT".to_string());
+        mgr.get_or_create(&name).unwrap();
+        let mut d = mgr.get(&name).unwrap();
+        d.valid = true;
+        mgr.update(&d);
+        // A stable configured altitude: a candidate (no file yet)
+        for ts in [1000, 1300, 1600] {
+            mgr.check_station_moved(&name, 46.0, 7.0, Some(612.0), Epoch(ts), "raw");
+        }
+        assert_eq!(ground_horizon_candidate(&mgr.get(&name).unwrap()), Some((46.0, 7.0)));
+        // A jittering GPS-derived altitude: suppressed
+        for (ts, alt) in [(1900, 640.2), (2200, 618.9), (2500, 655.0)] {
+            mgr.check_station_moved(&name, 46.0, 7.0, Some(alt), Epoch(ts), "raw");
+        }
+        let d = mgr.get(&name).unwrap();
+        assert!(ground_horizon::beacon_altitude_drifting(d.beacon_altitude));
         assert_eq!(ground_horizon_candidate(&d), None);
     }
 }

@@ -35,6 +35,12 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && r
 COPY ./aprs-server/src ./src
 RUN touch src/main.rs && cargo build --release
 
+FROM build-image AS tools-build-image
+COPY ./tsconfig-bin.json ./tsconfig-bin.json
+COPY ./lib ./lib
+COPY ./bin ./bin
+RUN npm run bin:build
+
 # production dependencies only
 FROM build-image AS base-image
 WORKDIR /ognrange
@@ -45,7 +51,7 @@ RUN npm prune --omit=dev && rm -rf node_modules/sharp node_modules/@img
 
 ########### production images
 # distroless: no shell, so CMD/HEALTHCHECK must be exec form
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:3a6f4e6fd37efe00042667d06fd52240f2589ed09b0694fbb3b1bf860030a839 AS next
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:a51c5d631b90e1b298e17a88a307b77f0b959b47de942d033acce0c96be3fb83 AS next
 ARG GIT_REF=unknown
 ENV NEXT_PUBLIC_GIT_REF=$GIT_REF
 ENV NODE_ENV=production
@@ -62,16 +68,29 @@ EXPOSE 3000
 # entrypoint is node
 CMD ["node_modules/next/dist/bin/next", "start"]
 
+# maintenance scripts from bin/, run on demand with the data volumes and
+# .env.local mounted, e.g.
+#   docker run --rm --user 995:1006 -v /srv/ognrange/arrow:/ognrange/data/arrow \
+#     -v /srv/ognrange/.env.local:/ognrange/.env.local:ro <image> dist/bin/purgeuptime.js --help
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:a51c5d631b90e1b298e17a88a307b77f0b959b47de942d033acce0c96be3fb83 AS tools
+WORKDIR /ognrange
+COPY --from=base-image /ognrange/node_modules ./node_modules
+COPY ./LICENSE ./LICENSE
+COPY ./package.json ./
+COPY --from=tools-build-image /ognrange/dist ./dist
+ENTRYPOINT ["/nodejs/bin/node", "--enable-source-maps"]
+CMD ["dist/bin/dumparrow.js", "--help"]
+
 # static musl binary, rustls with webpki-roots: no libc or CA bundle needed.
 # Runs as root so existing db volume ownership keeps working.
-FROM gcr.io/distroless/static-debian13@sha256:034df5c1737e8241f6ed6423a12e720ee0f6d6f088609ee172f98f6f2166ef5d AS aprs
+FROM gcr.io/distroless/static-debian13@sha256:15f8637509792e05b97d83451b0b6ccfa4abd548f997e406ac1e72c87fe1fa78 AS aprs
 ARG GIT_REF=unknown
 ENV GIT_REF=$GIT_REF
 WORKDIR /ognrange
 COPY --from=aprs-build-image /aprs-server/target/release/aprs-server ./aprs-server
 CMD ["/ognrange/aprs-server"]
 
-FROM httpd:2.4-alpine@sha256:759a1d9178d351185978e41be37a3e91675a4ddc0653aa5df493cfd4c67e24ec AS apache
+FROM httpd:2.4-alpine@sha256:070da7661f0be8a05430b2c125c0cde9e53176b4048c813024021969a0e3893c AS apache
 HEALTHCHECK --interval=10s --retries=5 CMD wget --no-verbose --tries=1 --spider http://apache:8000/ || exit 1
 RUN mkdir -p /ognrange/data
 EXPOSE 8443

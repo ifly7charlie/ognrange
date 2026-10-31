@@ -106,7 +106,7 @@ use crate::coverage::header::{
 };
 use crate::coverage::record::{ArrowGlobal, ArrowStation, CoverageRecord};
 use crate::horizon::{
-    HorizonCollector, HorizonMeta, HorizonRow, HORIZON_EPSILON_DEG, HORIZON_MAX_BREAKPOINTS,
+    FrontierPoint, HorizonCollector, HorizonMeta, HorizonRow, HORIZON_EPSILON_DEG, HORIZON_MAX_BREAKPOINTS,
     HORIZON_MAX_DISTANCE_KM, HORIZON_MIN_DISTANCE_KM, SKYLINE_TOLERANCE_DEG,
 };
 use crate::layers::{is_layer_prefixed, Layer};
@@ -244,8 +244,11 @@ fn evaluate_station_validity(
             .last_activity()
             .map(|e| e.0)
             .unwrap_or(now_epoch); // no timestamp yet → assume valid
-        // Same rule the exported expiresAt shows the frontend
-        let expired = station.expires_at().is_some_and(|e| e.0 <= now_epoch);
+        // Same rule the exported expiresAt shows the frontend. Ignored
+        // stations are expired immediately so adding one to the ignore list
+        // purges its database and strips it from global next rollup
+        let ignored = crate::ignore_list::ignore_station(station.station.as_str());
+        let expired = ignored || station.expires_at().is_some_and(|e| e.0 <= now_epoch);
 
         // Confirm moves: station is bouncing and the previous (original) location
         // hasn't been seen for STATION_MOVE_CONFIRM_DAYS
@@ -285,7 +288,8 @@ fn evaluate_station_validity(
         } else if !expired {
             valid.insert(station.id);
         } else if was_valid {
-            // Only expired by the shorter test-station period
+            // Only expired by the shorter test-station period, or ignored
+            // while still active - deliberate, so kept out of the valve ratio
             if validity_ts > expiry_epoch {
                 test_invalid_count += 1;
             } else {
@@ -293,8 +297,9 @@ fn evaluate_station_validity(
             }
             newly_invalid.insert(station.id);
             info!(
-                "station {} now invalid: expired, last activity {}",
+                "station {} now invalid: {}, last activity {}",
                 station.station,
+                if ignored { "ignored" } else { "expired" },
                 chrono::DateTime::from_timestamp(validity_ts as i64, 0)
                     .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
                     .unwrap_or_else(|| validity_ts.to_string())
@@ -346,7 +351,14 @@ fn evaluate_station_validity(
                 updated.purge_reason = Some("moved".into());
             } else if !is_valid && station.valid && newly_invalid.contains(&station.id) {
                 updated.purged_at = Some(crate::types::Epoch(now_epoch));
-                updated.purge_reason = Some("expired".into());
+                updated.purge_reason = Some(
+                    if crate::ignore_list::ignore_station(station.station.as_str()) {
+                        "ignored"
+                    } else {
+                        "expired"
+                    }
+                    .into(),
+                );
             }
             station_manager.update(&updated);
         }
@@ -590,6 +602,8 @@ pub async fn rollup_all(
             if is_newly_invalid || was_moved {
                 let reason = if was_moved {
                     "moved".to_string()
+                } else if crate::ignore_list::ignore_station(&station_name) {
+                    "ignored".to_string()
                 } else {
                     let last = station_meta
                         .as_ref()
@@ -833,6 +847,10 @@ struct RollupAccumulator {
     activity: RollupActivity,
     /// Number of destination records seen during merge (for logging)
     dest_record_count: usize,
+    /// Destination records deleted this cycle because every contributing
+    /// station became invalid (global only). These cells legitimately vanish
+    /// from the output, so the shrink guard allows for them.
+    dropped_rows: usize,
 }
 
 /// Per-station rollup: open the DB once, roll up all layers, flush and close.
@@ -866,7 +884,8 @@ fn rollup_station_all_layers(
 
     // Horizon bins accumulate across all layers (merged by frequency group)
     // and are written once after the layer loop. None (no position / no
-    // resolved elevation / global) skips horizon output entirely. The
+    // resolved elevation / drifting beacon altitude / global) skips horizon
+    // output entirely. The
     // station's terrain file (when present and generated for this position)
     // provides the below-skyline cell filter; reading it synchronously is
     // fine - we are inside spawn_blocking
@@ -1024,11 +1043,22 @@ fn rollup_station_all_layers(
     // Write per-station JSON for every active-station rollup (not gated by write_json so that
     // beaconActivity, stats, and arrowRecords are always current, not just on hourly writes).
     if !is_global && !cancelled() {
-        if let Some(h) = &horizon {
+        if let Some(h) = &mut horizon {
             if let Ok(mut p) = progress.lock() {
                 p.phase = "horizon".to_string();
             }
             let output_dir = crate::config::output_dir(station_name);
+            // Keep horizons of layers with no traffic this cycle
+            let layer_mask = station_meta.and_then(|m| m.layer_mask).unwrap_or(0);
+            let mut existing: HashMap<(AccumulatorType, String), Option<Vec<HorizonRow>>> = HashMap::new();
+            for (acc_type, file_id, freq) in h.incomplete_horizons(layer_mask) {
+                let rows = existing
+                    .entry((acc_type, file_id.clone()))
+                    .or_insert_with(|| read_arrow_horizon(&output_dir, station_name, acc_type.name(), &file_id));
+                if let Some(rows) = rows {
+                    h.preserve_horizon(acc_type, &file_id, freq, rows);
+                }
+            }
             let meta = h.meta();
             for hf in h.build_files() {
                 match write_arrow_horizon(
@@ -1558,6 +1588,7 @@ fn rollup_layer_core(
             arrow_global_rows: Vec::new(),
             activity,
             dest_record_count: 0,
+            dropped_rows: 0,
         });
     }
 
@@ -1714,6 +1745,7 @@ fn rollup_layer_core(
                 &dest.file,
                 layer_suffix,
                 &dest.arrow_global_rows,
+                dest.dropped_rows,
             )?
         } else {
             write_arrow_station(
@@ -1889,6 +1921,7 @@ fn emit_dest_record(
             None => {
                 // All stations removed - delete from DB
                 deletes.push(key.to_string());
+                dest.dropped_rows += 1;
             }
         }
     } else {
@@ -2005,9 +2038,11 @@ fn write_arrow_station(
 
     // Returns the row count actually on disk (existing count if the shrink guard
     // kept a larger file), not necessarily rows.len().
-    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], true)
+    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], Some(0))
 }
 
+/// `dropped_rows`: cells deleted this cycle by the invalid-station filter,
+/// allowed for by the shrink guard.
 fn write_arrow_global(
     output_dir: &str,
     station_name: &str,
@@ -2015,6 +2050,7 @@ fn write_arrow_global(
     file_id: &str,
     layer_suffix: &str,
     rows: &[ArrowGlobal],
+    dropped_rows: usize,
 ) -> Result<usize, String> {
     if rows.is_empty() {
         return Ok(0);
@@ -2042,7 +2078,7 @@ fn write_arrow_global(
 
     // Returns the row count actually on disk (existing count if the shrink guard
     // kept a larger file), not necessarily rows.len().
-    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], true)
+    write_arrow_file(output_dir, station_name, acc_type, file_id, layer_suffix, &schema, &[batch], Some(dropped_rows))
 }
 
 /// Envelope-breakpoint schema: bp{j}Km/bp{j}Angle nullable pairs (null in
@@ -2120,9 +2156,47 @@ fn write_arrow_horizon(
     let batch = RecordBatch::try_new(schema.clone(), columns)
         .map_err(|e| format!("RecordBatch error: {}", e))?;
 
-    // No shrink guard: a horizon file can legitimately shrink (e.g. a layer
-    // whose commit failed last cycle is simply absent until the next one).
-    write_arrow_file(output_dir, station_name, acc_type, file_id, ".horizon", &schema, &[batch], false)
+    // No shrink guard: a horizon file can legitimately shrink (a viewpoint
+    // change, or the skyline filter appearing, re-filters the cells)
+    write_arrow_file(output_dir, station_name, acc_type, file_id, ".horizon", &schema, &[batch], None)
+}
+
+/// Existing horizon rows; None when absent or unreadable. A move deletes
+/// these files (remove_active_period_outputs), so no position check
+fn read_arrow_horizon(output_dir: &str, station_name: &str, acc_type: &str, file_id: &str) -> Option<Vec<HorizonRow>> {
+    use arrow::array::Array;
+    let path = format!("{}/{}.{}.{}.horizon.arrow.gz", output_dir, station_name, acc_type, file_id);
+    let file = std::fs::File::open(path).ok()?;
+    let reader = StreamReader::try_new(GzDecoder::new(std::io::BufReader::new(file)), None).ok()?;
+
+    let mut rows = Vec::new();
+    for batch in reader {
+        let batch = batch.ok()?;
+        let column = |name: &str| batch.column_by_name(name);
+        let frequency = column("frequency")?.as_any().downcast_ref::<UInt16Array>()?;
+        let bearing = column("bearing")?.as_any().downcast_ref::<Float32Array>()?;
+        let count = column("count")?.as_any().downcast_ref::<UInt32Array>()?;
+        let mut bps: Vec<(&Float32Array, &Float32Array)> = Vec::new();
+        for j in 0..HORIZON_MAX_BREAKPOINTS {
+            let (Some(km), Some(angle)) = (column(&format!("bp{}Km", j)), column(&format!("bp{}Angle", j))) else {
+                break;
+            };
+            bps.push((km.as_any().downcast_ref()?, angle.as_any().downcast_ref()?));
+        }
+        for i in 0..batch.num_rows() {
+            rows.push(HorizonRow {
+                frequency: frequency.value(i),
+                bearing: bearing.value(i),
+                breakpoints: bps
+                    .iter()
+                    .take_while(|(km, angle)| km.is_valid(i) && angle.is_valid(i))
+                    .map(|(km, angle)| FrontierPoint { distance_km: km.value(i), angle: angle.value(i) })
+                    .collect(),
+                count: count.value(i),
+            });
+        }
+    }
+    Some(rows)
 }
 
 /// Count rows (H3 cells) in an existing Arrow.gz, for the shrink guard.
@@ -2148,7 +2222,7 @@ fn write_arrow_file(
     layer_suffix: &str,
     schema: &std::sync::Arc<Schema>,
     batches: &[RecordBatch],
-    shrink_guard: bool,
+    shrink_allowance: Option<usize>,
 ) -> Result<usize, String> {
     let base_name = format!("{}.{}.{}{}", station_name, acc_type, file_id, layer_suffix);
 
@@ -2172,9 +2246,9 @@ fn write_arrow_file(
     // what is already on disk can only be a partial/orphaned rollup clobbering a
     // complete file (e.g. a hanging current drained into an already-closed
     // period). Refuse the swap, keep the existing file, and skip the
-    // uncompressed twin too so the two stay in sync. (The one legitimate shrink
-    // - global station-validity cleanup - is intentionally blocked by this
-    // invariant. Moved stations never hit it: their active-period outputs are
+    // uncompressed twin too so the two stay in sync. `shrink_allowance` (None =
+    // no guard) is the cells global station-validity cleanup deleted this
+    // cycle - a legitimate shrink. (Moved stations never hit it: their active-period outputs are
     // deleted at purge time (remove_active_period_outputs), so the post-move
     // rebuild starts with no existing file.)
     //
@@ -2183,9 +2257,10 @@ fn write_arrow_file(
     // can encode a few bytes smaller, which made the old byte-size guard reject
     // legitimate same-coverage updates as false positives.
     let new_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    let existing_rows = if shrink_guard { count_arrow_rows(&gz_final) } else { None };
+    let allowance = shrink_allowance.unwrap_or(0);
+    let existing_rows = if shrink_allowance.is_some() { count_arrow_rows(&gz_final) } else { None };
     if let Some(existing_rows) = existing_rows {
-        if new_rows < existing_rows {
+        if new_rows + allowance < existing_rows {
             // Keep the rejected partial on disk for inspection/recovery. Name it
             // {base}.rejected.<epoch>.arrow.gz (NOT .arrow.gz.rejected.<epoch>)
             // so it keeps the .arrow.gz extension and opens directly with
@@ -2198,9 +2273,9 @@ fn write_arrow_file(
             let rejected = format!("{}/{}.rejected.{}.arrow.gz", output_dir, base_name, ts);
             let kept = std::fs::rename(&gz_working, &rejected).is_ok();
             warn!(
-                "{}: REFUSING arrow shrink {}.arrow.gz: new {} rows < existing {} rows \
+                "{}: REFUSING arrow shrink {}.arrow.gz: new {} rows + {} dropped < existing {} rows \
                  (partial/orphaned rollup?) - keeping existing file{}",
-                station_name, base_name, new_rows, existing_rows,
+                station_name, base_name, new_rows, allowance, existing_rows,
                 if kept { ", partial saved as .rejected" } else { "" }
             );
             // Report the count that is actually on disk (the kept file) so stats
@@ -2416,6 +2491,17 @@ struct StationDbScan {
     dest_metas: Vec<(AccumulatorType, AccumulatorBucket, Layer, String)>,
 }
 
+impl StationDbScan {
+    /// Bitmask of every layer with an accumulator meta in the DB - the
+    /// station has coverage data for those layers even if no packet for
+    /// them has been seen since the server started.
+    fn layer_mask(&self) -> u8 {
+        let current = self.current_metas.iter().map(|(_, layer, _)| *layer);
+        let dest = self.dest_metas.iter().map(|(_, _, layer, _)| *layer);
+        current.chain(dest).fold(0u8, |mask, layer| mask | layer.bit_mask())
+    }
+}
+
 /// Scan a station DB for accumulator metas using a seeking iterator (like the
 /// TypeScript implementation) - reads only meta keys, seeking past each
 /// accumulator's data range. Current metas for layers not in `layers` are
@@ -2565,7 +2651,7 @@ pub async fn rollup_startup(
                 Err(e) => {
                     error!("Startup rollup: failed to open DB {}: {}", station_path, e);
                     log_progress(&completed);
-                    return (0, 0, 0, 0);
+                    return (0, 0, 0, 0, 0);
                 }
             };
 
@@ -2577,8 +2663,11 @@ pub async fn rollup_startup(
             let Some(scan) = scan_station_db(&mut db, &layers) else {
                 warn!("{}: accumulator meta scan failed - startup mop-up skipped for this station", station_name);
                 log_progress(&completed);
-                return (0, 0, 0, 0);
+                return (0, 0, 0, 0, 0);
             };
+            // Taken before the purge so stale-bucket metas still count: the
+            // data they point to was exported and the station had that layer
+            let db_layer_mask = scan.layer_mask();
             let mut to_purge = scan.to_purge;
             let all_accumulators = scan.dest_metas;
 
@@ -2663,7 +2752,7 @@ pub async fn rollup_startup(
 
             if hanging_buckets.is_empty() {
                 log_progress(&completed);
-                return (migrated, 0usize, 0usize, 0usize);
+                return (migrated, 0usize, 0usize, 0usize, db_layer_mask);
             }
 
             let mut rolled_up = 0usize;
@@ -2739,7 +2828,7 @@ pub async fn rollup_startup(
 
             log_progress(&completed);
 
-            (migrated, rolled_up, arrow, deleted)
+            (migrated, rolled_up, arrow, deleted, db_layer_mask)
         });
 
         tasks.push((task_station_name, progress, spawned_at, handle));
@@ -2749,6 +2838,7 @@ pub async fn rollup_startup(
     let mut total_rolled_up = 0usize;
     let mut total_arrow = 0usize;
     let mut total_deleted = 0usize;
+    let mut masks_repaired = 0usize;
 
     // No timeout: every task is awaited to completion so normal operation
     // never starts while a startup task is still writing (spawn_blocking
@@ -2757,11 +2847,14 @@ pub async fn rollup_startup(
     let warn_interval = std::time::Duration::from_secs(STARTUP_TASK_WARN_SECS);
     for (station_name, progress, spawned_at, handle) in tasks {
         match await_with_warnings(handle, &station_name, &progress, spawned_at, warn_interval, warn_interval).await {
-            Ok((migrated, rolled_up, arrow, deleted)) => {
+            Ok((migrated, rolled_up, arrow, deleted, db_layer_mask)) => {
                 total_migrated += migrated;
                 total_rolled_up += rolled_up;
                 total_arrow += arrow;
                 total_deleted += deleted;
+                if merge_db_layer_mask(station_manager, &station_name, db_layer_mask) {
+                    masks_repaired += 1;
+                }
             }
             Err(e) => {
                 error!("Startup rollup task panicked for {}: {}", station_name, e);
@@ -2776,6 +2869,32 @@ pub async fn rollup_startup(
         total_stations, total_stations, elapsed, speed,
         total_rolled_up, total_arrow, total_deleted, total_migrated
     );
+    if masks_repaired > 0 {
+        info!("startup: added coverage DB layers to the layer mask of {} stations", masks_repaired);
+    }
+}
+
+/// OR the layers found in a station's coverage DB into its layer mask.
+/// The mask otherwise only grows from packets seen by this process, so it
+/// misses layers whose data predates it (e.g. legacy combined coverage from
+/// the TypeScript server, which never recorded a mask). Bits are only ever
+/// added. Returns true if the mask changed.
+fn merge_db_layer_mask(station_manager: &StationManager, station_name: &str, db_layer_mask: u8) -> bool {
+    if db_layer_mask == 0 || station_name == "global" {
+        return false;
+    }
+    let Some(mut details) = station_manager.get(&StationName(station_name.to_string())) else {
+        return false;
+    };
+    let old_mask = details.layer_mask.unwrap_or(0);
+    let new_mask = old_mask | db_layer_mask;
+    if new_mask == old_mask {
+        return false;
+    }
+    details.layer_mask = Some(new_mask);
+    details.layers = crate::layers::layer_names_from_mask(new_mask);
+    station_manager.update_and_persist(&details);
+    true
 }
 
 /// Parse accumulators from a stored meta JSON value.
@@ -3140,6 +3259,44 @@ mod tests {
         assert_eq!(day_rec.count(), 2);
     }
 
+    #[test]
+    fn test_startup_layer_mask_from_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let station_path = tmp.path().join("station_db").to_string_lossy().to_string();
+        let opts = rusty_leveldb::Options { create_if_missing: true, ..Default::default() };
+        let mut db = rusty_leveldb::DB::open(&station_path, opts).unwrap();
+
+        // Combined coverage rolled up into destinations (e.g. legacy TS data)
+        let mut rec = CoverageRecord::new(BufferType::Station);
+        rec.update(1000, 500, 2, 28, 5);
+        let _ = db.put("c/0042/8828308283fffff".as_bytes(), &rec.to_bytes());
+        rollup_station_layer(
+            &mut db, &station_path, "test_mask_station", &test_accumulators(),
+            Layer::Combined, ".combined", None, false, None, &[], &SHUTDOWN,
+            &std::sync::Mutex::new(RollupProgress::default()), None,
+        ).unwrap();
+
+        let scan = scan_station_db(&mut db, &[Layer::Combined, Layer::Adsb]).unwrap();
+        assert_eq!(scan.layer_mask(), Layer::Combined.bit_mask());
+
+        // Since restart the station has only seen ADS-B, so its mask lost combined
+        let mgr = StationManager::new_for_test();
+        let mut d = mgr.get_or_create(&StationName("SALANDA".to_string())).unwrap();
+        d.layer_mask = Some(Layer::Adsb.bit_mask());
+        mgr.update(&d);
+
+        assert!(merge_db_layer_mask(&mgr, "SALANDA", scan.layer_mask()));
+        let s = get_station(&mgr, "SALANDA");
+        let both = Layer::Combined.bit_mask() | Layer::Adsb.bit_mask();
+        assert_eq!(s.layer_mask, Some(both));
+        assert_eq!(s.layers, crate::layers::layer_names_from_mask(both));
+
+        // Already covered: no change, and bits are never removed
+        assert!(!merge_db_layer_mask(&mgr, "SALANDA", Layer::Combined.bit_mask()));
+        assert!(!merge_db_layer_mask(&mgr, "SALANDA", 0));
+        assert_eq!(get_station(&mgr, "SALANDA").layer_mask, Some(both));
+    }
+
     fn test_accumulators() -> Accumulators {
         Accumulators {
             current: AccumulatorEntry { bucket: AccumulatorBucket(0x042), file: String::new(), effective_start: Epoch(0) },
@@ -3278,6 +3435,15 @@ mod tests {
         assert_eq!(schema.metadata().get("skylineFilter").unwrap(), "0");
         assert!(schema.field_with_name("bp0Km").unwrap().is_nullable());
         assert!(schema.field_with_name("bp4Angle").is_ok());
+
+        // Read back for preservation: identical rows, nulls end the breakpoints
+        let read = read_arrow_horizon(&out_dir, "TESTHZSTATION", hf.acc_type.name(), &hf.file_id).unwrap();
+        assert_eq!(read.len(), hf.rows.len());
+        for (a, b) in read.iter().zip(&hf.rows) {
+            assert_eq!((a.frequency, a.bearing, a.count), (b.frequency, b.bearing, b.count));
+            assert_eq!(a.breakpoints, b.breakpoints);
+        }
+        assert!(read_arrow_horizon(&out_dir, "TESTHZSTATION", "month", "1999-01").is_none());
 
         // No shrink guard: a smaller replacement must overwrite
         let fewer = &hf.rows[..1];
@@ -3503,5 +3669,27 @@ mod tests {
         // Verify file exists
         let gz_path = format!("{}/TEST.day.2026-03-12.combined.arrow.gz", output_dir);
         assert!(std::path::Path::new(&gz_path).exists());
+    }
+
+    #[test]
+    fn test_shrink_guard_allows_dropped_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output_dir = tmp.path().to_string_lossy().to_string();
+        let rows = |n: u32| -> Vec<ArrowGlobal> {
+            (0..n).map(|i| ArrowGlobal {
+                h3lo: i, h3hi: 0x88, min_agl: 0, min_alt: 0, min_alt_sig: 0, max_sig: 0,
+                avg_sig: 0, avg_crc: 0, count: 1, avg_gap: 0,
+                stations: String::new(), expected_gap: 0, num_stations: 1,
+            }).collect()
+        };
+        let write = |n: u32, dropped: usize| {
+            write_arrow_global(&output_dir, "global", "year", "2026", "", &rows(n), dropped).unwrap()
+        };
+
+        assert_eq!(write(10, 0), 10);
+        // 2 cells dropped by station-validity cleanup: accepted
+        assert_eq!(write(8, 2), 8);
+        // shrinks by more than was dropped: refused, existing count reported
+        assert_eq!(write(5, 2), 8);
     }
 }

@@ -21,6 +21,16 @@ services:
         volumes:
             - arrow:/ognrange/data/arrow:ro
         restart: always
+        logging:
+            driver: json-file
+            options:
+                max-size: '10m'
+                max-file: '3'
+#        deploy:
+#            resources:
+#                limits:
+#                    cpus: '1'
+#                    memory: 3000M
     aprs:
         image: ghcr.io/ifly7charlie/ognrange/aprs:latest
         platform: linux/amd64
@@ -30,25 +40,31 @@ services:
             target: aprs
             args:
                 GIT_REF: ${GIT_REF:-dev}
-        deploy:
-            resources:
-                limits:
-                    cpus: '1'
-                    memory: 5000M
+#        deploy:
+#            resources:
+#                limits:
+#                    cpus: '2'
+#                    memory: 5000M
         restart: always
-        # settings previously baked into the image from conf/.env.local
-        env_file:
-            - path: ./conf/.env.local
-              required: false
         environment:
             - NEXT_PUBLIC_SITEURL
             - NEXT_PUBLIC_DEM_TILE_URL
             # must match the volume mounts below (defaults are ./db and ./data)
+            # these win over .env.local, dotenvy doesn't override set vars
             - DB_PATH=/ognrange/data/db/
             - OUTPUT_PATH=/ognrange/data/arrow/
+        stop_signal: SIGTERM # SIGINT also works, both take the same flush path
+        stop_grace_period: 3m # time before SIGKILL, allow flush to complete before terminating
+        logging:
+            driver: json-file
+            options:
+                max-size: '50m'
+                max-file: '10'
         volumes:
             - db:/ognrange/data/db
             - arrow:/ognrange/data/arrow
+            # read by aprs-server at startup from its working directory
+            - ./conf/.env.local:/ognrange/.env.local:ro
     apache:
         image: ghcr.io/ifly7charlie/ognrange/apache:latest
         platform: linux/amd64
@@ -59,6 +75,11 @@ services:
         restart: always
         tty: true
         stdin_open: true
+        logging:
+            driver: json-file
+            options:
+                max-size: '10m'
+                max-file: '3'
         volumes:
             - arrow:/ognrange/data/arrow:ro
         depends_on:
