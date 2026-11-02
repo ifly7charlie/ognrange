@@ -9,6 +9,7 @@ import {searchArrowFileInline, searchStationArrowFile, searchMatchingArrowFiles}
 import {H3_GLOBAL_CELL_LEVEL, MAXIMUM_GRAPH_AGE_MSEC, ROLLUP_PERIOD_MINUTES} from '../../../../../lib/common/config';
 
 import {dateBounds} from '../../../../../lib/common/datebounds';
+import {sanitiseQuery} from '../../../../../lib/api/sanitise';
 
 import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
@@ -55,31 +56,25 @@ function buildSeriesData(result: Record<string, Record<string, number>>) {
 
 export default async function getH3Details(req, res) {
     // Top level
-    const selectedFile: string = req.query.file;
-    const lockedH3 = parseInt(req.query.lockedH3 || '0');
-    const h3SplitLong = h3IndexToSplitLong(req.query.h3);
-    const layers = (req.query.layers as string || 'combined').split(',').map((s) => s.trim());
+    const query = sanitiseQuery(req, res, {h3: true});
+    if (!query) return;
+    const {file: selectedFile, locked: lockedH3, layers} = query;
+    const h3SplitLong = h3IndexToSplitLong(query.h3);
     const now = new Date();
 
-    if (!h3SplitLong) {
-        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
-        res.status(200).json({layers: {}});
-        return;
-    }
-
     // Find in the global DB - this is so we can get a c
-    const parentH3 = cellToParent(req.query.h3, H3_GLOBAL_CELL_LEVEL);
+    const parentH3 = cellToParent(query.h3, H3_GLOBAL_CELL_LEVEL);
     const parentH3SplitLong = h3IndexToSplitLong(parentH3);
 
     // Resolve date range from dateStart/dateEnd params, falling back to file param
-    const dateStartParam = (req.query.dateStart as string) || selectedFile || 'year';
-    const dateEndParam = (req.query.dateEnd as string) || selectedFile || 'year';
+    const dateStartParam = query.dateStart || selectedFile || 'year';
+    const dateEndParam = query.dateEnd || selectedFile || 'year';
     const startBounds = dateBounds(dateStartParam);
     const endBounds = dateBounds(dateEndParam);
     const rangeStart = startBounds?.start || `${now.getUTCFullYear()}-01-01`;
     const rangeEnd = endBounds?.end || `${now.getUTCFullYear()}-12-31`;
     let oldest: Date | undefined = undefined;
-    if (!req.query.dateStart && !req.query.dateEnd) {
+    if (!query.dateStart && !query.dateEnd) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         }
@@ -89,7 +84,7 @@ export default async function getH3Details(req, res) {
     const rangeStartParts = rangeStart.split('-');
     const globalFileName = rangeStartParts.length >= 2 ? `month.${rangeStartParts[0]}-${rangeStartParts[1]}` : `year.${rangeStartParts[0]}`;
 
-    console.log(now.toISOString(), ' h3others', selectedFile, rangeStart, rangeEnd, req.query.h3, h3SplitLong);
+    console.log(now.toISOString(), ' h3others', selectedFile, rangeStart, rangeEnd, query.h3, h3SplitLong);
 
     // Find the enclosing global record
     const globalRecord = await searchArrowFileInline('global/global.' + globalFileName + '.arrow.gz', parentH3SplitLong);

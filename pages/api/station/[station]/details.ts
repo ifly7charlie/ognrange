@@ -3,7 +3,7 @@ import {join} from 'path';
 
 import {OUTPUT_PATH, ROLLUP_PERIOD_MINUTES} from '../../../../lib/common/config';
 import {dateBounds} from '../../../../lib/common/datebounds';
-import {ignoreStation} from '../../../../lib/common/ignorestation';
+import {sanitiseQuery} from '../../../../lib/api/sanitise';
 
 interface StationJson {
     id?: number;
@@ -61,10 +61,6 @@ interface StationJson {
 
 // Match per-station daily JSON files: {station}.day.YYYY-MM-DD.json or with layer suffix
 const dailyFilePattern = /\.day\.(\d{4}-\d{2}-\d{2})(?:\.\w+)?\.json$/;
-
-// Valid file/date tokens: dot-separated segments of [A-Za-z0-9-], e.g. "2026-03-12",
-// "day.2026-03-12.flarm", "month.2026-03". Structurally excludes path separators and ".."
-const fileParamPattern = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$/;
 
 /** Check if the requested file resolves to the same target as {station}.json (the latest symlink) */
 function isLatestFile(stationDir: string, stationName: string, file: string): boolean {
@@ -234,28 +230,16 @@ function aggregateStationData(files: {date: string; data: StationJson}[]): Stati
 }
 
 export default async function handler(req, res) {
-    const stationName: string = req.query.station;
-
-    if (ignoreStation(stationName)) {
-        res.status(404).json({error: 'invalid station name'});
-        return;
-    }
-
-    const dateStart = (req.query.dateStart as string) || '';
-    const dateEnd = (req.query.dateEnd as string) || '';
-    const file = (req.query.file as string) || '';
+    // station and fileParam are interpolated into filesystem paths below,
+    // sanitiseQuery rejects anything with path separators or ".."
+    const query = sanitiseQuery(req, res, {station: true});
+    if (!query) return;
+    const {station: stationName, dateStart, dateEnd, file} = query;
 
     const stationDir = join(OUTPUT_PATH, stationName);
 
     // Determine which file to look up — prefer explicit file param, fall back to dateStart
     const fileParam = file || dateStart;
-
-    // fileParam is interpolated into a filesystem path below — reject anything
-    // that isn't a plain dot-separated token (no path separators, no "..")
-    if (fileParam && !fileParamPattern.test(fileParam)) {
-        res.status(400).json({error: 'invalid file parameter'});
-        return;
-    }
 
     if (!dateStart || dateStart === dateEnd) {
         if (fileParam && !isLatestFile(stationDir, stationName, fileParam)) {

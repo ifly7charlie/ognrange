@@ -2,6 +2,7 @@ import {readdirSync} from 'fs';
 import {join} from 'path';
 
 import {OUTPUT_PATH, ROLLUP_PERIOD_MINUTES} from '../../lib/common/config';
+import {sanitiseQuery} from '../../lib/api/sanitise';
 import {dateBounds} from '../../lib/common/datebounds';
 import {readJsonFile} from '../../lib/common/statsio';
 import type {AprsPacketStatsJson, StationStatsApiResponse} from '../../lib/common/stationstats';
@@ -96,8 +97,9 @@ export default async function handler(req: any, res: any) {
         return;
     }
 
-    const dateStart = (req.query.dateStart as string) || '';
-    const dateEnd = (req.query.dateEnd as string) || '';
+    const query = sanitiseQuery(req, res);
+    if (!query) return;
+    const {dateStart, dateEnd} = query;
     const hasRange = !!dateStart;
 
     // Collect all dated daily files sorted by date descending

@@ -3,8 +3,8 @@
 //
 
 import {ARROW_PATH, ROLLUP_PERIOD_MINUTES} from '../../../lib/common/config';
-import {ignoreStation} from '../../../lib/common/ignorestation';
 import {Layer, shouldProduceOutput} from '../../../lib/common/layers';
+import {sanitiseQuery} from '../../../lib/api/sanitise';
 
 import {readdirSync} from 'fs';
 
@@ -12,15 +12,20 @@ const layerPattern = Object.values(Layer).join('|');
 const fileMatcher = new RegExp(`\\.(day|month|year|yearnz)\\.([0-9-]+[nz]*)(?:\\.(${layerPattern}))?\\.arrow\\.gz$`);
 
 export default async function getH3Details(req, res) {
-    const stationName: string = req.query.station;
+    const query = sanitiseQuery(req, res, {station: true});
+    if (!query) return;
+    const stationName = query.station;
 
-    if (stationName !== 'global' && ignoreStation(stationName)) {
-        res.status(404).text('invalid station name');
+    let fileNames: string[];
+    try {
+        fileNames = readdirSync(ARROW_PATH + stationName);
+    } catch {
+        res.status(404).json({error: 'unknown station'});
         return;
     }
 
     // Produces: { day: { combined: ["2024-03-18", ...], flarm: [...] }, month: {...}, ... }
-    const result = readdirSync(ARROW_PATH + stationName)
+    const result = fileNames
         .map((fileName: string) => {
             const parts = fileName.match(fileMatcher);
             if (!parts || parts.length < 2) {

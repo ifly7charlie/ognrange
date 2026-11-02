@@ -3,6 +3,7 @@ import {join} from 'path';
 import {readJsonFile} from '../../lib/common/statsio';
 
 import {OUTPUT_PATH, ROLLUP_PERIOD_MINUTES} from '../../lib/common/config';
+import {sanitiseQuery} from '../../lib/api/sanitise';
 import {dateBounds, parsePeriodParam} from '../../lib/common/datebounds';
 import type {ProtocolStatsJson, ProtocolStatsApiResponse, DailyDevicesEntry, ProtocolEntry, GlobalUptimeData, GlobalUptimeHistoryEntry} from '../../lib/common/protocolstats';
 
@@ -129,8 +130,9 @@ export default async function handler(req, res) {
     }
 
     // Check for date range query params
-    const dateStart = (req.query.dateStart as string) || '';
-    const dateEnd = (req.query.dateEnd as string) || '';
+    const query = sanitiseQuery(req, res);
+    if (!query) return;
+    const {dateStart, dateEnd} = query;
     const hasRange = !!dateStart;
 
     // Collect all dated daily files sorted by date descending

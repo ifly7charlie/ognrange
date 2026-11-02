@@ -2,7 +2,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
 
-// when updating this don't forget to update docs/STATISTICS.md
+// when updating this don't forget to update the examples in README.md ("Packets considered for coverage mapping")
 static IGNORED_STATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         "AKASB", "CV32QG", "SPOT", "SPIDER", "INREACH", "FLYMASTER", "NAVITER", "CAPTURS",
@@ -19,7 +19,10 @@ static IGNORED_STATIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 // Devices whose packets decode with a valid address but a garbage payload
 // (random longitude on a few latitude bands, ±9999fpm, ~213,000ft, id flags
 // changing every packet) - they draw horizontal lines around the receiver
-const IGNORED_DEVICES: [&str; 4] = ["FLR18008D", "FLR1800BB", "FLR190103", "FLR190114"];
+const IGNORED_DEVICES: [&str; 8] = [
+    "FLR18008D", "FLR1800BB", "FLR190103", "FLR190114",
+    "FLRDD0C75", "ICA39B422", "FLR11409C", "FLRDDBBC3",
+];
 
 /// Source callsign (eg FLR18008D) is on the device blocklist
 pub fn ignore_device(source: &str) -> bool {
@@ -110,7 +113,8 @@ mod tests {
         assert!(ignore_device("FLR18008D"));
         assert!(ignore_device("flr190103"));
         assert!(!ignore_device("ICA18008D")); // same hex, different address type
-        assert!(!ignore_device("FLRDD0C75"));
+        assert!(ignore_device("ICA39B422"));
+        assert!(!ignore_device("FLRDD0C76"));
     }
 
     #[test]

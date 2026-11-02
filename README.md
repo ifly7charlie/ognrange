@@ -187,12 +187,12 @@ APRS packets are NOT recorded in the following situations:
 -   not having both latitude & longitude values,
 -   not having a comment that stats with 'id'
 
-2. Their station name is excluded by the file [`ignorestation.ts`](lib/common/ignorestation.ts) this includes (for example)
+2. Their station name is excluded by [`aprs-server/src/ignore_list.rs`](aprs-server/src/ignore_list.rs) this includes (for example)
 
--   ones that start with FNB, XCG, XCC, OGN, RELAY, RND, FLR, bSky, AIRS, N0TEST-
+-   ones that start with XCG, XCC, RELAY, RND, bSky, N0TEST-
 -   a list of ones matching TEST, UNKNOWN, GLOBAL, STATIONS, and others etc
 -   numeric only station names
--   any station that has a non ANSI alphanumeric character (eg not A-Z & 0-9)
+-   any station that has a character other than A-Z, 0-9, `_` or `-`
 
 3. Have a source callsign length < 6 characters or the last 6 characters are not valid hex
 4. Have no timestamp
@@ -202,7 +202,7 @@ APRS packets are NOT recorded in the following situations:
 8. Have invalid coordinates
 9. Come from a device on the blocklist in `aprs-server/src/ignore_list.rs` (devices that send corrupt positions)
 
-If you wish to update the list of stations that are excluded please raise a pull request to change the file `aprs-server/src/ignore_list.rs` (and its frontend copy `lib/common/ignorestation.ts`). For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in the `aprs-server`
+If you wish to update the list of stations that are excluded please raise a pull request to change the file `aprs-server/src/ignore_list.rs`. For changes to the other criteria please send me a message, or raise an issue or PR for the code - they are all enforced in the `aprs-server`
 
 In the user interface the stats are:
 
@@ -220,11 +220,23 @@ count: total number of packets
 
 ### Ignoring a station
 
-If you wish to ignore a station please add it to `ignorestation.ts` and raise a PR for the repo.
+If you wish to ignore a station please add it to `IGNORED_STATIONS` in `aprs-server/src/ignore_list.rs` and raise a PR for the repo. The web API has no copy of this list - an ignored station has no output files so its API requests return 404.
 
 You can also deleting the datafiles, but without doing both you will not remove it from the DB!
 
 Generally speaking if the station is not receiving packets very little disk space will be used.
+
+### API input validation
+
+Every handler in `pages/api` reads its query parameters through `sanitiseQuery()` in [`lib/api/sanitise.ts`](lib/api/sanitise.ts) rather than touching `req.query` directly. Station names and period parameters end up in filesystem paths, so it rejects anything that could escape the output directory and responds with a 400:
+
+-   `station` - `A-Z`, `0-9`, `_` and `-` only
+-   `h3` - must be a valid H3 cell
+-   `file`, `dateStart`, `dateEnd` - dot separated tokens of `A-Z`, `0-9` and `-` (eg `year`, `month.2026-03`, `day.2026-03-12.flarm`), so no `/` or `..`
+-   `layers` - comma separated, unknown layer names are dropped
+-   repeated parameters (`?station=a&station=b`) are rejected
+
+New API routes should use it too.
 
 ## Datafiles
 

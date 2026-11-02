@@ -10,6 +10,7 @@ import {searchStationArrowFile, searchMatchingArrowFiles} from '../../../../../l
 import {MAXIMUM_GRAPH_AGE_MSEC, ROLLUP_PERIOD_MINUTES} from '../../../../../lib/common/config';
 
 import {dateBounds} from '../../../../../lib/common/datebounds';
+import {sanitiseQuery} from '../../../../../lib/api/sanitise';
 
 import {map as _map, reduce as _reduce, sortBy as _sortBy} from 'lodash';
 
@@ -59,18 +60,11 @@ function buildSeriesData(result: Record<string, Record<string, number>>) {
 
 export default async function getH3Details(req, res) {
     // Top level
-    const stationName: string = req.query.station;
-    const selectedFile: string = req.query.file;
-    const lockedH3 = parseInt(req.query.lockedH3 || '0');
-    const h3SplitLong = h3IndexToSplitLong(req.query.h3);
-    const layers = (req.query.layers as string || 'combined').split(',').map((s) => s.trim());
+    const query = sanitiseQuery(req, res, {station: true, h3: true});
+    if (!query) return;
+    const {station: stationName, file: selectedFile, locked: lockedH3, layers} = query;
+    const h3SplitLong = h3IndexToSplitLong(query.h3);
     const now = new Date();
-
-    if (!h3SplitLong) {
-        res.setHeader('Cache-Control', `public, max-age=${ROLLUP_PERIOD_MINUTES * 60}, s-maxage=${ROLLUP_PERIOD_MINUTES * 60}, stale-while-revalidate=300`);
-        res.status(200).json({layers: {}});
-        return;
-    }
 
     // We only work on a global
     if (stationName !== 'global') {
@@ -80,20 +74,20 @@ export default async function getH3Details(req, res) {
     }
 
     // Resolve date range from dateStart/dateEnd params, falling back to file param
-    const dateStartParam = (req.query.dateStart as string) || selectedFile || 'year';
-    const dateEndParam = (req.query.dateEnd as string) || selectedFile || 'year';
+    const dateStartParam = query.dateStart || selectedFile || 'year';
+    const dateEndParam = query.dateEnd || selectedFile || 'year';
     const startBounds = dateBounds(dateStartParam);
     const endBounds = dateBounds(dateEndParam);
     const rangeStart = startBounds?.start || `${now.getUTCFullYear()}-01-01`;
     const rangeEnd = endBounds?.end || `${now.getUTCFullYear()}-12-31`;
     let oldest: Date | undefined = undefined;
-    if (!req.query.dateStart && !req.query.dateEnd) {
+    if (!query.dateStart && !query.dateEnd) {
         if (!selectedFile || selectedFile == 'undefined' || selectedFile === 'null' || selectedFile == 'year') {
             oldest = !lockedH3 ? new Date(Number(now) - MAXIMUM_GRAPH_AGE_MSEC) : undefined;
         }
     }
 
-    console.log(now.toISOString(), ' h3summary', stationName, selectedFile, rangeStart, rangeEnd, req.query.h3, h3SplitLong);
+    console.log(now.toISOString(), ' h3summary', stationName, selectedFile, rangeStart, rangeEnd, query.h3, h3SplitLong);
 
     const sids = {};
     const stationsByLayer: Record<string, Record<string, Record<string, number>>> = {};
