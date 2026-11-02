@@ -82,7 +82,7 @@ export function parseQuery(raw: RawQuery, required: RequiredParams = {}): {query
 /** Parse req.query for a handler, sending a 400 and returning null if it is invalid */
 export function sanitiseQuery(req: NextApiRequest, res: NextApiResponse, required: RequiredParams = {}): ApiQuery | null {
     const result = parseQuery(req.query, required);
-    if (result.error) {
+    if (!result.query) {
         res.status(400).json({error: result.error});
         return null;
     }
