@@ -51,7 +51,7 @@ RUN npm prune --omit=dev && rm -rf node_modules/sharp node_modules/@img
 
 ########### production images
 # distroless: no shell, so CMD/HEALTHCHECK must be exec form
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:9b945e92c1b5463a4b75f11e8417515e4bea7355f6adfd79ec220fbbe905dda8 AS next
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:1d736cf8b5716c07a245301f92717143215d248fd55771ee1936ef4b3302e531 AS next
 ARG GIT_REF=unknown
 ENV NEXT_PUBLIC_GIT_REF=$GIT_REF
 ENV NODE_ENV=production
@@ -72,7 +72,7 @@ CMD ["node_modules/next/dist/bin/next", "start"]
 # .env.local mounted, e.g.
 #   docker run --rm --user 995:1006 -v /srv/ognrange/arrow:/ognrange/data/arrow \
 #     -v /srv/ognrange/.env.local:/ognrange/.env.local:ro <image> dist/bin/purgeuptime.js --help
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:9b945e92c1b5463a4b75f11e8417515e4bea7355f6adfd79ec220fbbe905dda8 AS tools
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:1d736cf8b5716c07a245301f92717143215d248fd55771ee1936ef4b3302e531 AS tools
 WORKDIR /ognrange
 COPY --from=base-image /ognrange/node_modules ./node_modules
 COPY ./LICENSE ./LICENSE
@@ -83,7 +83,7 @@ CMD ["dist/bin/dumparrow.js", "--help"]
 
 # static musl binary, rustls with webpki-roots: no libc or CA bundle needed.
 # Runs as root so existing db volume ownership keeps working.
-FROM gcr.io/distroless/static-debian13@sha256:448810357cc8e67b7208988abdba0f5ec3d3aebee0a5b13eb624979792cffc0f AS aprs
+FROM gcr.io/distroless/static-debian13@sha256:1a64f46364620465ef9e9a8f5413757dfdf22695e050bbfd7303eeaf17a59383 AS aprs
 ARG GIT_REF=unknown
 ENV GIT_REF=$GIT_REF
 WORKDIR /ognrange
