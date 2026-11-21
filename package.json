@@ -28,7 +28,7 @@
         "lodash": "^4.18.1",
         "lru-cache": "^7.17.0",
         "mapbox-gl": "^3",
-        "next": "^15.5.28",
+        "next": "^15.5.29",
         "next-i18next": "^16.0.10",
         "qrcode.react": "^4.2.0",
         "react": "^18.0.0",
