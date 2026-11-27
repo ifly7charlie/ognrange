@@ -26,7 +26,7 @@ COPY ./lib/react ./lib/react
 # build cache isn't needed at runtime
 RUN npx --no-install next build && rm -rf .next/cache
 
-FROM rust:1-alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS aprs-build-image
+FROM rust:1-alpine@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33 AS aprs-build-image
 RUN apk add --no-cache musl-dev
 WORKDIR /aprs-server
 COPY ./aprs-server/Cargo.toml ./aprs-server/Cargo.lock ./
@@ -51,7 +51,7 @@ RUN npm prune --omit=dev && rm -rf node_modules/sharp node_modules/@img
 
 ########### production images
 # distroless: no shell, so CMD/HEALTHCHECK must be exec form
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:1d736cf8b5716c07a245301f92717143215d248fd55771ee1936ef4b3302e531 AS next
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:a84242e747fbb5aaaa0180c273b6f7130ca34b3300082192ef58eea96089eb3c AS next
 ARG GIT_REF=unknown
 ENV NEXT_PUBLIC_GIT_REF=$GIT_REF
 ENV NODE_ENV=production
@@ -72,7 +72,7 @@ CMD ["node_modules/next/dist/bin/next", "start"]
 # .env.local mounted, e.g.
 #   docker run --rm --user 995:1006 -v /srv/ognrange/arrow:/ognrange/data/arrow \
 #     -v /srv/ognrange/.env.local:/ognrange/.env.local:ro <image> dist/bin/purgeuptime.js --help
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:1d736cf8b5716c07a245301f92717143215d248fd55771ee1936ef4b3302e531 AS tools
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:a84242e747fbb5aaaa0180c273b6f7130ca34b3300082192ef58eea96089eb3c AS tools
 WORKDIR /ognrange
 COPY --from=base-image /ognrange/node_modules ./node_modules
 COPY ./LICENSE ./LICENSE
@@ -83,7 +83,7 @@ CMD ["dist/bin/dumparrow.js", "--help"]
 
 # static musl binary, rustls with webpki-roots: no libc or CA bundle needed.
 # Runs as root so existing db volume ownership keeps working.
-FROM gcr.io/distroless/static-debian13@sha256:1a64f46364620465ef9e9a8f5413757dfdf22695e050bbfd7303eeaf17a59383 AS aprs
+FROM gcr.io/distroless/static-debian13@sha256:4c2cd1dee442c9a99924a378c7c126fac8fef14771579ef567c3f2bdd7a5122a AS aprs
 ARG GIT_REF=unknown
 ENV GIT_REF=$GIT_REF
 WORKDIR /ognrange
